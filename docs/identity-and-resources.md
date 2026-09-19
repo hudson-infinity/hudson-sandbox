@@ -51,7 +51,7 @@ Avoid extra resource types initially:
 - An operation's claim revision is a separate increasing integer. It orders controller ownership, including when the allocation has not changed.
 - Display names and labels are optional mutable metadata. Names may repeat and are never API lookup keys or authorization inputs.
 
-Provision a local project identity in the sandbox service. Map authenticated callers to it. An optional external reference can associate it with a Hudson workspace or organization without coupling the ID format or requiring the harness to exist. Deleting a project revokes its callers and never permits reuse of its ID.
+Provision a local project identity in the sandbox service. Authenticate callers with opaque project API tokens over HTTPS, using the hash and expiry/revocation metadata on that project. User login remains in the calling harness. See [authentication](artitecture.md#simple-project-token-authentication). An optional external reference can associate it with a Hudson workspace or organization without coupling the ID format or requiring the harness to exist. Deleting a project revokes its callers and never permits reuse of its ID.
 
 ## 4. What changes during a session
 
@@ -98,17 +98,18 @@ Neither an operation ID nor an idempotency key guarantees exactly-once external 
 
 ## 6. API example
 
-The endpoints and field names below are the proposed first API shape. Full IDs are shown so the examples can be checked for format consistency. Authentication resolves the project; credentials are omitted.
+The endpoints and field names below are the proposed first API shape. Full IDs are shown so the examples can be checked for format consistency. A valid project API token resolves the project. The header below is a placeholder, never a usable credential.
 
 ```http
 POST /v1/sandboxes
+Authorization: Bearer <project-api-token>
 Idempotency-Key: 80d6bfaa-7245-493b-8d08-2cdb2de9885c
 Content-Type: application/json
 
 {
   "image_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "name": "spreadsheet-analysis",
-  "resources": { "vcpu": 2, "memory_mib": 1024 },
+  "resources": { "vcpu": 2, "memory_mib": 1024, "disk_mib": 4096 },
   "correlation_id": "customer-task-42"
 }
 ```
@@ -134,7 +135,10 @@ GET  /v1/operations/{operation_id}
 POST /v1/operations/{operation_id}/cancel
 GET  /v1/snapshots/{snapshot_id}
 GET  /v1/operations/{operation_id}/outputs/{output_name}
+GET  /v1/operations/{operation_id}/stream
 ```
+
+The read-only stream authenticates with the same project token from a backend client. It checks current ownership/allocation and forwards output through the API streaming endpoint, bypassing the controller for bytes. Reconnect uses a cursor on the original operation; it does not create an operation or dispatch another command. Reauthorize on connect, at expiry, and at most every 30 seconds; close on failed checks. Stream tokens for direct browser access are deferred.
 
 Cancellation is itself an idempotent operation referencing the target operation; a requested cancel does not change the target to cancelled until confirmed. Pause's completed result includes the published snapshot ID. Ordinary resume resolves the sandbox's current pause snapshot on admission and pins that reference in the operation. It does not accept an arbitrary old snapshot to silently rewind history. A future explicit recovery/fork API must address repeated external effects separately.
 
@@ -196,5 +200,8 @@ Before implementing the schema and API, turn these cases into contract/integrati
 8. Destroyed IDs and expired-response retry keys never produce a new execution.
 9. An execute operation suspended in a snapshot reconnects under its original ID and deadline.
 10. Failed/unknown external effects are not automatically repeated because a controller attempt changed.
+11. Invalid, expired, or revoked tokens cannot admit requests, read another project, or retain streaming access beyond the 30-second recheck bound; internal host endpoints reject project tokens.
+12. Concurrent pause admissions respect disk/upload reservations; expired leases do not free staging bytes that still exist.
+13. Restore runs the guest agent while customer processes remain frozen until policy and deadline checks succeed.
 
-The remaining schema work is executable migrations, concrete index/constraint definitions, pagination, retention defaults, and transport authentication. This document selects resource identity and retry semantics without adding a Temporal or harness dependency.
+The remaining schema work is executable migrations, concrete index/constraint definitions, pagination, retention defaults, and the internal transport implementation. Project-token authentication is selected; its storage and revocation contract are in [data models](data-models.md). This document selects resource identity and retry semantics without adding a Temporal or harness dependency.

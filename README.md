@@ -6,7 +6,9 @@ The planned sandbox tool for [Hudson](https://github.com/hudson-infinity/hudson)
 
 **Hudson is the harness; Hudson Sandbox is a tool it calls.** The harness owns agent behavior, business permissions, approvals, and any Temporal workflows. This repository has no Temporal dependency and can serve other authenticated API clients too.
 
-The selected stack is Rust, HTTP/JSON with OpenAPI, Firecracker and Linux KVM, PostgreSQL, S3-compatible object storage, and OpenTelemetry with Prometheus/Grafana. Kubernetes deploys the API and controllers; dedicated Linux hosts run the microVMs through our supervisor. Individual sandboxes are not Kubernetes pods in the initial design, so sandbox placement and resource accounting remain our controller's responsibility.
+The selected stack is Rust, HTTP/JSON with OpenAPI, Firecracker and Linux KVM, PostgreSQL, S3-compatible object storage, and OpenTelemetry with Prometheus/Grafana. Start with standalone API/controller processes and one compute host. Later, Kubernetes deploys the API and controllers; dedicated Linux hosts run the microVMs through our supervisor. Individual sandboxes are not Kubernetes pods in the initial design, so sandbox placement and resource accounting remain our controller's responsibility.
+
+Authentication uses project-scoped opaque API tokens over HTTPS, with hashed storage, rotation, and revocation. User login stays in Hudson. Live output uses an authenticated streaming endpoint; the controller persists operations and results.
 
 Start with [architecture and data flow](docs/artitecture.md) for the system diagram and create, execute, pause, and resume examples.
 

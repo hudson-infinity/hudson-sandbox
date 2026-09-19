@@ -28,11 +28,12 @@ The parent context is Hudson's [product goals](https://github.com/hudson-infinit
 | Part | Choice | Use |
 | --- | --- | --- |
 | Implementation | Rust | API, controller, supervisor, guest agent, and shared protocol types |
-| Public interface | HTTP/JSON with OpenAPI | Language-neutral lifecycle, commands, files, and status APIs |
+| Public interface | HTTP/JSON with OpenAPI | Lifecycle, commands, files, status, and a separate authenticated output stream |
+| Client authentication | Opaque project API tokens over HTTPS | Hashed token storage, expiry, rotation, revocation, and project ownership checks |
 | Isolation | Firecracker with Linux KVM | One microVM per sandbox |
 | Durable metadata | PostgreSQL | Ownership, desired state, placements, operations, receipts, and snapshot manifests |
 | Artifact storage | S3-compatible object storage | Memory snapshots, disk snapshots, workspace exports, and output artifacts |
-| Platform deployment | Kubernetes | Sandbox API and controllers |
+| Platform deployment | Standalone first; Kubernetes later | Sandbox API, streaming endpoint, and controllers |
 | Compute hosts | Dedicated Linux nodes with KVM | Firecracker execution through the host supervisor |
 | Observability | OpenTelemetry, Prometheus, Grafana | Instrumentation, metrics collection, and operational views |
 | Harness coordination | Temporal, only in `hudson` | Durable agent tasks outside this service |
@@ -49,7 +50,7 @@ Use the deployment pattern documented by [E2B](https://github.com/e2b-dev/runtim
 
 **An individual sandbox is not a Kubernetes pod in the initial design.** Kubernetes scheduling the API or supervisor does not automatically schedule or account for the VMs that supervisor creates. Our placement component reserves sandbox CPU, memory, and disk capacity; the host supervisor enforces those limits.
 
-Start with one compute host, making placement a capacity check and reservation. Add multiple eligible hosts later. Keep sandbox compute capacity dedicated, or explicitly reserve it from other Kubernetes workloads, so two schedulers cannot allocate the same resources independently. Account for host overhead and exclude draining or unhealthy hosts.
+Start with standalone API/controller processes and one compute host, making placement a capacity check and reservation. Kubernetes deployment follows the verified single-host lifecycle. Add multiple eligible hosts later. Keep sandbox compute capacity dedicated, or explicitly reserve it from other Kubernetes workloads, so two schedulers cannot allocate the same resources independently. Account for host overhead and bounded image caches; exclude draining or unhealthy hosts. Reserve local writable/restore disk alongside CPU/RAM, and reserve snapshot staging space and upload slots before freezing a VM. Expired leases alone cannot free disk bytes or stop an uploader.
 
 Kubernetes may deploy a privileged launcher for the host supervisor, but its exact packaging must be validated separately. The supervisor's host privileges never extend to customer processes. Node eviction, draining, or termination must coordinate with active sandboxes; replacing a service pod is not evidence that guest memory was saved.
 
@@ -59,9 +60,10 @@ Node-pool provisioning and autoscaling require a provider integration and sandbo
 
 ```mermaid
 flowchart TD
-    H[Hudson harness or another API client] --> A
-    subgraph K[Kubernetes platform services]
+    H[Hudson harness or another backend client] -->|Project token over HTTPS| A
+    subgraph K[Platform services: standalone first, Kubernetes later]
         A[Sandbox API]
+        T[Authenticated output streaming endpoint]
         C[Sandbox controller and placement]
     end
     A --> D[(PostgreSQL operations and sandbox state)]
@@ -70,11 +72,16 @@ flowchart TD
     S --> F[Firecracker microVM]
     F --> G[Guest agent and customer processes]
     S --> O[(S3-compatible artifact storage)]
+    H <-->|Project token over TLS| T
+    T -->|Authorize and resolve allocation| D
+    T <-->|Scoped internal connection| S
 ```
 
 The API admits requests and persists operations. The controller claims pending work, checks capacity, calls the owning supervisor, and reconciles results. The supervisor manages Firecracker, jailer invocation, host networking, storage, execution deadlines, and VM leases.
 
 The guest agent receives commands through a host-mediated channel, initially proposed as vsock. It manages process trees, reports status, streams bounded output, and transfers workspace files. Treat all guest messages as untrusted; fabricated identifiers, paths, or results cannot grant host authority.
+
+The streaming endpoint initially shares the API service and forwards live output directly from the supervisor, with bounded buffers and sequence cursors. Output bytes do not pass through the controller or become database queue entries. Commands and cancellation still go through durable API admission. Authenticate every stream connection, check revocation/project state at most every 30 seconds, close at expiry or failed checks, and report replay gaps explicitly. Pause closes streams; resume reconnects under the same execute operation and a new allocation.
 
 The controller and API may initially share a binary, but privileged host setup remains a distinct boundary. These are logical components rather than a requirement for one deployed service per module.
 
@@ -99,6 +106,8 @@ Persist bounded attempt counts, deadlines, next retry times, and terminal errors
 Do not store credentials or large streams in operation records. Store artifact references, digests, bounded metadata, and redacted diagnostics. Apply access control, encryption, retention, and deletion policies to both records and artifact contents.
 
 ## 6. API contract
+
+Use `Authorization: Bearer <project-api-token>` over HTTPS for backend clients. Validate the opaque token against its project token hash and expiry/revocation metadata, then authorize the requested resource. The same token authenticates backend output streams. Tokens stay out of URLs, logs, operation payloads, and guests. See [architecture auth](artitecture.md#simple-project-token-authentication) and [project token storage](data-models.md#1-projects--ownership-and-limits).
 
 Requests are scoped to an authenticated project and sandbox. The [identity and resource design](identity-and-resources.md) defines prefixed UUIDv7 IDs, PostgreSQL relationships, retry semantics, and storage keys. The sandbox ID survives pause/resume; each new VM allocation receives a separate identity and increasing generation.
 
@@ -141,14 +150,14 @@ The sandbox service continues admitted work if Hudson or its Temporal workers di
 
 Pause proceeds through explicit stages:
 
-1. Acquire the lifecycle transition, prevent new commands, and quiesce the guest/filesystem as required by the snapshot procedure.
+1. Acquire the lifecycle transition and prevent new commands. Reserve staging bytes and a host upload slot before freezing; keep the VM runnable while waiting. Freeze customer process groups separately from the guest agent, then quiesce the filesystem as required by the snapshot procedure.
 2. Freeze execution and capture a consistent memory, VM-state, and disk artifact set. The initial implementation can use full snapshots; differential and lazy loading optimizations come later.
 3. Upload and verify the artifacts, then atomically publish the immutable snapshot manifest. Local files alone are not a durable completed snapshot.
-4. Stop the VM and reclaim its compute/network allocation. Mark the sandbox paused only after snapshot publication and resource release are confirmed.
+4. Stop the VM and reclaim its compute/network and allocation disk resources. Mark the sandbox paused only after snapshot publication and allocation release are confirmed. Track staging bytes on the snapshot until their file cleanup is confirmed; release upload slots only after the uploader has completed or stopped.
 
 A failed upload leaves the pause operation incomplete; do not destroy the only viable state and report success. Track whether the old VM is frozen, runnable, or lost so recovery can retry, safely roll back, or report an unknown outcome. Cleanup after a published snapshot is retryable without repeating the snapshot unnecessarily.
 
-Resume reserves capacity on a compatible host, validates the manifest, restores the disk and memory, reestablishes guest communication, and applies current sandbox access policy before allowing continued execution. The previous allocation must be stopped or fenced before the restored one runs. Restoring a snapshot is not permission to clone a workload into multiple active copies.
+Resume reserves CPU/RAM/disk on a compatible host, validates the manifest, and loads the disk and memory with the VM paused and egress blocked. The snapshot contains frozen customer process groups and a separate guest agent. Resume the VM so only management can reconnect; authenticate the new session, refresh management credentials, reconcile time and absolute deadlines/cancellation, and apply current policy before releasing eligible customer processes. Persist the handshake and release acknowledgements. If this process gate cannot be established, stop/fence the partial restore and report failure or uncertainty. The previous allocation must be stopped or fenced before the restored one runs. Restoring a snapshot is not permission to clone a workload into multiple active copies.
 
 Persist sandbox and command wall-clock deadlines outside the snapshot. Pausing does not automatically extend them; expired commands must be terminated before restored customer execution is released. Separate paused-snapshot retention from active-compute and idle limits, with explicit defaults chosen during implementation.
 
@@ -159,6 +168,8 @@ A controller or host crash does not automatically preserve work since the last p
 Destroy prevents future resume and removes active allocations. Its receipt states which artifacts were deleted or retained under policy; retention and byte-level garbage collection are tracked separately from compute release.
 
 ## 9. Controllers, limits, and recovery
+
+The [architecture recovery table](artitecture.md#destroy-and-recovery) defines persisted evidence and safe continuation at each create/execute/pause/resume/destroy boundary. Record intent before dispatch and receipts afterward; interrupt these boundaries in failure-injection tests.
 
 The service needs focused loops for pending operations, host health/capacity, expired allocations, snapshot progress, and orphan cleanup. It does not need a general workflow framework. PostgreSQL is their durable source of intent; the host supervisor supplies observations and enforces local deadlines.
 
@@ -182,7 +193,7 @@ Automatic retries are appropriate only when receipts and operation semantics mak
 
 ## 10. Security and harness integration
 
-The sandbox authenticates requests, authorizes access to sandbox resources, and enforces execution policy. The harness decides business permissions, approval rules, and which tools its agent may invoke. Neither role is delegated to model output.
+The sandbox authenticates project tokens, authorizes access to sandbox resources, and enforces execution policy. User login and memberships stay in the harness. Operator tooling provisions and rotates random project tokens, with at most two active keys per project for overlap; the service stores only hashes and lifecycle metadata. Internal supervisor connections use separate operator-managed service credentials over authenticated TLS, scoped to their intended service/host. Customer tokens cannot authorize host administration. Browser-specific stream credentials remain deferred. The harness decides business permissions, approval rules, and which tools its agent may invoke. Neither role is delegated to model output. Token revocation prevents new requests and new execution dispatch under that key, while required reconciliation/stop/cleanup continues under service authority. Revocation alone is not cancellation of an already-running command; use explicit cancellation or destruction to stop it.
 
 Use Firecracker jailer, supported seccomp filters, per-VM cgroups/namespaces, restricted host sockets, immutable verified templates, and a private writable filesystem per sandbox. Harden host setup using [Firecracker's production guidance](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md).
 
@@ -238,10 +249,14 @@ Before calling the first version usable, demonstrate:
 8. Revoked sandbox access stays revoked after restore, and snapshots/artifacts enforce owner checks.
 9. Destroy releases resources, prevents later resume, and reports retained or pending-deletion artifacts accurately.
 10. Restarted supervisors and reconcilers reclaim orphans without destroying live authorized allocations.
+11. Project-token expiry/revocation blocks requests and closes streams within the 30-second recheck bound; rotation works and tokens never reach guest snapshots or logs.
+12. Concurrent creates and pauses cannot over-reserve disk or upload slots; partial failures retain reservations until cleanup is confirmed.
+13. Customer processes remain frozen throughout restore management and deadline/policy refresh; a lost release acknowledgement never causes another VM to run.
+14. Stream reconnects preserve operation identity and use explicit cursors/gaps without rerunning commands.
 
 | Phase | Exit condition |
 | --- | --- |
-| 1: Single-host execution | Rust API/supervisor with one jailed VM, command execution, limits, files, and teardown |
+| 1: Single-host execution | Standalone Rust API/controller, six-table PostgreSQL model, project tokens, and supervisor with one jailed VM, command output streaming, limits, files, and teardown |
 | 2: Core pause/resume | Complete memory/disk snapshot, durable publication, compute release, and validated restore on the supported host configuration |
 | 3: Recovery and isolation | PostgreSQL-backed controllers, request deduplication, restart/failure tests, fencing, and the validation cases above |
 | 4: Deployment and integration | Kubernetes service manifests, dedicated host deployment, monitoring, and Hudson calling the ordinary APIs from its own tasks |
