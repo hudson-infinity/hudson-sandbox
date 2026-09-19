@@ -10,6 +10,8 @@ The selected stack is Rust, HTTP/JSON with OpenAPI, Firecracker and Linux KVM, P
 
 Start with [the implementation design](docs/implementation.md) for component boundaries, execution contracts, recovery, security, and phased delivery.
 
+See [data models](docs/data-models.md) for the six tables and their relationships: projects, sandboxes, operations, hosts, allocations, and snapshots.
+
 See [IDs and resource records](docs/identity-and-resources.md) for sandbox identity, API retry keys, snapshots, allocations, and the proposed database relationships.
 
 The first complete flow is create → execute → save memory and disk → release compute → resume → destroy. Pause/resume is a core capability; performance optimizations and multi-host scheduling follow a verified single-host implementation.

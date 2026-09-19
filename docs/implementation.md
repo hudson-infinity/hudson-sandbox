@@ -80,6 +80,8 @@ The controller and API may initially share a binary, but privileged host setup r
 
 ## 5. State and asynchronous operations
 
+The [data model](data-models.md) starts with six tables: projects, sandboxes, operations, hosts, allocations, and snapshots. Retry keys, execution receipts, and output references live on operations. Images use immutable digests without a separate catalog table.
+
 | State | Authority |
 | --- | --- |
 | Business decisions, approvals, agent progress | External harness; absent from the sandbox database |
@@ -98,15 +100,15 @@ Do not store credentials or large streams in operation records. Store artifact r
 
 ## 6. API contract
 
-Requests are scoped to an authenticated workspace and sandbox. The [identity and resource design](identity-and-resources.md) defines prefixed UUIDv7 IDs, PostgreSQL relationships, retry semantics, and storage keys. The sandbox ID survives pause/resume; each new VM allocation receives a separate identity and increasing generation.
+Requests are scoped to an authenticated project and sandbox. The [identity and resource design](identity-and-resources.md) defines prefixed UUIDv7 IDs, PostgreSQL relationships, retry semantics, and storage keys. The sandbox ID survives pause/resume; each new VM allocation receives a separate identity and increasing generation.
 
-The service generates operation IDs. Clients supply an `Idempotency-Key` on mutating requests so a lost first response can be retried without knowing the operation ID. A matching key and request digest in the authenticated workspace returns the existing operation; a changed request is a conflict. Controller attempts use `(operation_id, attempt_number)` and keep the same logical operation ID. Compact deduplication records survive result expiry and destruction, so an expired response cannot silently turn into new execution.
+The service generates operation IDs. Clients supply an `Idempotency-Key` on mutating requests so a lost first response can be retried without knowing the operation ID. A matching key and request digest in the authenticated project returns the existing operation; a changed request is a conflict. Controller attempts use `(operation_id, attempt_number)` and keep the same logical operation ID. Compact deduplication records survive result expiry and destruction, so an expired response cannot silently turn into new execution.
 
 An external correlation ID, such as a Hudson run ID, is optional metadata; it is never required for execution or used as proof of ownership. Authentication, not an ID prefix or guessed object key, determines access.
 
 | Operation | Contract |
 | --- | --- |
-| Create | Accept an authorized immutable image version and limits; pin its template digest at admission; identical retries return the original operation |
+| Create | Accept an authorized immutable image digest and limits; pin verified template compatibility at admission; identical retries return the original operation |
 | Execute | Accept executable, argument array, working directory, nonsecret environment, deadline, and output bounds; return an operation handle |
 | Pause | Save guest memory and matching disk state, publish the snapshot, release compute, and report completion only after those stages are confirmed |
 | Resume | Restore a completed snapshot into one authorized allocation and report ready after guest communication is reestablished |
@@ -174,7 +176,7 @@ The service needs focused loops for pending operations, host health/capacity, ex
 
 Allocation generations and expiring leases prevent stale commands and identify current owners. A partitioned host must stop its VMs when its local lease watchdog expires. A generation change in PostgreSQL alone does not stop execution on a disconnected machine. Replacement requires confirmed termination, infrastructure fencing, or a validated lease-expiry mechanism.
 
-Enforce CPU, RAM, disk, output, execution-time, and concurrency limits outside guest control. Keep a bounded number of pending operations per workspace and reject or queue capacity shortages explicitly. Expiry policy may pause or destroy a sandbox, but failure to save state must be visible; any hard-limit forced termination must be reported as such.
+Enforce CPU, RAM, disk, output, execution-time, and concurrency limits outside guest control. Keep a bounded number of pending operations per project and reject or queue capacity shortages explicitly. Expiry policy may pause or destroy a sandbox, but failure to save state must be visible; any hard-limit forced termination must be reported as such.
 
 Automatic retries are appropriate only when receipts and operation semantics make them safe. Arbitrary commands can have external side effects, so this service does not promise exactly-once execution. A caller timeout is not cancellation, and a requested cancellation is not proof that execution stopped.
 
@@ -216,7 +218,7 @@ Begin with one Linux compute host exposing KVM and one supported architecture. A
 
 Use a remote Linux host for real VM tests from macOS. An unrestricted local process is not a substitute for the isolation boundary. Publish reproducible guest image builds with immutable digests and compatibility metadata.
 
-Instrument operations through OpenTelemetry and expose metrics for Prometheus/Grafana. Record queue time, VM readiness, snapshot/upload duration, restore duration, resource usage, lease expiry, uncertain outcomes, and leaked resources. Correlate by workspace, sandbox, operation, attempt, host, and optional caller correlation ID. Redact secrets and keep terminal output in bounded artifacts.
+Instrument operations through OpenTelemetry and expose metrics for Prometheus/Grafana. Record queue time, VM readiness, snapshot/upload duration, restore duration, resource usage, lease expiry, uncertain outcomes, and leaked resources. Correlate by project, sandbox, operation, attempt, host, and optional caller correlation ID. Redact secrets and keep terminal output in bounded artifacts.
 
 Drain hosts before maintenance and prevent new placements while draining. Verify resumable snapshots before removing hosts that hold running workloads; preserve explicit failure outcomes for forced termination. Database migrations, API/controller upgrades, host supervisor upgrades, and guest image changes need independent compatibility and rollback plans. Kubernetes restarts do not replace those plans.
 
