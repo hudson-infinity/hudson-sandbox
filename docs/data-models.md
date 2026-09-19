@@ -34,11 +34,14 @@ API ID: `prj_<uuidv7>`.
 | `id`, `name`, `status` | Stable owner identity and lifecycle |
 | `limits` | CPU, memory, disk, snapshot storage, sandbox count, and pending-operation quotas |
 | `api_tokens` | Small bounded token metadata collection: key ID, SHA-256 hash, creation/expiry/revocation times; at most two active tokens for rotation |
+| `development_only` | Operator-controlled marker, false by default; permits selection as the sole project in an isolated local-development database |
 | `external_reference` (optional) | Mapping to a caller's organization or workspace |
 
 Use project-scoped opaque API tokens, provisioned by operator tooling. Each has a random 256-bit secret and a nonsecret project/key locator; the locator only selects the record to verify and never authorizes access. Hash the entire token, compare the stored digest in constant time, and check expiry/revocation and project status. Return the raw token only at issuance; persist no plaintext tokens. Rotation adds a new key before revoking the old one. Missing or removed keys fail authentication. Never reuse a key ID.
 
 Token metadata lives on the project initially, preserving six tables. User login, memberships, and business permissions remain in Hudson; there is no sandbox user/role model. Operator tooling manages credentials outside the customer sandbox API. Internal service credentials are separate and stored in deployment secret configuration. Project names may repeat and IDs are never reused. See [architecture](artitecture.md#simple-project-token-authentication) for the request and streaming rules.
+
+The optional [local-development mode](artitecture.md#local-development-without-api-tokens) creates one marked project with empty token metadata in an isolated development database. Local requests receive that project's context, not administrative access to every project. The marker and selected project cannot be changed through customer requests. The development project still has normal limits, lifecycle state, and ownership references.
 
 ### 2. sandboxes — the persistent environment
 
@@ -63,7 +66,7 @@ API ID: `op_<uuidv7>`.
 | Fields | Purpose |
 | --- | --- |
 | `id`, `project_id`, `sandbox_id`, `kind` | One admitted create, execute, pause, resume, destroy, cancel, or file mutation |
-| `initiator_key_id` (nullable for internal maintenance) | Audit and pre-dispatch authorization reference; never a raw token or token hash |
+| `initiator_kind`, `initiator_key_id` (nullable) | Server-assigned `project_token`, `local_development`, or `service` identity; a token initiator requires its key ID, never raw credentials |
 | `idempotency_key`, `request_digest`, `digest_version` | Deduplicate the caller's mutation and reject changed payloads under the same key |
 | `payload`, `input_refs`, `target_operation_id` (nullable) | Validated request, pinned image/snapshot inputs, and cancellation target |
 | `status`, `phase`, `result`, `error`, `output_refs` | Progress, bounded results, and stored-output metadata |
@@ -74,6 +77,8 @@ API ID: `op_<uuidv7>`.
 Use `UNIQUE (project_id, idempotency_key)` directly on this table. Admission inserts the operation and related resource changes in one transaction. A repeated key with identical content returns the same operation; a changed request returns a conflict.
 
 Check the initiating key before starting new customer execution. Revocation does not erase receipts or prevent required reconciliation, stop, and cleanup. Internal maintenance operations use service authority, not customer tokens. Record lifecycle phases and confirmation receipts, including guest freeze, manifest publication, restore handshake, and customer-process release. Streaming cursors are scoped to operation/output and survive allocation changes; replay gaps must be explicit. Output chunks do not become individual database rows.
+
+For `local_development` operations, dispatch requires the standalone disabled-auth mode and the selected active development project. An absent key ID never implies service authority. If token mode is restored, pending development operations remain blocked; service reconciliation may still stop and clean up existing resources. Customer payloads cannot set any initiator fields.
 
 Bound retries and receipt metadata. Preserve earlier allocation receipts when reconnecting after resume. If history exceeds the inline bound, publish an immutable history object and persist its reference before removing inline entries; do not discard unresolved execution evidence. No separate attempt table is required initially.
 
