@@ -1,238 +1,248 @@
 # Hudson Sandbox implementation design
 
-Date: 2026-09-19
+Updated: 2026-09-19
 
-Status: initial design. Rust, Temporal, and Firecracker are the selected direction for this repository. Component layouts, contracts, storage choices, and delivery phases below are proposed implementation details, subject to validation. Nothing described here is shipped behavior.
+Status: design only. The stack and ownership boundaries below are the selected direction. Detailed schemas, protocols, versions, and deployment configuration remain to be validated. No runtime or security guarantee has been implemented or tested yet.
 
-## 1. Purpose and scope
+## 1. Purpose and ownership
 
-Hudson Sandbox is the execution backend for customer code hosted by Hudson. It will run generated scripts, customer functions, and custom harness processes inside isolated Linux environments while Hudson retains authority over permitted actions.
+**Hudson is the agent harness. Hudson Sandbox is a tool it calls.**
 
-The implementation uses three layers:
+Hudson Sandbox provides APIs to create, execute, pause, resume, and destroy isolated Linux sandboxes. It also handles files, execution limits, operation status, and resource cleanup. Clients do not need to use Hudson or Temporal to call these APIs.
 
-| Layer | Responsibility |
+| Component | Responsibility |
 | --- | --- |
-| Hudson main runtime | Agent definitions, harness behavior, run state, business permissions, approvals, credential authority, budgets, and evaluation orchestration |
-| Temporal and trusted sandbox workers | Durable coordination of sandbox operations, timers, retries, reconciliation, and cleanup |
-| Firecracker and a guest agent | An isolated Linux VM with command execution, files, and bounded resource use |
+| Hudson harness, in the `hudson` repository | Agent behavior, business permissions, approvals, budgets, credentials, and any durable tasks implemented with Temporal |
+| Hudson Sandbox, in this repository | Authenticated sandbox APIs, operation records, placement, lifecycle controllers, snapshots, execution limits, and cleanup |
+| Kubernetes | Deployment and scheduling of platform services; resource controls for the workloads it manages |
+| Firecracker and the host supervisor | Individual microVMs, their host resources, and isolated execution |
 
-This project builds a service around existing virtualization and durable execution technology. It does not implement a hypervisor or fork Firecracker. E2B is an architectural reference, not a required dependency in this design. Anthropic's sandbox runtime is not the selected isolation boundary for hosted customer workloads.
+**This repository has no Temporal dependency.** It does not implement agent workflows, business approval logic, or a second durable workflow engine. PostgreSQL-backed operations and focused reconciliation loops provide the sandbox lifecycle's asynchronous control.
 
-Hudson's [product goals](https://github.com/hudson-infinity/hudson/blob/main/docs/goals.md) and [Rust decision](https://github.com/hudson-infinity/hudson/blob/main/docs/implementation-decisions/0001-rust.md) remain the parent product context. This document does not modify the main repository's decisions or expand its first milestone automatically.
+Hudson may wrap sandbox API calls in Temporal Activities in its own repository. Those calls use the same operation IDs, status APIs, and cancellation contracts as any other client. A sandbox does not receive Temporal credentials or understand workflow history.
 
-## 2. Implementation language and dependency policy
+The parent context is Hudson's [product goals](https://github.com/hudson-infinity/hudson/blob/main/docs/goals.md) and [Rust decision](https://github.com/hudson-infinity/hudson/blob/main/docs/implementation-decisions/0001-rust.md). This document updates the sandbox design only; it does not modify the harness repository.
 
-Use Rust for the sandbox API, Temporal workers, host supervisor, guest agent, and shared protocol types. Customer programs may use any language available in their selected guest image. The external API remains language-neutral.
+## 2. Selected technology stack
 
-Use the official Temporal Rust SDK. Prove the necessary workflow, Activity, cancellation, heartbeat, replay, and worker upgrade behavior in a small integration before committing to a crate layout. Pin the Rust toolchain, dependencies, Firecracker release, guest kernel, and base image once that integration is validated; this design deliberately does not invent version pins.
+| Part | Choice | Use |
+| --- | --- | --- |
+| Implementation | Rust | API, controller, supervisor, guest agent, and shared protocol types |
+| Public interface | HTTP/JSON with OpenAPI | Language-neutral lifecycle, commands, files, and status APIs |
+| Isolation | Firecracker with Linux KVM | One microVM per sandbox |
+| Durable metadata | PostgreSQL | Ownership, desired state, placements, operations, receipts, and snapshot manifests |
+| Artifact storage | S3-compatible object storage | Memory snapshots, disk snapshots, workspace exports, and output artifacts |
+| Platform deployment | Kubernetes | Sandbox API and controllers |
+| Compute hosts | Dedicated Linux nodes with KVM | Firecracker execution through the host supervisor |
+| Observability | OpenTelemetry, Prometheus, Grafana | Instrumentation, metrics collection, and operational views |
+| Harness coordination | Temporal, only in `hudson` | Durable agent tasks outside this service |
 
-Temporal publishes a [Rust development guide](https://docs.temporal.io/develop/rust). Firecracker exposes a host API for configuring and managing microVMs; the supervisor should use that interface rather than link virtualization internals into Hudson. See the [Firecracker design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md).
+Pin the Rust toolchain, dependencies, Firecracker release, guest kernel, and images after the first host integration is validated. Exact HTTP libraries, internal transport, telemetry backends for logs/traces, and version pins remain implementation decisions. Selecting OpenTelemetry does not by itself select a log or trace storage system.
 
-## 3. Component placement
+PostgreSQL and object storage cover the initial persistence needs. Defer Redis, ClickHouse, elaborate scheduling, VM warm pools, and a dashboard until measurements or product requirements justify them. Customer programs may use any language installed in their guest image.
+
+Firecracker's host API supplies VM controls; the supervisor uses that interface rather than embedding a hypervisor. See [Firecracker's design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md).
+
+## 3. Kubernetes and compute boundary
+
+Use the deployment pattern documented by [E2B](https://github.com/e2b-dev/runtime/blob/main/docs/ARCHITECTURE.md#deployment-topology): Kubernetes hosts platform services, while an orchestrator on each compute host manages individual Firecracker VMs. E2B is an architectural reference, not a dependency.
+
+**An individual sandbox is not a Kubernetes pod in the initial design.** Kubernetes scheduling the API or supervisor does not automatically schedule or account for the VMs that supervisor creates. Our placement component reserves sandbox CPU, memory, and disk capacity; the host supervisor enforces those limits.
+
+Start with one compute host, making placement a capacity check and reservation. Add multiple eligible hosts later. Keep sandbox compute capacity dedicated, or explicitly reserve it from other Kubernetes workloads, so two schedulers cannot allocate the same resources independently. Account for host overhead and exclude draining or unhealthy hosts.
+
+Kubernetes may deploy a privileged launcher for the host supervisor, but its exact packaging must be validated separately. The supervisor's host privileges never extend to customer processes. Node eviction, draining, or termination must coordinate with active sandboxes; replacing a service pod is not evidence that guest memory was saved.
+
+Node-pool provisioning and autoscaling require a provider integration and sandbox-capacity signals; they are not supplied merely by deploying the API on Kubernetes. Initially provision the single host explicitly. A future one-pod-per-sandbox integration can be evaluated without changing the public API, but is not required for the first version.
+
+## 4. Component flow
 
 ```mermaid
 flowchart TD
-    H[Hudson runtime: policy, approvals, budgets] --> A[Sandbox API]
-    A --> T[Temporal service]
-    T <--> W[Trusted Temporal workers]
-    W --> S[Host supervisor]
-    S --> F[Firecracker and jailer]
+    H[Hudson harness or another API client] --> A
+    subgraph K[Kubernetes platform services]
+        A[Sandbox API]
+        C[Sandbox controller and placement]
+    end
+    A --> D[(PostgreSQL operations and sandbox state)]
+    C <--> D
+    C --> S[Supervisor on a dedicated Linux host]
+    S --> F[Firecracker microVM]
     F --> G[Guest agent and customer processes]
-    G --> B[Scoped Hudson tool gateway]
-    B --> H
-    A --> D[(Sandbox metadata and operation receipts)]
-    W --> D
-    S --> D
-    S --> O[(Artifacts and checkpoints)]
+    S --> O[(S3-compatible artifact storage)]
 ```
 
-Temporal's service, its persistence, and trusted workers run outside customer microVMs. Guests receive neither Temporal credentials nor access to task queues. Workflow recovery must remain available when a host or VM fails.
+The API admits requests and persists operations. The controller claims pending work, checks capacity, calls the owning supervisor, and reconciles results. The supervisor manages Firecracker, jailer invocation, host networking, storage, execution deadlines, and VM leases.
 
-The host supervisor is the only component allowed to perform privileged VM setup. It manages host networking, resource controls, jailer invocation, VM API sockets, and local storage. Its interface accepts validated sandbox specifications rather than arbitrary host commands or paths.
+The guest agent receives commands through a host-mediated channel, initially proposed as vsock. It manages process trees, reports status, streams bounded output, and transfers workspace files. Treat all guest messages as untrusted; fabricated identifiers, paths, or results cannot grant host authority.
 
-The guest agent starts commands, reports process status, streams bounded output, and exchanges authorized workspace files. It is reachable through a host-mediated vsock channel. Treat guest responses as untrusted: a compromised guest must not acquire host authority by fabricating results, identifiers, paths, or protocol messages.
+The controller and API may initially share a binary, but privileged host setup remains a distinct boundary. These are logical components rather than a requirement for one deployed service per module.
 
-A single-host deployment may colocate trusted services, but customer execution must still cross the VM boundary. These are logical components, not a requirement to deploy one service for every module.
-
-## 4. Ownership of state
+## 5. State and asynchronous operations
 
 | State | Authority |
 | --- | --- |
-| Agent run, business approval, current access policy | Hudson main runtime |
-| Sandbox lifecycle orchestration | Temporal workflow history |
-| Sandbox identity, placement generation, desired state, operation receipts | Sandbox metadata store |
-| Local VM/process observations | Host supervisor; observations are reconciled with durable records |
-| Workspace exports, output artifacts, future snapshots | Artifact storage, referenced by immutable identifiers and digests |
+| Business decisions, approvals, agent progress | External harness; absent from the sandbox database |
+| Sandbox ownership, desired state, operation status, placement generation | PostgreSQL |
+| Actual VM and process observations | Host supervisor, reconciled into durable metadata with observation timestamps |
+| Snapshot manifest and publication status | PostgreSQL, referencing a complete immutable artifact set |
+| Memory, disk, files, and output bytes | Object storage, with local copies used for active execution or caching |
 
-Propose PostgreSQL for sandbox metadata and an object-store interface for artifacts. Temporal owns its own persistence schema. Sandbox code must not read or mutate Temporal's internal tables; application metadata remains separate even if a development installation shares a database server.
+Admit a request by transactionally inserting its operation and updating the relevant desired state. The operation table is also the initial pending-work queue; an in-memory notification may accelerate discovery but cannot be the only delivery mechanism.
 
-Temporal history contains bounded metadata and artifact references. Do not put credentials, full terminal streams, large files, or VM snapshots in workflow payloads. Sensitive artifact contents need access controls, encryption, retention, and deletion policies.
+Controllers claim work with bounded leases, monotonically increasing claim revisions, and conditional database updates. Multiple replicas must not own the same transition concurrently. On controller restart or lease expiry, a new owner first reconciles receipts and host observations, then continues only if safe. Metadata writes and supervisor requests validate the current claim revision as well as the allocation generation, rejecting an old controller even when the VM allocation has not changed.
 
-API admission should transactionally persist an operation and a dispatch-outbox entry. A dispatcher starts or signals a workflow using stable identifiers and retries delivery until acknowledged. This bridges the metadata/Temporal boundary without assuming a distributed transaction. Workflow status projections must be reconstructible and must expose observation timestamps.
+Persist bounded attempt counts, deadlines, next retry times, and terminal errors. Distinguish queued, running, succeeded, failed, cancelled, and unknown outcomes. A lost network response does not establish failure. Requests return a durable operation handle; clients inspect status or reconnect to progress streams without keeping the original HTTP request alive.
 
-## 5. Identities and execution contracts
+Do not store credentials or large streams in operation records. Store artifact references, digests, bounded metadata, and redacted diagnostics. Apply access control, encryption, retention, and deletion policies to both records and artifact contents.
 
-Every operation carries workspace ID, Hudson run ID, sandbox ID, operation ID, request digest, deadline, and trace context. Placement adds host ID and a monotonically increasing generation. Authentication determines ownership; caller-supplied IDs never grant access by themselves.
+## 6. API contract
 
-A logical operation keeps its ID across transport and Temporal retries. Attempts have separate IDs. Reusing an operation ID with a different request digest is a conflict, not a new execution. Receipts must survive VM teardown and remain available for at least the supported retry/reconciliation window.
+Requests are scoped to an authenticated workspace and sandbox. Operations have stable IDs, request digests, deadlines, and trace context. An external correlation ID, such as a Hudson run ID, is optional metadata; it is never required for execution or used as proof of ownership.
 
-The first implementation should define these operations through versioned HTTP/JSON contracts and OpenAPI. Paths and Rust signatures remain to be finalized.
+An operation retains its ID across client retries and controller attempts. Attempts have separate IDs. Reusing an operation ID with a different request digest is a conflict. Receipts survive VM teardown for at least the supported retry window; expired IDs must not silently become new work.
 
-| Operation | Required behavior |
+| Operation | Contract |
 | --- | --- |
-| Create sandbox | Admit an immutable template digest and limits; return the existing allocation for an identical retry |
-| Inspect sandbox | Return desired state, observed state, generation, and freshness |
-| Execute command | Accept executable, argument array, working directory, nonsecret environment, deadline, and output bounds; return a durable operation handle |
-| Inspect command | Return queued/running/terminal/unknown state and result references |
-| Cancel command | Request termination of the process tree; acknowledge completion only when stopping is confirmed |
-| Import/export workspace files | Validate ownership, paths, size, and digest; transfer through staging or bounded streams |
-| Destroy sandbox | Revoke access, stop execution, reclaim resources, and tolerate repeated requests |
+| Create | Accept an immutable template digest and limits; identical retries return the original operation |
+| Execute | Accept executable, argument array, working directory, nonsecret environment, deadline, and output bounds; return an operation handle |
+| Pause | Save guest memory and matching disk state, publish the snapshot, release compute, and report completion only after those stages are confirmed |
+| Resume | Restore a completed snapshot into one authorized allocation and report ready after guest communication is reestablished |
+| Destroy | Revoke sandbox access, stop execution, and reclaim resources; repeated requests are safe |
+| Inspect sandbox/operation | Return desired state, observed state, generation, progress, freshness, and known result references |
+| Cancel operation | Request interruption; report confirmed cancellation only after actual stopping or a safe transition boundary |
+| Import/export files | Validate ownership, paths, sizes, and digests; use staging or bounded streams |
 
-Explicit shell execution may be supported as customer code inside the guest. The host must never build a shell command by interpolating customer input.
+Serialize conflicting lifecycle transitions and workspace-mutating commands initially. Reject execution while pausing, paused, resuming, or destroying. Commands active during pause are frozen with the VM; they are resumed from the snapshot, not submitted again. If the guest's process records cannot be restored consistently, pause must fail explicitly rather than claim resumability.
 
-A command result distinguishes process exit, signal, timeout, cancellation, infrastructure failure, and unknown outcome. A zero exit code does not establish business success. Output includes artifact references and truncation flags so a dropped stream is never mistaken for complete evidence.
+Sandbox lifecycle states include creating, running, pausing, paused, resuming, destroying, destroyed, and error/unknown. Persist the last confirmed state and incomplete transition separately. Retry handling must not infer that a VM is paused, running, or destroyed from desired state alone.
 
-## 6. Temporal integration
+Explicit shell execution is allowed only inside the guest. The host never interpolates customer input into privileged shell commands. Process results distinguish exit code, signal, timeout, cancellation, infrastructure failure, and unknown outcome; a zero exit code does not establish business success.
 
-Start with one sandbox-lifecycle workflow per sandbox. It coordinates allocation, command operations, lease/deadline timers, and destruction. It does not own the agent's planning loop or wait for business approvals on Hudson's behalf. The exact relationship with a future Hudson run workflow is an integration contract, not a second owner of run state.
+## 7. Create and execute flow
 
-Workflow code must remain deterministic. All host RPCs, database operations, artifact transfers, and other external I/O belong in Activities. If model calls are later coordinated by Hudson workflows, they also belong in Activities. Recorded Activity results are reused during workflow replay; retries of incomplete Activities are a separate concern. See [Temporal workflows](https://docs.temporal.io/workflows).
+1. The client chooses an action. Hudson, when it is the client, checks its own business permissions and approvals before making the API request.
+2. The sandbox API authenticates the client, enforces sandbox ownership and resource quotas, and persists an operation.
+3. The controller claims the operation and selects the existing host or reserves capacity for a new sandbox. Initially there is one eligible host.
+4. The supervisor validates the generation, template, and limits; prepares networking and storage; and starts Firecracker through the jailer.
+5. After guest readiness, the supervisor dispatches commands using their stable operation IDs. It records dispatch and acknowledgement separately.
+6. Bounded output and result artifacts are persisted. The controller records the confirmed outcome and the client retrieves it by operation ID.
+7. Explicit destruction or the configured expiry policy triggers cleanup independently of whether the client is still connected.
 
-Use Activities to admit or inspect host operations, wait for bounded command progress, and reconcile or clean up resources. A retried execution Activity uses the existing operation ID and first inspects its receipt. It must not assume it should start a new process.
+The sandbox service continues admitted work if Hudson or its Temporal workers disconnect. A disconnected client does not extend sandbox lifetime. Client-side retries use the existing operation handle rather than starting another command.
 
-Long-running Activities heartbeat bounded progress and operation identifiers, with explicit heartbeat and overall timeouts. Activity heartbeats support retry/cancellation handling; they are not a guest process checkpoint or proof that the old attempt stopped. See [Temporal Activities](https://docs.temporal.io/activities).
+## 8. Pause, release compute, and resume
 
-Serialize workspace-mutating commands in the initial version. Enforce queue bounds, VM idle expiry, command deadlines, and a maximum sandbox lifetime. Use bounded histories and Continue-As-New only at defined boundaries with pending operations and ownership carried forward. Validate this behavior against the selected SDK before implementation.
+**Pause/resume is a core capability, not a later optional feature.** The first complete milestone must prove memory and disk preservation. Raw Firecracker pause only freezes a VM; our API's pause operation additionally saves its state and releases compute.
 
-Workflow cancellation invokes cleanup where possible, but forced termination, service outages, and worker loss may bypass that path. An independent supervisor lease watchdog and periodic reconciler must reclaim abandoned VMs.
+Pause proceeds through explicit stages:
 
-## 7. Command execution flow
+1. Acquire the lifecycle transition, prevent new commands, and quiesce the guest/filesystem as required by the snapshot procedure.
+2. Freeze execution and capture a consistent memory, VM-state, and disk artifact set. The initial implementation can use full snapshots; differential and lazy loading optimizations come later.
+3. Upload and verify the artifacts, then atomically publish the immutable snapshot manifest. Local files alone are not a durable completed snapshot.
+4. Stop the VM and reclaim its compute/network allocation. Mark the sandbox paused only after snapshot publication and resource release are confirmed.
 
-1. Hudson validates the requested action, arguments, workspace access, approval, and remaining budget. It issues narrowly scoped execution authority with an expiry and operation identity.
-2. The sandbox API authenticates Hudson, validates that authority, checks quotas, and persists the operation plus dispatch record.
-3. A Temporal worker requests allocation or locates an existing live sandbox. The initial scheduler targets a single host and reserves resources atomically.
-4. The supervisor verifies template digest, ownership generation, and limits; prepares storage and networking; then starts Firecracker through the jailer.
-5. After guest readiness, the supervisor sends the command to the guest agent. The host keeps a receipt before dispatch and records acknowledgements and observations afterward.
-6. Output is bounded and uploaded to artifact storage. Guest-reported completion becomes an execution receipt, not an authorization decision.
-7. The worker records the outcome in durable metadata and completes its Activity with references. Hudson receives an idempotent result notification or retrieves the operation status.
-8. Idle expiry or explicit destruction revokes access and removes the VM, networking, and writable storage. Retained artifacts follow their separate retention policy.
+A failed upload leaves the pause operation incomplete; do not destroy the only viable state and report success. Track whether the old VM is frozen, runnable, or lost so recovery can retry, safely roll back, or report an unknown outcome. Cleanup after a published snapshot is retryable without repeating the snapshot unnecessarily.
 
-If a receipt proves completion, retries reuse it. If the receipt only proves dispatch, recovery inspects the existing execution. No database write can atomically cover an arbitrary external side effect performed by guest code.
+Resume reserves capacity on a compatible host, validates the manifest, restores the disk and memory, reestablishes guest communication, and applies current sandbox access policy before allowing continued execution. The previous allocation must be stopped or fenced before the restored one runs. Restoring a snapshot is not permission to clone a workload into multiple active copies.
 
-## 8. Failure and retry semantics
+Persist sandbox and command wall-clock deadlines outside the snapshot. Pausing does not automatically extend them; expired commands must be terminated before restored customer execution is released. Separate paused-snapshot retention from active-compute and idle limits, with explicit defaults chosen during implementation.
+
+Publish a tested compatibility matrix for CPU architecture/model, guest kernel, agent, and Firecracker versions. Reconnect protocols and refresh guest capabilities after restore. Old network connections and credentials cannot be assumed valid. See [Firecracker snapshot support](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md).
+
+A controller or host crash does not automatically preserve work since the last published snapshot. Restoring an older snapshot can repeat external effects; return that uncertainty and require an explicit recovery decision when replay would be unsafe. Ordinary resume uses the completed pause snapshot. It must not silently fall back to a filesystem-only restart and claim memory continuation.
+
+Destroy prevents future resume and removes active allocations. Its receipt states which artifacts were deleted or retained under policy; retention and byte-level garbage collection are tracked separately from compute release.
+
+## 9. Controllers, limits, and recovery
+
+The service needs focused loops for pending operations, host health/capacity, expired allocations, snapshot progress, and orphan cleanup. It does not need a general workflow framework. PostgreSQL is their durable source of intent; the host supervisor supplies observations and enforces local deadlines.
 
 | Failure | Required handling |
 | --- | --- |
-| API response lost after admission | Retry with the same operation ID and return the admitted operation |
-| Workflow dispatch acknowledgement lost | Outbox redelivery uses the same workflow and operation identities |
-| Worker dies while a VM command runs | A replacement inspects the supervisor/receipt and reconnects; it does not blindly launch another command |
-| Command finishes but result acknowledgement is lost | Reuse a durable terminal receipt; otherwise reconcile or return unknown |
-| Host becomes unreachable | Mark execution uncertain; fence/revoke the old allocation before replacement execution |
-| Host is permanently lost | Return known receipts; treat unrecorded effects as unknown; restore only persisted workspace data |
-| Artifact upload fails | Retain bounded local data where possible and retry upload; do not claim artifacts are durable |
-| Approval or permission expires | Reject new operations; revoke relevant live capability access and cancel affected work according to policy |
-| Cancellation times out | Report cancellation requested/unknown and escalate to VM termination; do not report confirmed cancellation prematurely |
-| Cleanup partially fails | Persist outstanding resources and retry through an independent reconciler |
+| API reply lost after admission | Return the existing operation on an identical retry |
+| Controller dies after host dispatch | Reconcile the same operation and allocation; do not blindly start another process |
+| Command finishes but receipt is lost | Inspect surviving state; return unknown if completion cannot be established |
+| Host unreachable | Preserve uncertainty and fence the old allocation before any replacement execution |
+| Pause upload fails | Keep the operation incomplete and recover from the last confirmed stage |
+| Resume fails before readiness | Reconcile or tear down the partial allocation; preserve the published snapshot |
+| Client cancels during snapshot publication | Resolve the publication/cleanup boundary before reporting cancellation; never expose a partial snapshot as ready |
+| Access revoked | Reject new operations and apply current sandbox policy; the external harness handles business-level revocation |
+| Cleanup partially fails | Record remaining resources and let the reconciler retry |
 
-Temporal retry policies should distinguish transient infrastructure failures from invalid requests, permission denials, quota exhaustion, and unknown external outcomes. Automatic retries are allowed only when the operation's semantics make them safe. Arbitrary customer commands are not assumed idempotent.
+Allocation generations and expiring leases prevent stale commands and identify current owners. A partitioned host must stop its VMs when its local lease watchdog expires. A generation change in PostgreSQL alone does not stop execution on a disconnected machine. Replacement requires confirmed termination, infrastructure fencing, or a validated lease-expiry mechanism.
 
-Use allocation generations and expiring leases to reject stale supervisor requests and tool-gateway access. A partitioned host must stop its VM when its local lease watchdog expires. Before launching a replacement, establish that the previous allocation cannot continue: positive termination, infrastructure fencing, or a validated lease-expiry mechanism. A metadata generation alone cannot stop CPU execution on an isolated host.
+Enforce CPU, RAM, disk, output, execution-time, and concurrency limits outside guest control. Keep a bounded number of pending operations per workspace and reject or queue capacity shortages explicitly. Expiry policy may pause or destroy a sandbox, but failure to save state must be visible; any hard-limit forced termination must be reported as such.
 
-Fencing cannot undo an external action already completed. Financial writes, messages, and other business effects must pass through Hudson's authorized connectors with idempotency or reconciliation appropriate to the destination. This system makes no exactly-once promise for arbitrary external actions.
+Automatic retries are appropriate only when receipts and operation semantics make them safe. Arbitrary commands can have external side effects, so this service does not promise exactly-once execution. A caller timeout is not cancellation, and a requested cancellation is not proof that execution stopped.
 
-## 9. Security boundary
+## 10. Security and harness integration
 
-Treat customer code, packages, custom harnesses, and guest output as untrusted. Keep the sandbox API, Temporal, supervisor interfaces, databases, and credential infrastructure unreachable from guest networks.
+The sandbox authenticates requests, authorizes access to sandbox resources, and enforces execution policy. The harness decides business permissions, approval rules, and which tools its agent may invoke. Neither role is delegated to model output.
 
-The implementation must provide:
+Use Firecracker jailer, supported seccomp filters, per-VM cgroups/namespaces, restricted host sockets, immutable verified templates, and a private writable filesystem per sandbox. Harden host setup using [Firecracker's production guidance](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md).
 
-- Firecracker's jailer and supported seccomp configuration, per-VM cgroups and namespaces, restricted host API sockets, and least-privilege host services.
-- Immutable, verified guest templates; a private writable filesystem per sandbox; explicit vCPU, RAM, disk, process, output, and wall-time limits.
-- Deny-by-default egress enforced outside the guest. Approved destinations flow through host-controlled routing/proxies; block direct bypasses, cloud metadata endpoints, and control-plane networks. Account for DNS resolution changes, IPv6, redirects, and alternate protocols.
-- Authenticated tenant-scoped APIs and host control channels. A sandbox cannot select another tenant's files, receipts, artifacts, or VM by supplying its identifiers.
-- Archive/path traversal defenses and symlink-safe file handling. Host filesystem paths and privileged device handles are never customer-controlled.
-- Bounded parsing, output backpressure, process-tree termination, orphan reclamation, and atomic resource reservation before dispatch.
+Enforce deny-by-default egress through host-controlled networking and filtering. Block cloud metadata, platform databases, supervisor control channels, and other tenants. Approved destinations must not permit bypasses through DNS changes, IPv6, redirects, or alternate protocols. Validate this with adversarial network tests.
 
-Firecracker provides the virtualization boundary, but host setup and traffic filtering remain operator responsibilities. Follow its [production host guidance](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md) and validate the configuration with isolation tests.
+Keep privileged file operations symlink-safe and reject archive/path traversal. Bound message sizes, process output, and uploads. Guest root must not imply access to host paths, devices, orchestration credentials, or another sandbox.
 
-Business credentials stay in Hudson's trusted connector infrastructure. Guest code receives only a short-lived capability to request specific operations through a gateway. The gateway rechecks current policy, approval, arguments, and allocation generation on each request. Do not give guests broad provider keys or rely on domain allowlists to enforce business permissions.
+Snapshots contain customer memory and may contain sensitive data. Encrypt and restrict them to their owner, verify integrity, and enforce retention/deletion. Keep tenant data out of reusable base templates. Revalidate current sandbox access on resume rather than trusting credentials restored from memory.
 
-Customer programs must be unable to access the orchestration database, Temporal service, host filesystem, or other guests even if they gain root inside their own VM. Guest-side resource limits improve behavior, but hard host limits remain necessary when the guest is compromised.
-
-## 10. Durability, workspaces, and snapshots
-
-Three forms of state remain distinct:
-
-| State | Recovery behavior |
-| --- | --- |
-| Temporal workflow history | Recovers coordination decisions and recorded results |
-| Workspace artifacts | Restore explicitly persisted files into a fresh environment |
-| Firecracker snapshots | May later restore guest memory, machine state, and matching disk state |
-
-The first release should boot a known image and persist explicit workspace exports. It does not promise recovery of arbitrary in-memory customer programs. Unexported data on a lost host may be lost; API results must identify the latest durable workspace checkpoint.
-
-When a run waits for approval, Hudson persists its own run state. A sandbox may remain alive for a bounded idle period, but long waits release compute after any requested workspace export. Resuming creates an environment from persisted files and revalidates permissions; it does not require a VM to run for the duration of the wait.
-
-Snapshot support is a later optimization. Before enabling it, define disk/memory consistency, artifact integrity, supported CPU/kernel/Firecracker combinations, retention, and restore validation. Reestablish guest communication and current capability authority before permitting work after restoration. Templates must contain no tenant secrets; tenant snapshots remain private to that workload.
-
-Restored network connections and external credentials cannot be assumed valid. Never fork an active side-effecting workload into multiple runnable copies. Snapshot publication must reference a complete verified set of artifacts. See [Firecracker snapshot support and limitations](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md).
+For Hudson integration, business credentials remain in the harness's trusted connector infrastructure. Customer code may call an externally configured, scoped tool gateway if network policy permits it. That gateway belongs to Hudson and performs business checks; it is not required to operate this standalone sandbox service. Temporal remains outside the sandbox tool's dependencies and trust boundary.
 
 ## 11. Suggested Rust workspace
 
 ```text
 crates/
-  sandbox-protocol/     # Versioned request, event, receipt, and error types
-  sandbox-api/          # Authenticated admission, status, and dispatch outbox
-  sandbox-workflows/    # Deterministic Temporal lifecycle definitions
-  sandbox-worker/       # Activities, host clients, and reconciliation
-  sandbox-supervisor/   # Host resources, jailer, Firecracker, and leases
-  sandbox-guest/        # Commands, file transfer, and bounded guest reporting
-  sandbox-store/        # Metadata transactions and artifact interfaces
+  sandbox-protocol/     # Request, event, receipt, and error types
+  sandbox-api/          # Authentication, admission, status, and OpenAPI
+  sandbox-controller/   # Operation claims, placement, lifecycle reconciliation
+  sandbox-supervisor/   # Host resources, jailer, Firecracker, snapshots, leases
+  sandbox-guest/        # Commands, files, and bounded guest reporting
+  sandbox-store/        # PostgreSQL transactions and object-storage interface
   sandbox-cli/          # Development and operator client
 images/                 # Guest image and kernel build definitions
-deploy/                 # Local control plane and Linux host setup
+deploy/                 # Kubernetes services and dedicated Linux host setup
 tests/                  # Integration, recovery, isolation, and protocol tests
 ```
 
-This is a starting layout. Introduce crates when compilation or trust boundaries justify them; avoid a service or abstraction for every future capability. Keep privileged host setup separate from general API request handling.
+There are no sandbox Temporal workers, workflow crates, or Temporal service manifests. Introduce crate boundaries only where dependency, testing, or privilege separation benefits justify them.
 
-## 12. Development and deployment
+## 12. Development and operations
 
-Start with one Linux host exposing KVM and one supported CPU architecture. A local control-plane stack should provide Temporal, sandbox metadata, and artifact storage. Use a remote Linux host for real VM execution when developing on macOS; do not silently substitute an unrestricted local process and label it equivalent isolation.
+Begin with one Linux compute host exposing KVM and one supported architecture. A standalone development setup needs the API/controller, PostgreSQL, object storage, and that host. It must run without the Hudson harness or a Temporal service. Kubernetes is the intended platform deployment, not a requirement for every developer unit test.
 
-A self-hosted installation should include the real single-host Firecracker path and the same API contracts. Local storage implementations may simplify development, with their durability limits documented. Managed-cloud deployment can later add multiple hosts, placement, draining, capacity management, and dedicated host pools.
+Use a remote Linux host for real VM tests from macOS. An unrestricted local process is not a substitute for the isolation boundary. Publish reproducible guest image builds with immutable digests and compatibility metadata.
 
-Guest images are built separately from command execution. Publish immutable digests with kernel, agent, architecture, and Firecracker compatibility metadata. Patch both host and guest dependencies; promote tested versions gradually and drain incompatible hosts. Workflow upgrades require replay compatibility tests independently of VM image upgrades.
+Instrument operations through OpenTelemetry and expose metrics for Prometheus/Grafana. Record queue time, VM readiness, snapshot/upload duration, restore duration, resource usage, lease expiry, uncertain outcomes, and leaked resources. Correlate by workspace, sandbox, operation, attempt, host, and optional caller correlation ID. Redact secrets and keep terminal output in bounded artifacts.
 
-## 13. Observability and validation
+Drain hosts before maintenance and prevent new placements while draining. Verify resumable snapshots before removing hosts that hold running workloads; preserve explicit failure outcomes for forced termination. Database migrations, API/controller upgrades, host supervisor upgrades, and guest image changes need independent compatibility and rollback plans. Kubernetes restarts do not replace those plans.
 
-Link each event to workspace, run, sandbox, operation, attempt, host, and generation. Record admission, allocation, command start/end, timeouts, policy denial, uncertain outcomes, artifact persistence, and cleanup. Keep public operational evidence separate from private model reasoning and redact secrets before persistence.
+## 13. Validation and delivery
 
-Measure queue delay, VM readiness, command runtime, artifact transfer, peak resources, expired leases, uncertain outcomes, and leaked allocations. A running worker, a responding guest, and a completed command are different signals. No latency, density, or availability target is claimed until measured on a named workload and host configuration.
+The first end-to-end demonstration is **create → execute → snapshot → release compute → restore → destroy** using only the sandbox API.
 
-Before declaring the first version usable, demonstrate:
+Before calling the first version usable, demonstrate:
 
-1. A Python or JavaScript client creates a VM, executes code, retrieves an artifact, and destroys the environment through the API.
-2. Repeated create/execute requests with the same IDs do not duplicate known work; conflicting payloads are rejected.
-3. Worker restart during execution recovers the same operation and a completed receipt is reused.
-4. Injected host loss and lost acknowledgements produce explicit unknown outcomes rather than unsafe retries.
-5. Cross-tenant reads, writes, network access, metadata access, and control-plane access are blocked, including from a privileged guest process.
-6. CPU/memory/disk/output limits, deadlines, process-tree cancellation, lease expiry, and cleanup have observable outcomes.
-7. Hudson revocation prevents later privileged tool calls and restoration does not reinstate old authority.
-8. Temporal history replay survives a compatible worker upgrade; output streams and secrets do not enter workflow history.
-9. Workspace exports survive VM teardown, while incomplete exports are reported honestly.
-10. Restarting supervisors and reconcilers reclaims orphaned resources without destroying live authorized allocations.
+1. A Python or JavaScript client creates a sandbox, runs code, and retrieves an artifact without Hudson or Temporal running.
+2. A process with changing memory and files survives a completed pause and resumes from the saved state after compute is released.
+3. Partial uploads and interrupted pause/resume transitions never produce a false ready snapshot or duplicate live allocation.
+4. Repeated requests reuse known operations; conflicting payloads under the same ID are rejected.
+5. Controller restart during a command recovers its receipt or exposes an unknown outcome without unsafe retries.
+6. Cross-tenant and control-plane access are blocked, including from a privileged guest process.
+7. Resource limits, absolute deadlines across pause/resume, cancellation, and lease expiry have verified effects.
+8. Revoked sandbox access stays revoked after restore, and snapshots/artifacts enforce owner checks.
+9. Destroy releases resources, prevents later resume, and reports retained or pending-deletion artifacts accurately.
+10. Restarted supervisors and reconcilers reclaim orphans without destroying live authorized allocations.
 
-## 14. Delivery phases and unresolved choices
-
-| Phase | Deliverable and exit condition |
+| Phase | Exit condition |
 | --- | --- |
-| 1: SDK and host proof | Pinned Rust/Temporal integration and one jailed Firecracker VM on a supported Linux host; command, deadline, and teardown demonstrated |
-| 2: Durable execution | API admission, outbox, operation receipts, artifact transfer, worker recovery, and explicit unknown outcomes |
-| 3: Hudson integration | Scoped authorization, tool gateway, quotas, revocation, run-linked events, and the isolation/recovery tests above |
-| 4: Production operations | Multiple hosts, fencing under partitions, draining, deployment automation, retention, recovery procedures, and load measurements |
-| 5: Startup and persistence optimization | Benchmarked templates, workspace caching, and validated snapshot/resume behavior |
+| 1: Single-host execution | Rust API/supervisor with one jailed VM, command execution, limits, files, and teardown |
+| 2: Core pause/resume | Complete memory/disk snapshot, durable publication, compute release, and validated restore on the supported host configuration |
+| 3: Recovery and isolation | PostgreSQL-backed controllers, request deduplication, restart/failure tests, fencing, and the validation cases above |
+| 4: Deployment and integration | Kubernetes service manifests, dedicated host deployment, monitoring, and Hudson calling the ordinary APIs from its own tasks |
+| 5: Multiple hosts and optimization | Capacity-aware placement, cross-host compatible restore, draining, provider autoscaling, and measured caching/snapshot optimizations |
 
-Open details include exact dependency versions, PostgreSQL schema, artifact backend, host provider and architecture, identity/capability format, lease timing and fencing mechanism, API endpoints, guest protocol, and concrete resource defaults. Resolve these through focused implementation decisions and tests.
+Open details are exact versions, database schema, object-store vendor, API paths, guest/host transport, supported host configuration, lease/fencing mechanism, and resource/retention defaults. No latency, density, or availability claim is made until measured on explicit workloads.
 
-The initial goal is one safe, recoverable command execution flow. VM pooling, transparent live migration, arbitrary process continuation after host loss, and multi-region placement are outside the first version.
+Live migration, transparent recovery of unsaved memory after host loss, one Kubernetes pod per sandbox, and a custom hypervisor are outside the initial scope. Redis, ClickHouse, a dashboard, and more elaborate scheduling remain deferred.
