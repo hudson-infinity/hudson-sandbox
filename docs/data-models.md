@@ -4,7 +4,7 @@ Status: proposed initial PostgreSQL design. No migrations or runtime models are 
 
 Start with **six tables**. A project owns sandboxes; operations request actions; allocations reserve compute on hosts; snapshots preserve sandbox state. Hudson is a client of this service, and Temporal stays in the harness.
 
-This is the selected model, replacing the earlier ten-table proposal. See [implementation](implementation.md) for the runtime flow and [identities and retries](identity-and-resources.md) for the API contract.
+This is the selected model, replacing the earlier ten-table proposal. See [architecture and data flow](artitecture.md) for how these records connect to the running services, [implementation](implementation.md) for runtime details, and [identities and retries](identity-and-resources.md) for the API contract.
 
 ## Relationships
 

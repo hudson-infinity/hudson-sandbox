@@ -8,7 +8,9 @@ The planned sandbox tool for [Hudson](https://github.com/hudson-infinity/hudson)
 
 The selected stack is Rust, HTTP/JSON with OpenAPI, Firecracker and Linux KVM, PostgreSQL, S3-compatible object storage, and OpenTelemetry with Prometheus/Grafana. Kubernetes deploys the API and controllers; dedicated Linux hosts run the microVMs through our supervisor. Individual sandboxes are not Kubernetes pods in the initial design, so sandbox placement and resource accounting remain our controller's responsibility.
 
-Start with [the implementation design](docs/implementation.md) for component boundaries, execution contracts, recovery, security, and phased delivery.
+Start with [architecture and data flow](docs/artitecture.md) for the system diagram and create, execute, pause, and resume examples.
+
+See [the implementation design](docs/implementation.md) for component boundaries, execution contracts, recovery, security, and phased delivery.
 
 See [data models](docs/data-models.md) for the six tables and their relationships: projects, sandboxes, operations, hosts, allocations, and snapshots.
 

@@ -1,0 +1,125 @@
+# Hudson Sandbox architecture and data flow
+
+Status: proposed architecture, not an implemented or tested runtime. Start with one compute host; the same model supports placement across multiple hosts later.
+
+**Hudson asks for a sandbox. Our API records the request. Our controller reserves space on a server. The server's supervisor starts the sandbox using Firecracker.**
+
+Hudson is the harness; this service is a tool. Any Temporal workflows stay in Hudson. The sandbox service manages its own operations using PostgreSQL and focused background controllers.
+
+## The whole system
+
+Read the numbered arrows from the client down to the sandbox. The arrows back carry results; the storage arrows carry large files.
+
+```mermaid
+flowchart TD
+    Client["Hudson harness or another client"]
+
+    subgraph Platform["Platform services on Kubernetes"]
+        API["Rust API: authorize requests and return status"]
+        Controller["Rust controller: claim work, choose hosts, manage lifecycle"]
+    end
+
+    DB[("PostgreSQL: projects, sandboxes, operations,<br/>hosts, allocations, snapshots")]
+    Store[("Object storage: saved memory, disk,<br/>VM state, and command outputs")]
+
+    subgraph Host["Dedicated Linux host with KVM"]
+        Supervisor["Rust supervisor: enforce reservations and manage VMs"]
+        subgraph VM["Firecracker microVM: one running sandbox"]
+            Guest["Guest agent and customer processes"]
+        end
+    end
+
+    Client -->|"1. Create, execute, pause, resume, destroy"| API
+    API -->|"2. Persist operation and requested state"| DB
+    DB -->|"3. Read pending operations and capacity"| Controller
+    Controller -->|"4. Claim work and reserve allocation"| DB
+    Controller -->|"5. Send command to selected host"| Supervisor
+    Supervisor -->|"6. Start, stop, or control the VM"| VM
+    Supervisor -->|"Commands and file transfers"| Guest
+    Guest -->|"Output and execution receipts"| Supervisor
+    Supervisor -->|"Upload snapshots and outputs"| Store
+    Store -->|"Read snapshots for restore"| Supervisor
+    Supervisor -->|"Health, receipts, and storage references"| Controller
+    Controller -->|"7. Record results and observed state"| DB
+    DB -->|"8. Read authorized status and output references"| API
+    Store -->|"Read authorized output bytes"| API
+    API -->|"Operation handle, status, and outputs"| Client
+```
+
+The controller reads and claims work from PostgreSQL; the database does not call the controller. The API returns an operation handle after admission, so the caller does not need to keep a connection open until the work finishes. It can poll that operation for progress and results.
+
+Kubernetes runs the API and controller. Individual sandboxes are managed by our supervisor on dedicated compute hosts; they are not Kubernetes pods in this design. PostgreSQL and object storage are logical dependencies here; their hosting provider is not selected yet.
+
+## Where the six models fit
+
+| Model | Plain meaning | Who uses it |
+| --- | --- | --- |
+| `projects` | Who owns the sandbox and what limits apply | API checks access; controller enforces project quotas |
+| `sandboxes` | The lasting environment identity and its current state | API and controller track it through its whole lifetime |
+| `operations` | What the caller asked us to do and what happened | API admits requests; controller claims work and records receipts/results |
+| `hosts` | Which servers exist, their capacity, and their health | Controller chooses eligible hosts using supervisor observations |
+| `allocations` | Which sandbox has reserved how much space on which host | Controller reserves capacity; supervisor enforces it and confirms release |
+| `snapshots` | Where a sandbox's saved state lives | Controller publishes verified metadata; supervisor uploads or restores bytes |
+
+A project owns a sandbox. That sandbox has operations, historical allocations, and snapshots. Each allocation points to one host. Each snapshot points to the allocation it was captured from and the pause operation that created it.
+
+## Host versus allocation
+
+**A host is a server. An allocation is a reservation on that server.** The allocation record is not another running service or another VM around the sandbox.
+
+```text
+Host 1: 16 CPUs and 64 GiB schedulable RAM
+├── Allocation A → Sandbox Alice: 2 CPUs and 4 GiB
+├── Allocation B → Sandbox Bob:   4 CPUs and 8 GiB
+└── Available:                   10 CPUs and 52 GiB
+```
+
+These example capacities already exclude resources reserved for the host OS and supervisor. Creating a sandbox that needs 2 CPUs and 4 GiB can use Host 1. If Host 1 lacks room, the controller looks for another healthy, compatible host. Initially there is only one provisioned host; insufficient capacity is queued within a deadline or rejected explicitly. Adding machines automatically is a later provider integration.
+
+The controller checks capacity and writes the allocation in a transaction before asking the supervisor to start the VM. That prevents two concurrent requests from reserving the same remaining capacity. An unreachable host's reservations remain counted until termination or fencing is confirmed; a missed heartbeat does not mean its VMs stopped.
+
+## Create and execute: request to result
+
+1. **Client → API:** request a sandbox with an allowed image digest, resource limits, and an idempotency key. Authentication determines its project.
+2. **API → PostgreSQL:** validate access and request limits, then create the sandbox and create-operation records in one transaction. Return their IDs. A retry with the same key and payload returns the same operation.
+3. **Controller → PostgreSQL:** claim the operation, select an eligible host, recheck quotas/capacity, and reserve an allocation with a new sandbox generation.
+4. **Controller → supervisor:** send the allocation, image digest, limits, operation identity, and ownership revisions. The supervisor rejects stale ownership, prepares networking/storage, verifies the image, and starts Firecracker through the jailer.
+5. **Supervisor → controller → PostgreSQL:** confirm guest readiness. The controller records the running sandbox and successful create operation. A start request alone is not proof of readiness.
+6. **Client → API:** request execution. The API creates an execute operation. The controller dispatches it to the sandbox's existing allocation; executing a command does not allocate another VM.
+7. **Guest → supervisor → storage/controller:** run the command, capture bounded output, upload stored outputs, and report receipts. The controller persists result metadata and output references on the operation.
+8. **Client → API:** inspect the operation and retrieve authorized output bytes by operation and output name. Large output bytes remain in object storage, not database rows.
+
+The public API is HTTP/JSON. Internal controller-to-supervisor transport remains an implementation decision; the host-to-guest channel is initially proposed as vsock. Customer code runs inside the guest, and the guest receives no PostgreSQL or object-storage credentials from this design.
+
+## Pause: save first, then release compute
+
+1. The API records a pause operation. The controller serializes the transition and prevents new command dispatch for that sandbox.
+2. The controller reserves a snapshot ID for this pause operation. The supervisor quiesces and freezes the VM, then captures matching memory, disk, and VM state.
+3. The supervisor uploads the components to private object storage and returns verified object references and digests. Incomplete uploads cannot be published as resumable snapshots.
+4. The controller verifies the complete manifest and transactionally publishes its snapshot metadata and the sandbox's current snapshot reference in PostgreSQL.
+5. After publication, the supervisor stops the VM and reclaims its compute/network resources. The controller records confirmed release of the allocation and marks the sandbox paused.
+
+The sandbox row and its ID remain. Its old allocation becomes released, so the host's capacity can serve another sandbox. The snapshot's bytes remain in object storage. Freezing Firecracker alone does not release compute.
+
+## Resume: same sandbox, new reservation
+
+1. The API records a resume operation and pins the sandbox's current published pause snapshot. It does not choose an arbitrary older snapshot.
+2. The controller confirms the previous VM cannot still execute, chooses a compatible host with space, and creates a new allocation ID and increasing generation.
+3. The supervisor reads the verified snapshot from object storage, restores the disk and memory, and reestablishes guest communication.
+4. Current access policy and original execution deadlines are applied before customer execution continues. The controller then records readiness and successful resume.
+
+```text
+Before pause: Sandbox S → Allocation A → Host 1
+Paused:       Sandbox S → Snapshot Q in object storage; no live allocation
+After resume: Sandbox S → Allocation B → Host 1 or another compatible host
+```
+
+An already-running script resumes under its original execute-operation ID. We do not submit it again. A host crash does not guarantee recovery of work since the last snapshot, and the service never silently restores old state that could repeat external side effects.
+
+## Destroy and recovery
+
+Destroy records an operation, prevents new execution/resume, and stops the VM if one exists. Only confirmed release makes its capacity available again. The sandbox becomes a permanent tombstone; snapshot/output cleanup follows retention policy and is tracked independently of compute release.
+
+If the API or controller restarts, pending operations and reservations remain in PostgreSQL. A replacement controller acquires a new claim and reconciles supervisor receipts before continuing. Host supervisors enforce local leases and deadlines. Unknown execution outcomes are reported and investigated through reconciliation rather than blindly rerunning customer commands.
+
+For the full fields and database constraints, see [data models](data-models.md). For retry keys and stable IDs, see [identities and resources](identity-and-resources.md). For component implementation, deployment, and validation details, see [implementation](implementation.md).
