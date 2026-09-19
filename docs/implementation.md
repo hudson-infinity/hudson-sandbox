@@ -98,13 +98,15 @@ Do not store credentials or large streams in operation records. Store artifact r
 
 ## 6. API contract
 
-Requests are scoped to an authenticated workspace and sandbox. Operations have stable IDs, request digests, deadlines, and trace context. An external correlation ID, such as a Hudson run ID, is optional metadata; it is never required for execution or used as proof of ownership.
+Requests are scoped to an authenticated workspace and sandbox. The [identity and resource design](identity-and-resources.md) defines prefixed UUIDv7 IDs, PostgreSQL relationships, retry semantics, and storage keys. The sandbox ID survives pause/resume; each new VM allocation receives a separate identity and increasing generation.
 
-An operation retains its ID across client retries and controller attempts. Attempts have separate IDs. Reusing an operation ID with a different request digest is a conflict. Receipts survive VM teardown for at least the supported retry window; expired IDs must not silently become new work.
+The service generates operation IDs. Clients supply an `Idempotency-Key` on mutating requests so a lost first response can be retried without knowing the operation ID. A matching key and request digest in the authenticated workspace returns the existing operation; a changed request is a conflict. Controller attempts use `(operation_id, attempt_number)` and keep the same logical operation ID. Compact deduplication records survive result expiry and destruction, so an expired response cannot silently turn into new execution.
+
+An external correlation ID, such as a Hudson run ID, is optional metadata; it is never required for execution or used as proof of ownership. Authentication, not an ID prefix or guessed object key, determines access.
 
 | Operation | Contract |
 | --- | --- |
-| Create | Accept an immutable template digest and limits; identical retries return the original operation |
+| Create | Accept an authorized immutable image version and limits; pin its template digest at admission; identical retries return the original operation |
 | Execute | Accept executable, argument array, working directory, nonsecret environment, deadline, and output bounds; return an operation handle |
 | Pause | Save guest memory and matching disk state, publish the snapshot, release compute, and report completion only after those stages are confirmed |
 | Resume | Restore a completed snapshot into one authorized allocation and report ready after guest communication is reestablished |
@@ -129,7 +131,7 @@ Explicit shell execution is allowed only inside the guest. The host never interp
 6. Bounded output and result artifacts are persisted. The controller records the confirmed outcome and the client retrieves it by operation ID.
 7. Explicit destruction or the configured expiry policy triggers cleanup independently of whether the client is still connected.
 
-The sandbox service continues admitted work if Hudson or its Temporal workers disconnect. A disconnected client does not extend sandbox lifetime. Client-side retries use the existing operation handle rather than starting another command.
+The sandbox service continues admitted work if Hudson or its Temporal workers disconnect. A disconnected client does not extend sandbox lifetime. Clients poll an existing operation handle or retry the original mutation with the same idempotency key, including when the first response was lost.
 
 ## 8. Pause, release compute, and resume
 
