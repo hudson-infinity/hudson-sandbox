@@ -4,7 +4,7 @@
 
 Hudson Sandbox is a project from **Hudson Labs** building isolated Linux environments for AI agents. Give an agent a place to run code and work with files, save its running environment when work pauses, and resume it later.
 
-**Status: design stage.** Architecture and contracts are documented; the runtime, CLI, management UI, and installer are not implemented yet. There are no validated isolation or performance guarantees, and no working quickstart to run today.
+**Status: design stage.** Architecture and contracts are documented; the runtime, SDKs, CLI, management UI, and installer are not implemented yet. There are no validated isolation or performance guarantees, and no working quickstart to run today.
 
 ## What we are building
 
@@ -22,6 +22,18 @@ Your agent or harness → Sandbox API → Controller → Firecracker microVM
 [Hudson](https://github.com/hudson-infinity/hudson) is the agent harness. Hudson Sandbox supplies the execution environment and works with other harnesses too. Agent workflows and Temporal stay with the caller. Authentication is required everywhere, including local development.
 
 The selected stack is **Rust, Firecracker/Linux KVM, PostgreSQL, and S3-compatible object storage**, with HTTP/JSON APIs. We start with one Linux compute host; Kubernetes deployment and multiple hosts follow a verified lifecycle.
+
+## Ways to use it
+
+The **HTTP API** is the foundation. Planned **SDKs** provide convenient language functions, the **CLI** serves people, scripts, and agents with shell access, and the **management UI** serves Project users and Admins. Each uses the API; sandbox execution stays on the server.
+
+```text
+Application → SDK ──┐
+Agent/human → CLI ──┼──→ Sandbox API → Controller → Firecracker
+Browser UI ────────┘
+```
+
+Output streaming and file transfers are API capabilities. We are not adding MCP for now. See [client interfaces](docs/architecture.md#client-interfaces-and-agent-integration) for the agent flow and [client behavior](docs/api-contract.md#sdk-and-cli-behavior) for retries and results. These interfaces are planned, not available packages or commands yet.
 
 ## Follow the build
 

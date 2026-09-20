@@ -21,6 +21,35 @@ Hudson may wrap sandbox API calls in Temporal Activities in its own repository. 
 
 The parent context is Hudson's [product goals](https://github.com/hudson-infinity/hudson/blob/main/docs/goals.md) and [Rust decision](https://github.com/hudson-infinity/hudson/blob/main/docs/implementation-decisions/0001-rust.md). Those repositories are context, not dependencies for operating a self-hosted sandbox service.
 
+## Client interfaces and agent integration
+
+The service has four planned ways to use it. The HTTP API is the common boundary; SDKs, the CLI, and the management UI are clients of that boundary.
+
+| Interface | Intended user | Responsibility |
+| --- | --- | --- |
+| HTTP API | Any application or harness | Authenticated lifecycle, execution, status, output, and file requests |
+| SDKs | Application developers | Language-friendly functions and typed results over the HTTP API; initial languages remain undecided |
+| CLI | Humans, scripts, and agents with shell access | Parse commands, authenticate API requests, and present readable or structured results |
+| Management UI | Project users and installation Admins | Browser views and actions through session-authenticated API routes |
+
+```text
+Custom harness ───────────────┐
+Application → SDK ────────────┤
+Agent shell tool → CLI ───────┼──→ Sandbox API → Controller → Host supervisor → microVM
+Human terminal → CLI ────────┤
+Browser → Management UI ─────┘
+```
+
+All clients share server-side permission, quota, and lifecycle enforcement. Backend/CLI requests use the applicable bearer credential; browser requests use the session boundary in [auth design](auth-design.md#api-and-browser-boundaries). They need not use identical route prefixes or credential types to reach the same lifecycle services. None of these client interfaces manages Firecracker directly or owns a separate scheduler. Output streaming and file upload/download are API capabilities, not additional integration layers.
+
+For a custom harness such as Hudson, implement a harness tool that calls the API directly or through an SDK. The harness holds the project credential and returns concise operation results to its agent. No Hudson-specific identity service or Temporal dependency is added here.
+
+For an agent with shell access, the integration is **agent shell tool → `hudson-sandbox` CLI → API**. Claude Code is one example: it can run commands and consume project instructions, as described in its [official overview](https://code.claude.com/docs/en/overview). Our planned integration installs the CLI in the agent's execution environment, configures the service URL and project credential, and provides short instructions for using it. The API and sandbox compute may be remote from that CLI.
+
+Installing the CLI does not redirect the harness's built-in file edits or shell commands into our sandbox. The agent must explicitly use the CLI for remote execution and file transfers. Instructions help it choose the tool; they do not enforce isolation of other harness tools. A caller that needs all execution confined to our sandbox must enforce that through its harness configuration. A chat client with no custom-tool or shell integration cannot use the service merely because an HTTP endpoint exists.
+
+**No MCP server is planned for the current scope.** We will deliver API-based integrations and the CLI first. This decision avoids an additional protocol adapter; it does not claim that CLI instructions or command output consume no agent context. The initial SDK languages, package distribution, and exact CLI syntax remain implementation decisions. [API contract](api-contract.md#sdk-and-cli-behavior) owns client request/result behavior, and [roadmap](roadmap.md) owns delivery sequencing.
+
 ## System and data flow
 
 ```mermaid
@@ -128,7 +157,7 @@ crates/
   sandbox-supervisor/   # Host resources, jailer, Firecracker, snapshots, leases
   sandbox-guest/        # Commands, files, and bounded guest reporting
   sandbox-store/        # PostgreSQL transactions and object-storage interface
-  sandbox-cli/          # Development and operator client
+  sandbox-cli/          # HTTP API client for humans, scripts, and agent shell tools
 images/                 # Guest image and kernel build definitions
 deploy/                 # Kubernetes services and dedicated Linux host setup
 tests/                  # Integration, recovery, isolation, and protocol tests
