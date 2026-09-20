@@ -1,6 +1,6 @@
 # Roadmap and delivery gates
 
-Status: all milestones planned. Only documentation exists; there are no deployed services, working setup commands, migrations, or executable validation results.
+Status: all milestones planned. The runtime is design only. Contribution tooling and documentation checks exist; there are no deployed services, working runtime setup commands, migrations, or runtime validation results.
 
 ## First complete milestone
 
@@ -56,7 +56,6 @@ Live migration, transparent recovery of unsaved memory after host loss, one Kube
 - `development.md`: reproducible contributor build/run/test instructions.
 - `self-hosting.md`: actual installation, first Admin credential, TLS, storage, upgrades, and rollback.
 - `operations.md`: backup recovery, monitoring, host drains, and incident procedures.
-- Root `CONTRIBUTING.md` and `SECURITY.md`: contribution checks and a verified private reporting channel.
 - `decisions/`: short records for significant future choices, with status and supersession links.
 
-These files are intentionally not empty placeholders today. Release/license selection and the security-reporting contact remain owner decisions; the repository currently has no license file. Version pins, frontend framework, provider integration, and concrete test locations remain open.
+These future guides are intentionally not empty placeholders today. [CONTRIBUTING.md](../CONTRIBUTING.md) now defines the PR/release process and documentation checks; [SECURITY.md](../SECURITY.md) provides the private reporting channel. License selection remains an owner decision; the repository currently has no license file. Version pins, frontend framework, provider integration, and concrete test locations remain open.

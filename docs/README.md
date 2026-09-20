@@ -1,6 +1,6 @@
 # Documentation guide
 
-The repository is currently **design only**. These documents record selected direction and proposed contracts; no runtime, migrations, UI, installer, or executable tests are implemented. Read this index to find the authoritative home for each topic.
+The repository is currently **design only**. These documents record selected direction and proposed contracts; no runtime, migrations, UI, installer, or runtime tests are implemented. Contribution tooling and documentation checks are available. Read this index to find the authoritative home for each topic.
 
 ## Reading order and ownership
 
@@ -15,6 +15,8 @@ The repository is currently **design only**. These documents record selected dir
 | [Roadmap](roadmap.md) | Implementation sequence, exit gates, evidence, deferred work | What to build next and when it is ready |
 
 Start with Architecture for a system overview. Backend contributors then read Data models, Lifecycle, API contract, and Authentication. UI contributors read UI design, Authentication, and API contract. Installation work starts with Roadmap; a working self-hosting guide will follow a validated installer.
+
+For branches, commits, reviews, and local documentation checks, read [Contributing](../CONTRIBUTING.md). Security reports use the private channel in [Security](../SECURITY.md).
 
 ## Keeping the docs together
 

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Private security report
+    url: https://github.com/hudson-infinity/hudson-sandbox/security/advisories/new
+    about: Report vulnerabilities privately to the maintainers.
