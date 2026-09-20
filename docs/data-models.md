@@ -1,10 +1,53 @@
-# Data models
+# Data models, IDs, and storage
 
-Status: proposed initial PostgreSQL design. No migrations or runtime models are implemented yet.
+Status: selected logical design; migrations and tests pending. This document owns fields, relationships, identity formats, database constraints, and object-storage references. [Auth design](auth-design.md) owns credential/session enforcement; [API contract](api-contract.md) owns retry behavior; [lifecycle](lifecycle.md) owns transitions and completion evidence.
 
-Start with **six sandbox resource tables**. The management UI additionally uses `ui_sessions` and `audit_events`, defined in [auth design](auth-design.md#storage-and-audit). A project owns sandboxes; operations request actions; allocations reserve compute on hosts; snapshots preserve sandbox state. Hudson is a client of this service, and Temporal stays in the harness.
+There are **six sandbox resource tables** plus **two supporting UI security tables**, not a user/role directory. All schemas below are proposals, not executable migrations.
 
-This is the selected model, replacing the earlier ten-table proposal. See [architecture and data flow](artitecture.md) for how these records connect to the running services, [implementation](implementation.md) for runtime details, and [identities and retries](identity-and-resources.md) for the API contract.
+## ID format and identity
+
+**One sandbox keeps one identity through create, execute, pause, and resume.** A snapshot identifies saved state. An allocation identifies one attempt to run that sandbox as a VM. An operation identifies one requested action.
+
+Destroy permanently retires the sandbox ID. Creating another sandbox always creates a new ID, even when its display name or image is the same. Copying saved state into a different sandbox would be a future explicit fork operation, not ordinary resume.
+
+Hudson is an ordinary client. None of these identities depend on a Hudson run, a Temporal workflow, a Kubernetes pod, an IP address, or a guest process ID.
+
+Use a short resource prefix followed by a canonical lowercase, hyphenated UUIDv7:
+
+```text
+sbx_01996110-7c00-7000-8000-000000000001
+```
+
+This is an illustrative valid-format ID. The prefix helps people distinguish resources in API responses and logs. Generate the UUID once in the trusted service using an established Rust UUID implementation. Store its underlying value in PostgreSQL's `uuid` type; attach or remove the fixed prefix at the API boundary. There is no separate public-to-internal ID mapping table.
+
+UUIDv7 carries a millisecond timestamp and supports time-oriented index locality. It does not establish strict ordering across machines, prove freshness, or act as a secret. Keep explicit timestamps, revisions, and generations for those purposes. Sources: [RFC 9562, UUIDv7](https://www.rfc-editor.org/rfc/rfc9562.html#section-5.7), [PostgreSQL UUID type](https://www.postgresql.org/docs/current/datatype-uuid.html).
+
+The parser accepts the exact resource prefix and canonical UUIDv7 format; reject wrong types, truncated IDs, malformed values, and alternate spellings. Keep database uniqueness constraints and handle the unlikely generation collision before publishing an ID. Do not hand-roll the generator, truncate random bits, or make IDs out of database row counts.
+
+IDs are opaque identifiers, never bearer credentials. They may reveal approximate generation time. Authorization applies to every lookup regardless of whether the identifier is known, guessed, or supplied in a storage path.
+
+The notation `<uuidv7>` below represents the full canonical UUID, not a literal API value.
+
+| Record | API format | Lifetime and purpose |
+| --- | --- | --- |
+| Project | `prj_<uuidv7>` | Stable tenant boundary for ownership, quotas, and authentication |
+| Sandbox | `sbx_<uuidv7>` | Stable environment identity across pause/resume; never reused after destroy |
+| Operation | `op_<uuidv7>` | One create, execute, pause, resume, destroy, or other mutating request |
+| Snapshot | `snp_<uuidv7>` | One immutable, completed save of memory, disk, and VM state; reserved while preparing |
+| Allocation | `alc_<uuidv7>` | One reserved VM incarnation on one host; new on initial start, resume, or replacement |
+| Host | `hst_<uuidv7>` | Internal registered machine identity; replacement/reprovisioning gets a new ID |
+
+Most clients need only project, sandbox, operation, and snapshot IDs. Images are addressed by authorized immutable digests; outputs are retrieved through their producing operation. Allocation and host identities are internal/admin details. Host addresses are not exposed in ordinary sandbox responses.
+
+Avoid extra resource types initially:
+
+- An executed command is an operation of kind `execute`; do not add a second command/job ID for the same action.
+- A controller attempt is `(operation_id, attempt_number)`, with a positive incrementing number. Its receipts live on the operation; it does not need a separate table or globally unique ID.
+- A sandbox's generation is an increasing integer, not another UUID. It orders allocation replacements and rejects stale commands.
+- An operation's claim revision is a separate increasing integer. It orders controller ownership, including when the allocation has not changed.
+- Display names and labels are optional mutable metadata. Names may repeat and are never API lookup keys or authorization inputs.
+
+Provision project IDs independently of any harness. An optional external reference maps a Hudson workspace or another caller's organization; project deletion revokes access and never permits ID reuse. Local setup still requires authentication, as defined in [auth design](auth-design.md).
 
 ## Relationships
 
@@ -36,11 +79,7 @@ API ID: `prj_<uuidv7>`.
 | `api_tokens` | Small bounded token metadata collection: key ID, SHA-256 hash, creation/expiry/revocation times; at most two active tokens for rotation |
 | `external_reference` (optional) | Mapping to a caller's organization or workspace |
 
-Use project-scoped opaque API tokens, provisioned by operator tooling. Each has a random 256-bit secret and a nonsecret project/key locator; the locator only selects the record to verify and never authorizes access. Hash the entire token, compare the stored digest in constant time, and check expiry/revocation and project status. Return the raw token only at issuance; persist no plaintext tokens. Rotation adds a new key before revoking the old one. Missing or removed keys fail authentication. Never reuse a key ID.
-
-The same validation applies in local development, self-hosting, and Hudson deployments. Project access requires a valid project token or a UI session derived from one. Admin access uses a separate validated admin credential/session. A project with no active tokens grants no Project access; local setup never grants an implicit identity.
-
-Token metadata lives on the project initially, preserving the six resource tables. End-user login, memberships, and business permissions remain in the calling harness; the Sandbox Management UI has credential-based Project/Admin login without a user directory. The authenticated Admin API/UI and admin tooling manage project credentials; installation admin credentials are provisioned separately. Internal service credentials are separate and stored in deployment secret configuration. Project names may repeat and IDs are never reused. See [architecture](artitecture.md#simple-project-token-authentication) for the request and streaming rules.
+Project token metadata is stored on the project; the credential/session validation and rotation rules are owned by [auth design](auth-design.md#project-credentials). The Admin API/UI and local admin tooling manage project tokens; installation Admin credentials are maintained separately in controlled deployment configuration. Display names are not unique lookup keys. A project with no active tokens grants no Project access.
 
 ### 2. sandboxes — the persistent environment
 
@@ -73,15 +112,13 @@ API ID: `op_<uuidv7>`.
 | `claim_revision`, `lease_expires_at`, `next_retry_at`, `deadline` | Controller ownership and bounded scheduling/retries |
 | `response_expires_at`, `completed_at` (nullable) | Result retention and completion time |
 
-Use `UNIQUE (project_id, idempotency_key)` directly on this table. Admission inserts the operation and related resource changes in one transaction. A repeated key with identical content returns the same operation; a changed request returns a conflict.
+Enforce `UNIQUE (project_id, idempotency_key)` on this table; [API admission](api-contract.md#retries-and-admission) defines matching, conflicts, and tombstone behavior. Every client-admitted operation records its initiating project/admin credential ID and optional UI session reference. Only authenticated internal maintenance may omit the credential ID. Null fields never create service authority, and client payloads cannot assign initiator identity. Admin actions on a sandbox retain that sandbox's project ownership.
 
-Check the initiating project or admin credential before starting new customer execution. Session expiry alone does not cancel already-admitted work. Revocation does not erase receipts or prevent required reconciliation, stop, and cleanup. Internal maintenance operations use service authority, not customer tokens. Record lifecycle phases and confirmation receipts, including guest freeze, manifest publication, restore handshake, and customer-process release. Streaming cursors are scoped to operation/output and survive allocation changes; replay gaps must be explicit. Output chunks do not become individual database rows.
-
-Every client-admitted operation requires its project or admin `initiator_key_id`, including local and UI requests. Admin operations on sandboxes retain the target project's ownership. Only authenticated internal maintenance may omit the key ID. An absent key ID never grants service authority, and customer payloads cannot set or override initiator identity.
+Persist phase and confirmed execution evidence without treating desired state as observed state. [Lifecycle](lifecycle.md) owns phase ordering, claim/lease behavior, and safe continuation; [auth design](auth-design.md#storage-and-audit) owns reauthorization and audit semantics.
 
 Bound retries and receipt metadata. Preserve earlier allocation receipts when reconnecting after resume. If history exceeds the inline bound, publish an immutable history object and persist its reference before removing inline entries; do not discard unresolved execution evidence. No separate attempt table is required initially.
 
-After result expiry, retain a compact operation tombstone containing its identity, ownership, retry key, request digest/version, and outcome for the project's lifetime. An expired identical retry returns `410` with the original operation identity and never reruns the command. Large payloads and outputs may expire independently. Active or unknown operations keep the evidence needed for reconciliation.
+Keep compact operation tombstones with identity, ownership, retry key, request digest/version, and outcome for the project's lifetime; detailed payload/output retention may be shorter. Active/unknown operations retain reconciliation evidence. See [API retention behavior](api-contract.md#errors-and-retention) for how clients observe expiry.
 
 ### 4. hosts — Linux compute machines
 
@@ -94,7 +131,7 @@ Internal ID: `hst_<uuidv7>`.
 | `max_snapshot_uploads` | Maximum concurrent snapshot uploads/staging admissions on this host |
 | `supervisor_epoch` | Increasing registration epoch that rejects stale supervisor messages |
 
-Hosts are infrastructure records shared across projects. Calculate reservations from unreleased allocations under transactional capacity checks. A heartbeat timeout makes a host uncertain; it does not prove its VMs stopped.
+Hosts are infrastructure records shared across projects. Calculate reservations from unreleased allocations under transactional capacity checks. A heartbeat timeout makes a host uncertain; it does not prove its VMs stopped. The database issues a new monotonically increasing supervisor epoch on registration after restart. It is separate from an OS boot ID and requires reconciliation before existing ownership is renewed.
 
 ### 5. allocations — compute reservations
 
@@ -139,7 +176,16 @@ There are no public image or artifact IDs initially. Retrieve outputs through th
 
 ## Supporting UI security records
 
-`ui_sessions` stores hashed session secrets, source credential references, scope, CSRF verifiers, and expiry/revocation state. `audit_events` stores redacted admin action/read history and mutation admission receipts. These are two additional security tables, separate from the six sandbox resource models; see [auth design](auth-design.md#storage-and-audit) for their fields, retention, and atomicity rules. Admin credentials stay in controlled deployment configuration, not project token JSON.
+These two tables are additional to the six resource models. The authoritative session lifetimes, credential bindings, audit atomicity, and admin mutation retry rules are in [auth design](auth-design.md#storage-and-audit).
+
+| Record | Main fields |
+| --- | --- |
+| `ui_sessions` | ID, unique session hash, principal kind (`project` or `admin`), credential ID/config revision, nullable project ID (required for Project), CSRF verifier, created/last-activity/absolute-expiry/revoked timestamps |
+| `audit_events` | ID, time, principal kind/credential ID, session ID if applicable, action, target project/resource, request ID, safe change summary, outcome, resulting operation/reference; mutation idempotency key and request digest where applicable |
+
+A Project session requires a project ID; an Admin session is installation-scoped. Session secrets and CSRF verifiers are security metadata, never plaintext project/admin credentials. Admin credential IDs/config revisions refer to administrator-controlled deployment configuration; project credential IDs refer to the owning project's token metadata. Validate those references at use, not only at session creation.
+
+Use a unique session hash. Administrative admission receipts require the unique admin-credential/idempotency-key contract specified by auth design, separate from sandbox operations' project/key uniqueness. Detailed audit expiry must not remove compact deduplication receipts. Schema/index definitions remain migration work.
 
 ## Database rules
 
@@ -152,16 +198,34 @@ There are no public image or artifact IDs initially. Retrieve outputs through th
 - Perform reservation and project/host quota checks transactionally. Local disk use includes unreleased allocation disk plus unreleased snapshot staging; image cache/OS headroom is excluded from schedulable capacity. Snapshot upload slots are bounded separately. Unknown reservations stay counted until safely released, and the supervisor checks actual free disk before writes.
 - Expiring outputs must not remove retry protection or unresolved receipts. Project deletion revokes access, drains resources, and completes cleanup before purging records; it never permits ID reuse.
 
-## Example session
+Snapshot contents are immutable after publication; retention/deletion metadata may change. Controller receipts cannot overwrite confirmed outcomes under stale ownership. IDs and UUID timestamps never substitute for explicit revisions and transactional comparisons. All references to source allocations and producing operations must remain in the same project and sandbox.
+
+## Object-storage layout
+
+Store raw snapshot components under one snapshot. Outputs, logs, and file exports are referenced by their producing operation; they have no separate public artifact ID initially. The full prefixed IDs below are represented by placeholders for readability.
 
 ```text
-Project: Hudson development
-└── Sandbox S: spreadsheet analysis
-    ├── Create operation → allocation A on host 1
-    ├── Execute operation E → runs a script
-    ├── Pause operation P → publishes snapshot Q, releases A
-    └── Resume operation R → restores Q into allocation B
-                             continues E under its original deadline
+projects/{project_id}/sandboxes/{sandbox_id}/
+  snapshots/{snapshot_id}/uploads/{upload_attempt_number}/
+    memory.bin
+    disk.img
+    vm-state.bin
+    manifest.json
+  operations/{operation_id}/outputs/{output_name}/{upload_attempt_number}/content
 ```
 
-Sandbox S stays the same. Allocation B gets a new ID and generation. An HTTP retry reuses its original operation, and resume never submits the frozen script as a new execution.
+Upload attempts get distinct paths. An interrupted or stale uploader must not overwrite the objects selected by a completed publication. Use immutable/conditional writes or pinned object versions, and put the exact keys, sizes, digests, source allocation/generation, format version, and compatibility data in the manifest. PostgreSQL publishes one verified manifest; clients never infer readiness by listing a prefix.
+
+Unpublished upload attempts can be garbage-collected after their leases and retention expire. Published components remain referenced until deletion policy permits removal. The controller must distinguish abandoned uploads from an in-progress publication before deleting bytes.
+
+The prefix is organization, not security. Resolve operation output names and snapshot IDs through authorized metadata, keep buckets private, and issue only short-lived scoped transfer access where needed. Never accept caller-supplied bucket names or arbitrary object keys as trusted references.
+
+Image digests resolve to verified, allowed immutable manifests with compatibility data pinned at create admission. No mutable tag, caller-controlled object key, or image catalog table is required initially. Snapshot publication records source allocation/generation and matching bytes; local staging reservations remain accounted for until cleanup is confirmed even if the allocation is released.
+
+## Acceptance checks and open decisions
+
+No migrations or database tests exist yet. Verify typed UUIDv7 parsing and collision handling; cross-project/sandbox foreign-key constraints; one unreleased allocation; monotonic generations/epochs/claim revisions; unique pause snapshot and retry identities; disk/upload reservation accounting; and immutable verified snapshot/object references. Test that stale upload attempts cannot overwrite a publication or cause live bytes to be garbage-collected.
+
+UI session/credential constraints and audit admission must satisfy [auth acceptance](auth-design.md#acceptance-checks). Use [lifecycle](lifecycle.md) for release evidence and [API contract](api-contract.md) for retry response behavior. The session's stable-ID example lives in [lifecycle](lifecycle.md#identity-through-a-sandbox-session).
+
+Open work: executable SQL types/enums, indexes/composite constraints, migration ordering, retention defaults, encryption/object-store configuration, and storage cleanup tests. Link actual migrations and tests here once implemented.

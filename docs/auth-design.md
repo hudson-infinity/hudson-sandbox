@@ -1,6 +1,6 @@
 # Authentication and management UI access
 
-Status: proposed design, not implemented. This document defines **Project access** and **Admin access** for the Sandbox Management UI and APIs. It extends [architecture](artitecture.md) and [data models](data-models.md).
+Status: proposed design, not implemented. This document owns **Project access** and **Admin access**, credential/session validation, permission enforcement, and audit semantics for the Sandbox Management UI and APIs. It extends [architecture](architecture.md) and [data models](data-models.md).
 
 Project access manages one project's sandboxes. Admin access manages the entire installation. Every deployment, including local development, requires authentication. There is no auth-disable switch or implicit local identity.
 
@@ -88,22 +88,15 @@ Recheck session validity, source credential, and applicable project policy at mo
 
 This supports our same-origin management UI. Embedded third-party browser access and dedicated stream-scoped credentials remain deferred.
 
-## UI structure
+## UI contract boundary
 
-Project access opens directly into its project: **Sandboxes**, **Operations**, **Snapshots**, and **Usage**. Sandbox detail includes commands/output, state, limits, pause/resume/destroy actions, and snapshot history. Host addresses and other projects are not exposed.
-
-Admin access adds **Projects**, **Hosts**, and **Audit** plus a visible target-project selector. Project pages include quotas and token issuance/revocation. Host pages show health, reserved/available resources, and maintenance drain progress. Display a persistent Admin access indicator. Require explicit confirmation for destroy/revoke actions in the UI; authorization and lifecycle validation still happen on the server.
-
-Both interfaces call the same lifecycle services. Admin actions do not directly edit a sandbox state to pretend that a VM has stopped or a snapshot is ready. Hudson's conversations, agent tasks, approvals, and deliverables remain in the Hudson UI.
+[UI design](ui-design.md) owns navigation, screens, setup, token issuance, confirmations, and error/loading states. It consumes the permission matrix above. Both Project and Admin interfaces call the same lifecycle services; hiding controls never substitutes for server authorization. Hudson's agent/task UI remains separate.
 
 ## Storage and audit
 
 Keep the six sandbox resource models. Add two supporting security tables for sessions and administrative audit; do not force session lists into project JSON or create a user/role directory.
 
-| Record | Main fields |
-| --- | --- |
-| `ui_sessions` | ID, unique session hash, principal kind (`project` or `admin`), credential ID/config revision, nullable project ID (required for Project), CSRF verifier, created/last-activity/absolute-expiry/revoked timestamps |
-| `audit_events` | ID, time, principal kind/credential ID, session ID if applicable, action, target project/resource, request ID, safe change summary, outcome, resulting operation/reference; mutation idempotency key and request digest where applicable |
+The [data model's supporting security records](data-models.md#supporting-ui-security-records) own the fields and constraints for `ui_sessions` and `audit_events`. This section owns their behavior and retention contract.
 
 Sessions store no raw credentials and confer no authority beyond their live source credential. Delete expired session records after operational retention. Audit records contain no token/session secrets, credential hashes, CSRF secrets, or guest output. Record admin reads of customer output as well as administrative mutations. Authentication failures use redacted security logs and never trust a submitted credential ID as a verified actor.
 
@@ -124,4 +117,8 @@ Operations gain a server-assigned `initiator_kind` (`project`, `admin`, or `serv
 7. Local development and self-hosting require the same credentials/session validation; failures never enable unauthenticated access.
 8. Guest HTML/output cannot execute on the management origin. Logs and traces redact login bodies and authentication/session headers.
 
-Implement setup, validators, session/audit persistence, and shared policy enforcement before wiring the UI actions. This design selects two access levels and their enforcement; frontend framework, styling, concrete migrations, and deployment wiring remain implementation choices.
+## Open decisions and verification
+
+Implement setup, validators, session/audit persistence, and shared policy enforcement before wiring UI actions. Select the maintained session implementation, admin-configuration distribution mechanism, login rate-limit defaults, and audit retention during implementation. Detailed field/index decisions belong to [data models](data-models.md); frontend choices belong to [UI design](ui-design.md).
+
+No executable authentication/session tests exist yet. Link actual tests and CI evidence to the acceptance cases above once implemented. Delivery sequencing is owned by [roadmap](roadmap.md).

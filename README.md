@@ -1,25 +1,13 @@
 # Hudson Sandbox
 
-The planned sandbox tool for [Hudson](https://github.com/hudson-infinity/hudson), implemented in Rust with Firecracker for Linux microVM isolation. It exposes APIs to create, execute, pause, resume, and destroy sandboxes.
+A planned standalone sandbox service for AI applications, implemented in Rust with Firecracker microVM isolation. Its APIs create, execute, pause, resume, and destroy Linux sandboxes. The management UI provides Project access and Admin access.
 
-**Status: design only.** This repository contains implementation documentation; no sandbox service, guest agent, deployment, or security guarantees have been implemented or validated yet.
+**Status: design only.** There is no implemented runtime, UI, installer, migration, or executable test suite yet. These documents describe intended behavior, not validated security or performance guarantees.
 
-**Hudson is the harness; Hudson Sandbox is a tool it calls.** The harness owns agent behavior, business permissions, approvals, and any Temporal workflows. This repository has no Temporal dependency and can serve other authenticated API clients too.
+**Hudson is the harness; Hudson Sandbox is a tool it calls.** The service also supports other authenticated clients and self-hosting without Hudson. User/business workflows and any Temporal dependency stay in the calling harness.
 
-The selected stack is Rust, HTTP/JSON with OpenAPI, Firecracker and Linux KVM, PostgreSQL, S3-compatible object storage, and OpenTelemetry with Prometheus/Grafana. Start with standalone API/controller processes and one compute host. Later, Kubernetes deploys the API and controllers; dedicated Linux hosts run the microVMs through our supervisor. Individual sandboxes are not Kubernetes pods in the initial design, so sandbox placement and resource accounting remain our controller's responsibility.
+The selected stack is Rust, HTTP/JSON, PostgreSQL, S3-compatible storage, Firecracker/Linux KVM, and OpenTelemetry with Prometheus/Grafana. Start with one compute host and standalone platform services; Kubernetes deployment and multiple hosts follow verified lifecycle behavior. Authentication is mandatory everywhere, including local development.
 
-Authentication uses project-scoped opaque API tokens over HTTPS, with hashed storage, rotation, and revocation. User login stays in Hudson. Live output uses an authenticated streaming endpoint; the controller persists operations and results.
+Start with the [documentation guide](docs/README.md). It links the authoritative architecture, data models, authentication, lifecycle, API, UI, and roadmap documents.
 
-Authentication is required everywhere, including local development and self-hosting. Project access manages one project; Admin access manages the installation. Backend clients use the appropriate bearer credential, and the management UI exchanges a validated credential for a short-lived session. There is no option to disable authentication.
-
-See [authentication and UI access](docs/auth-design.md) for permissions, login, token/session validation, and administrative audit.
-
-Start with [architecture and data flow](docs/artitecture.md) for the system diagram and create, execute, pause, and resume examples.
-
-See [the implementation design](docs/implementation.md) for component boundaries, execution contracts, recovery, security, and phased delivery.
-
-See [data models](docs/data-models.md) for the six sandbox resource models and their relationships: projects, sandboxes, operations, hosts, allocations, and snapshots.
-
-See [IDs and resource records](docs/identity-and-resources.md) for sandbox identity, API retry keys, snapshots, allocations, and the proposed database relationships.
-
-The first complete flow is create → execute → save memory and disk → release compute → resume → destroy. Pause/resume is a core capability; performance optimizations and multi-host scheduling follow a verified single-host implementation.
+The first complete milestone is **create → execute → save memory and disk → release compute → resume → destroy**. See the [roadmap](docs/roadmap.md) for delivery gates and current evidence.

@@ -1,0 +1,131 @@
+# API contract
+
+Status: selected behavioral contract with proposed HTTP routes/examples; no service or OpenAPI file is implemented. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
+
+## API surfaces
+
+HTTP/JSON is the public interface. Backend automation uses project bearer tokens for `/v1`, admin credentials for `/admin/v1`, and the same-origin UI uses sessions for `/ui-api`. The [auth design](auth-design.md#api-and-browser-boundaries) owns accepted credential types, Project/Admin permissions, sessions, and CSRF policy. Authentication is required in all environments.
+
+Admin sandbox mutations explicitly select a target project and call the same admission/lifecycle services. They do not impersonate a Project credential or bypass quota/state checks. Public resource IDs follow [data models](data-models.md#id-format-and-identity).
+
+## Operation contracts
+
+| Operation | Contract |
+| --- | --- |
+| Create | Accept an authorized immutable image digest and limits; pin verified template compatibility at admission; identical retries return the original operation |
+| Execute | Accept executable, argument array, working directory, nonsecret environment, deadline, and output bounds; return an operation handle |
+| Pause | Save guest memory and matching disk state, publish the snapshot, release compute, and report completion only after those stages are confirmed |
+| Resume | Restore a completed snapshot into one authorized allocation and report ready after guest communication is reestablished |
+| Destroy | Revoke sandbox access, stop execution, and reclaim resources; repeated requests are safe |
+| Inspect sandbox/operation | Return desired state, observed state, generation, progress, freshness, and known result references |
+| Cancel operation | Request interruption; report confirmed cancellation only after actual stopping or a safe transition boundary |
+| Import/export files | Validate ownership, paths, sizes, and digests; use staging or bounded streams |
+
+Asynchronous acceptance is not completion. Inspect the operation until the relevant [lifecycle completion evidence](lifecycle.md#states-and-transition-rules) exists. Polling and stream reconnection never submit a new command. Requests may carry an optional external `correlation_id`; it is not ownership or an idempotency key.
+
+## Retries and admission
+
+The service generates the operation ID at admission. The client supplies an `Idempotency-Key` to identify a logical mutation before the first response exists.
+
+Require this header for create, execute, pause, resume, destroy, cancellation requests, and committed file mutations. It is an opaque case-sensitive value of 16–128 ASCII characters from letters, digits, `.`, `_`, and `-`. The SDK should generate a fresh random UUIDv4 string per logical mutation, persist it across retries, and keep it distinct from the server's UUIDv7 operation ID. Keys carry no secrets or user text.
+
+Deduplicate on `(project_id, idempotency_key)`, across mutating routes. A key represents exactly one logical request in that project. Store a versioned request digest covering method, canonical resource target, and the validated payload. Object field ordering is normalized; array order and command strings remain significant. Resolve defaults consistently, record effective limits/image digests separately, and preserve the normalization version so an API upgrade cannot reinterpret an old retry.
+
+Admission is transactional:
+
+1. Authenticate and resolve the project; check current access to the target or existing receipt.
+2. Look up the operation by its project and retry key. For a new request, the operation insert below enforces the unique key; a concurrent loser rolls back its tentative changes and reads the winning operation.
+3. For an existing record, compare its stored request digest before evaluating today's lifecycle state. Identical content returns the existing operation, even if the sandbox has since paused or finished. Different content returns a conflict.
+4. For a new record, validate the lifecycle transition and quotas, reserve identities, and insert the operation plus resource changes in the same transaction.
+5. Return the operation handle. The controller claims it independently of the HTTP connection.
+
+An admitted asynchronous mutation returns `202 Accepted` with an operation ID and status URL. An identical retry returns the same operation ID and current status, never another dispatch. A digest conflict returns `409 Conflict`; malformed IDs/keys return `400 Bad Request`. Authorization is checked again on receipt retrieval and before dispatch; a retry does not revive revoked authority.
+
+Result bodies may expire, but compact operation tombstones retain the request digest and original operation ID for the project's lifetime. An identical key whose response has expired returns `410 Gone` and the original operation identity, with no execution. Reject key reuse with changed content even after result expiry. On project deletion, revoke access before purging its records; the project ID cannot be re-created. This deliberately trades small metadata retention for predictable retry behavior and must be included in storage planning.
+
+New keys mean new requests. Executing the same script with a new key runs it again. Lifecycle operations may converge without work: pause on an already-paused sandbox, resume on an already-running sandbox, or destroy on an already-destroyed sandbox returns a completed no-op operation for that new key. No new VM or snapshot is created for those no-ops. Conflicting transitions in progress return `409` with the existing operation reference for an authorized caller; the rejected key is not admitted. Exact duplicates are resolved first.
+
+Neither an operation ID nor an idempotency key guarantees exactly-once external effects. If the guest acted but a receipt was lost, record `unknown` and reconcile before deciding whether anything can safely repeat.
+
+Admin project/token/quota/host mutations use the separate admin admission-receipt contract in [auth design](auth-design.md#storage-and-audit). Login/logout are session operations governed by auth rules, not sandbox execution operations.
+
+## Example and resource routes
+
+The endpoints and field names below are the proposed first API shape. Full IDs are shown so the examples can be checked for format consistency. A valid project API token resolves the project. The header below is a placeholder, never a usable credential.
+
+```http
+POST /v1/sandboxes
+Authorization: Bearer <project-api-token>
+Idempotency-Key: 80d6bfaa-7245-493b-8d08-2cdb2de9885c
+Content-Type: application/json
+
+{
+  "image_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "name": "spreadsheet-analysis",
+  "resources": { "vcpu": 2, "memory_mib": 1024, "disk_mib": 4096 },
+  "correlation_id": "customer-task-42"
+}
+```
+
+```json
+{
+  "sandbox_id": "sbx_01996110-7c00-7000-8000-000000000001",
+  "operation_id": "op_01996110-7c00-7000-8000-000000000002",
+  "status": "queued",
+  "status_url": "/v1/operations/op_01996110-7c00-7000-8000-000000000002"
+}
+```
+
+Wait for create success, then call execute. An execute request returns an operation ID used for results, output, and cancellation. Proposed routes are:
+
+```text
+GET  /v1/sandboxes/{sandbox_id}
+POST /v1/sandboxes/{sandbox_id}/execute
+POST /v1/sandboxes/{sandbox_id}/pause
+POST /v1/sandboxes/{sandbox_id}/resume
+POST /v1/sandboxes/{sandbox_id}/destroy
+GET  /v1/operations/{operation_id}
+POST /v1/operations/{operation_id}/cancel
+GET  /v1/snapshots/{snapshot_id}
+GET  /v1/operations/{operation_id}/outputs/{output_name}
+GET  /v1/operations/{operation_id}/stream
+```
+
+The read-only stream authenticates with the same project token from a backend client. It checks current ownership/allocation and forwards output through the API streaming endpoint, bypassing the controller for bytes. Reconnect uses a cursor on the original operation; it does not create an operation or dispatch another command. Apply the connection/expiry/revocation checks from [auth design](auth-design.md#live-output-and-revocation). The same-origin management UI uses a validated Project/Admin session with Origin, ownership, and expiry checks. Dedicated tokens for third-party browser streams remain deferred.
+
+Cancellation is itself an idempotent operation referencing the target operation; a requested cancel does not change the target to cancelled until confirmed. Pause's completed result includes the published snapshot ID. Ordinary resume resolves the sandbox's current pause snapshot on admission and pins that reference in the operation. It does not accept an arbitrary old snapshot to silently rewind history. A future explicit recovery/fork API must address repeated external effects separately.
+
+The example image digest is illustrative, not an available image. List pagination, file import/export routes, session/admin wire schemas, and exact response objects remain OpenAPI design work; this route list is not a working endpoint inventory.
+
+## Output, files, and reconnects
+
+Live output follows guest → supervisor → authorized streaming endpoint → client. Use operation/output sequence cursors, bounded buffers, and backpressure. A reconnect requests the same operation's retained history; signal an explicit gap when history expired. Neither disconnect nor gap causes cancellation or re-execution. Pause ends the stream; resume can attach it to a new allocation under the original operation ID.
+
+Stored output is retrieved by authorized operation and output name. The service resolves exact object references; clients cannot supply trusted bucket names or arbitrary keys. File mutations validate paths, sizes, ownership, and digests, stage incomplete uploads, and require an idempotency key at commit. The host never expands customer shell strings. Bound aggregate output, file sizes, and active streams. Final result references and byte-retention expiry are distinct from execution success.
+
+The streaming wire format and cursor encoding remain to be specified; authentication and periodic rechecks are authoritative in [auth design](auth-design.md#live-output-and-revocation).
+
+## Errors and retention
+
+| Condition | HTTP behavior |
+| --- | --- |
+| Malformed ID/key/payload | `400` |
+| Invalid or expired authentication/session | `401` |
+| Valid identity with wrong access level | `403` |
+| Missing or inaccessible project resource | Nonrevealing `404` |
+| Changed payload under a retry key, or conflicting lifecycle transition | `409` |
+| Expired response retained only as a tombstone, or prohibited execution/resume after destruction | `410` |
+| Rate/admission limit exceeded | `429`; include useful retry guidance where applicable |
+| Capacity unavailable and request not admitted, or required backend unavailable | `503`; never imply an operation exists unless admission committed |
+
+Capacity policy may queue an admitted request within a deadline or reject it; never acknowledge unpersisted work. A request timeout does not prove whether admission/execution happened, so retry with the same key. Never expose another project's identifiers or raw internal errors.
+
+Return `404` for inaccessible tenant resources without revealing whether another project owns them. An authorized caller may inspect a destroyed sandbox tombstone, but new execute/resume operations return `410 Gone`. Expired snapshots cannot be resumed. Destroy permanently prevents resume even when policy retains its snapshot bytes for a bounded period.
+
+Keep sandbox, operation, and snapshot metadata long enough to explain ownership, cleanup, and uncertain outcomes. Payload/artifact retention can be shorter than ID/deduplication tombstone retention. Deleting a resource must not turn its ID or retry keys into reusable names. Revoked callers do not gain receipt access just because they know a retry key.
+
+## Acceptance checks and open decisions
+
+No API tests exist yet. Test concurrent same-key admission, changed-payload conflicts, retries after state changes, expired-result tombstones, revoked access, streaming gaps/reconnects, and destructive no-ops. Cross-project and Admin-scope checks follow [auth acceptance](auth-design.md#acceptance-checks). Recovery from uncertain execution follows [lifecycle acceptance](lifecycle.md#acceptance-checks).
+
+Before implementation, define OpenAPI schemas, list pagination/filtering, error envelopes, request-size limits, stream encoding/cursor semantics, and file commit routes. Examples remain proposals until validated against those schemas.
