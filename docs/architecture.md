@@ -103,6 +103,7 @@ The API and controller may initially share a binary. Privileged host setup stays
 | Management UI | Same-origin UI with server-side sessions | Project/Admin access and audited administration; framework to be selected |
 | Isolation | Firecracker with Linux KVM | One microVM per sandbox |
 | Durable metadata | PostgreSQL | Ownership, desired state, placements, operations, receipts, and snapshot manifests |
+| Database access | SQLx with explicit parameterized SQL | Rust connection pooling, transactions, and typed query results; no ORM |
 | Artifact storage | S3-compatible object storage | Memory snapshots, disk snapshots, workspace exports, and output artifacts |
 | Platform deployment | Standalone first; Kubernetes later | Sandbox API, streaming endpoint, and controllers |
 | Compute hosts | Dedicated Linux nodes with KVM | Firecracker execution through the host supervisor |
@@ -110,6 +111,8 @@ The API and controller may initially share a binary. Privileged host setup stays
 | Harness coordination | Temporal, only in `hudson` | Durable agent tasks outside this service |
 
 Pin the Rust toolchain, dependencies, Firecracker release, guest kernel, and images after the first host integration is validated. Exact HTTP libraries, internal transport, telemetry backends for logs/traces, and version pins remain implementation decisions. Selecting OpenTelemetry does not by itself select a log or trace storage system.
+
+Use PostgreSQL through [SQLx](https://github.com/transact-rs/sqlx), with explicit parameterized SQL rather than an ORM. This keeps transaction boundaries and locking visible for operation claims, lifecycle transitions, and capacity reservations. The proposed `sandbox-store` crate owns queries and database transactions; `psql` is an optional human administration client, not the backend integration. [Data models](data-models.md#database-access-and-migrations) owns query and migration conventions. SQLx is a selected design choice, not an installed dependency yet.
 
 PostgreSQL and object storage cover the initial persistence needs. Defer Redis, ClickHouse, elaborate scheduling, VM warm pools until measurements or product requirements justify them. Build the scoped Project/Admin management UI described in [auth design](auth-design.md) on the shared API/lifecycle services. Customer programs may use any language installed in their guest image.
 
@@ -156,7 +159,7 @@ crates/
   sandbox-controller/   # Operation claims, placement, lifecycle reconciliation
   sandbox-supervisor/   # Host resources, jailer, Firecracker, snapshots, leases
   sandbox-guest/        # Commands, files, and bounded guest reporting
-  sandbox-store/        # PostgreSQL transactions and object-storage interface
+  sandbox-store/        # SQLx queries, PostgreSQL transactions, and object storage
   sandbox-cli/          # HTTP API client for humans, scripts, and agent shell tools
 images/                 # Guest image and kernel build definitions
 deploy/                 # Kubernetes services and dedicated Linux host setup
