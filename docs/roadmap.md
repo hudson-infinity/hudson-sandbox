@@ -15,10 +15,10 @@ The phases below organize implementation, not optional shortcuts around the comp
 | 1. Foundation and single-host execution | Rust protocol/API/controller/supervisor/guest, six resource-model migrations and admin audit persistence, authenticated setup and project requests; one jailed VM executes commands, streams output, enforces CPU/RAM/disk limits, and tears down | Planned |
 | 2. Pause/resume | Verified complete memory/disk snapshot, durable publication, compute release, compatible restore, guest handshake, and original deadlines | Planned |
 | 3. Recovery and isolation | Failure-injection at every lifecycle boundary; fenced ownership, honest unknown outcomes, retry deduplication, egress/tenant isolation, and cleanup convergence | Planned |
-| 4. Management UI and delivery | Session migrations, shared Project/Admin policy, UI flows and acceptance checks, self-hosting setup, deployment/monitoring, and Hudson using ordinary APIs; Kubernetes packaging follows the standalone proof | Planned |
+| 4. Management UI and delivery | Session migrations, shared Project/Admin policy, UI flows and acceptance checks, self-hosting setup, deployment/monitoring, CLI/SDK packaging and client conformance, and Hudson using ordinary APIs; Kubernetes packaging follows the standalone proof | Planned |
 | 5. Multiple hosts and optimization | Compatible cross-host restore, placement, draining, provider autoscaling, and measured cache/snapshot optimizations | Planned |
 
-UI design starts now. Implementation shares the same admission and lifecycle services instead of creating a second control path. Exact work breakdown can be split into issues once each phase has concrete interfaces.
+API contracts come first; implement the CLI against working endpoints and add SDKs against the same versioned schemas. A minimal CLI supports the single-host milestone; client packaging and conformance checks belong to the delivery phase. SDK languages remain undecided. UI design starts now. Implementation shares the same admission and lifecycle services instead of creating a second control path. Exact work breakdown can be split into issues once each phase has concrete interfaces.
 
 ## Required evidence before first usable runtime
 
@@ -49,7 +49,7 @@ Operational documentation should include proven setup commands, secret provision
 
 ## Deferred scope
 
-Live migration, transparent recovery of unsaved memory after host loss, one Kubernetes pod per sandbox, and a custom hypervisor are outside the initial scope. Redis, ClickHouse, and more elaborate scheduling remain deferred. The scoped Project/Admin management UI is part of the planned delivery; Hudson's agent/task UI remains outside this repository.
+Live migration, transparent recovery of unsaved memory after host loss, one Kubernetes pod per sandbox, and a custom hypervisor are outside the initial scope. No MCP server is planned for the current scope; agent integration uses the API/SDK or the CLI through a harness shell tool. Redis, ClickHouse, and more elaborate scheduling remain deferred. The scoped Project/Admin management UI is part of the planned delivery; Hudson's agent/task UI remains outside this repository.
 
 ## Documentation to add when supported by implementation
 

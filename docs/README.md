@@ -6,11 +6,11 @@ The repository is currently **design only**. These documents record selected dir
 
 | Document | Owns | Read it to understand |
 | --- | --- | --- |
-| [Architecture](architecture.md) | Components, stack, topology, isolation boundaries | What runs where and how data moves |
+| [Architecture](architecture.md) | Components, client interfaces, stack, topology, isolation boundaries | What runs where and how data moves |
 | [Data models](data-models.md) | Fields, relationships, IDs, database constraints, storage layout | What we persist and how records connect |
 | [Authentication](auth-design.md) | Project/Admin permissions, credentials, sessions, CSRF, revocation, audit semantics | Who can do what and how access is enforced |
 | [Lifecycle](lifecycle.md) | State transitions, completion evidence, deadlines, cancellation, recovery | How create/pause/resume/destroy actually work |
-| [API contract](api-contract.md) | Admission, request retries, response/errors, files, streaming semantics | How clients interact with the service |
+| [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |
 | [Roadmap](roadmap.md) | Implementation sequence, exit gates, evidence, deferred work | What to build next and when it is ready |
 
