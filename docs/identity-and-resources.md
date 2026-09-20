@@ -53,7 +53,7 @@ Avoid extra resource types initially:
 
 Provision a local project identity in the sandbox service. Authenticate callers with opaque project API tokens over HTTPS, using the hash and expiry/revocation metadata on that project. User login remains in the calling harness. See [authentication](artitecture.md#simple-project-token-authentication). An optional external reference can associate it with a Hudson workspace or organization without coupling the ID format or requiring the harness to exist. Deleting a project revokes its callers and never permits reuse of its ID.
 
-Client authentication is mandatory in every environment, including localhost and self-hosted installations. Local setup provisions an ordinary project and token. Missing, invalid, expired, or revoked credentials are rejected, with no implicit project identity or authentication-disable option. Token validation uses this installation's stored hashes and never requires calling Hudson.
+Client authentication is mandatory in every environment, including localhost and self-hosted installations. Local setup provisions an ordinary project and token. Missing, invalid, expired, or revoked credentials are rejected, with no implicit project identity or authentication-disable option. Credential validation uses this installation's stored hashes and never requires calling Hudson. Project bearer credentials authorize one project; separate Admin credentials authorize installation routes. The management UI uses sessions derived from validated credentials, as defined in [auth design](auth-design.md).
 
 ## 4. What changes during a session
 
@@ -140,7 +140,7 @@ GET  /v1/operations/{operation_id}/outputs/{output_name}
 GET  /v1/operations/{operation_id}/stream
 ```
 
-The read-only stream authenticates with the same project token from a backend client. It checks current ownership/allocation and forwards output through the API streaming endpoint, bypassing the controller for bytes. Reconnect uses a cursor on the original operation; it does not create an operation or dispatch another command. Reauthorize on connect, at expiry, and at most every 30 seconds; close on failed checks. Stream tokens for direct browser access are deferred.
+The read-only stream authenticates with the same project token from a backend client. It checks current ownership/allocation and forwards output through the API streaming endpoint, bypassing the controller for bytes. Reconnect uses a cursor on the original operation; it does not create an operation or dispatch another command. Reauthorize on connect, at expiry, and at most every 30 seconds; close on failed checks. The same-origin management UI uses a validated Project/Admin session with Origin, ownership, and expiry checks. Dedicated tokens for third-party browser streams remain deferred.
 
 Cancellation is itself an idempotent operation referencing the target operation; a requested cancel does not change the target to cancelled until confirmed. Pause's completed result includes the published snapshot ID. Ordinary resume resolves the sandbox's current pause snapshot on admission and pins that reference in the operation. It does not accept an arbitrary old snapshot to silently rewind history. A future explicit recovery/fork API must address repeated external effects separately.
 
@@ -148,7 +148,7 @@ Cancellation is itself an idempotent operation referencing the target operation;
 
 The following describes the logical schema, not executable migration SQL. All tenant-owned references include project ownership. Use composite foreign keys such as `(project_id, sandbox_id)` and matching unique constraints, even though resource UUIDs are globally generated. This prevents accidentally linking one project's snapshot or operation to another's sandbox.
 
-The six tables are `projects`, `sandboxes`, `operations`, `hosts`, `allocations`, and `snapshots`. See [data models](data-models.md) for fields and relationships. Retry keys and attempt receipts live on operations; image digests live on sandboxes and create operations; output references live on their producing operations.
+The six sandbox resource tables are `projects`, `sandboxes`, `operations`, `hosts`, `allocations`, and `snapshots`. See [data models](data-models.md) for fields and relationships. Management sessions and admin audit add the two security tables defined in [auth design](auth-design.md#storage-and-audit). Retry keys and attempt receipts live on operations; image digests live on sandboxes and create operations; output references live on their producing operations.
 
 Create resolves an operator-allowed, project-authorized image digest to its verified immutable manifest and pins compatibility data in the operation. There is no image catalog table initially. Host identity is internal and not tenant-owned. A database-issued supervisor epoch increases at each supervisor registration after restart, forcing reconciliation before it can renew old ownership. This epoch is separate from the machine's OS boot ID and is not evidence by itself that an old VM has stopped.
 
@@ -205,6 +205,6 @@ Before implementing the schema and API, turn these cases into contract/integrati
 11. Invalid, expired, or revoked tokens cannot admit requests, read another project, or retain streaming access beyond the 30-second recheck bound; internal host endpoints reject project tokens.
 12. Concurrent pause admissions respect disk/upload reservations; expired leases do not free staging bytes that still exist.
 13. Restore runs the guest agent while customer processes remain frozen until policy and deadline checks succeed.
-14. Local, self-hosted, and Hudson clients all require valid project tokens for API requests and output streams. Authentication storage failures deny access, and missing credentials cannot produce a development or service identity.
+14. Local, self-hosted, and Hudson clients all require valid credentials or derived UI sessions for their authorized API/stream surface. Project access cannot invoke Admin routes or cross project boundaries. Authentication storage failures deny access, and missing credentials cannot produce a development or service identity.
 
 The remaining schema work is executable migrations, concrete index/constraint definitions, pagination, retention defaults, and the internal transport implementation. Project-token authentication is selected; its storage and revocation contract are in [data models](data-models.md). This document selects resource identity and retry semantics without adding a Temporal or harness dependency.

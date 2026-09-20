@@ -29,7 +29,8 @@ The parent context is Hudson's [product goals](https://github.com/hudson-infinit
 | --- | --- | --- |
 | Implementation | Rust | API, controller, supervisor, guest agent, and shared protocol types |
 | Public interface | HTTP/JSON with OpenAPI | Lifecycle, commands, files, status, and a separate authenticated output stream |
-| Client authentication | Opaque project API tokens over HTTPS | Hashed token storage, expiry, rotation, revocation, and project ownership checks |
+| Client authentication | Opaque Project/Admin credentials over HTTPS | Separate scope validators, hashed storage, expiry, rotation, and revocation |
+| Management UI | Same-origin UI with server-side sessions | Project/Admin access and audited administration; framework to be selected |
 | Isolation | Firecracker with Linux KVM | One microVM per sandbox |
 | Durable metadata | PostgreSQL | Ownership, desired state, placements, operations, receipts, and snapshot manifests |
 | Artifact storage | S3-compatible object storage | Memory snapshots, disk snapshots, workspace exports, and output artifacts |
@@ -40,7 +41,7 @@ The parent context is Hudson's [product goals](https://github.com/hudson-infinit
 
 Pin the Rust toolchain, dependencies, Firecracker release, guest kernel, and images after the first host integration is validated. Exact HTTP libraries, internal transport, telemetry backends for logs/traces, and version pins remain implementation decisions. Selecting OpenTelemetry does not by itself select a log or trace storage system.
 
-PostgreSQL and object storage cover the initial persistence needs. Defer Redis, ClickHouse, elaborate scheduling, VM warm pools, and a dashboard until measurements or product requirements justify them. Customer programs may use any language installed in their guest image.
+PostgreSQL and object storage cover the initial persistence needs. Defer Redis, ClickHouse, elaborate scheduling, VM warm pools until measurements or product requirements justify them. Build the scoped Project/Admin management UI described in [auth design](auth-design.md) on the shared API/lifecycle services. Customer programs may use any language installed in their guest image.
 
 Firecracker's host API supplies VM controls; the supervisor uses that interface rather than embedding a hypervisor. See [Firecracker's design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md).
 
@@ -87,7 +88,7 @@ The controller and API may initially share a binary, but privileged host setup r
 
 ## 5. State and asynchronous operations
 
-The [data model](data-models.md) starts with six tables: projects, sandboxes, operations, hosts, allocations, and snapshots. Retry keys, execution receipts, and output references live on operations. Images use immutable digests without a separate catalog table.
+The [data model](data-models.md) starts with six sandbox resource tables: projects, sandboxes, operations, hosts, allocations, and snapshots. Retry keys, execution receipts, and output references live on operations. Images use immutable digests without a separate catalog table. The [auth design](auth-design.md) adds `ui_sessions` and `audit_events` for the management UI.
 
 | State | Authority |
 | --- | --- |
@@ -109,7 +110,7 @@ Do not store credentials or large streams in operation records. Store artifact r
 
 Use `Authorization: Bearer <project-api-token>` over HTTPS for backend clients. Validate the opaque token against its project token hash and expiry/revocation metadata, then authorize the requested resource. The same token authenticates backend output streams. Tokens stay out of URLs, logs, operation payloads, and guests. See [architecture auth](artitecture.md#simple-project-token-authentication) and [project token storage](data-models.md#1-projects--ownership-and-limits).
 
-These requirements apply equally to local development, self-hosting, and Hudson deployments. Every client API request and stream requires a valid project token. Missing/invalid credentials or an unavailable authentication store fail closed; there is no configuration or request-level authentication bypass.
+These requirements apply equally to local development, self-hosting, and Hudson deployments. Every protected client API request and stream requires a valid credential or derived session appropriate to its surface. Project automation uses project tokens, admin automation uses separate admin credentials, and the same-origin UI uses short-lived server-side sessions. Missing/invalid credentials or an unavailable authentication store fail closed; there is no configuration or request-level authentication bypass.
 
 Requests are scoped to an authenticated project and sandbox. The [identity and resource design](identity-and-resources.md) defines prefixed UUIDv7 IDs, PostgreSQL relationships, retry semantics, and storage keys. The sandbox ID survives pause/resume; each new VM allocation receives a separate identity and increasing generation.
 
@@ -195,7 +196,7 @@ Automatic retries are appropriate only when receipts and operation semantics mak
 
 ## 10. Security and harness integration
 
-The sandbox authenticates project tokens, authorizes access to sandbox resources, and enforces execution policy. User login and memberships stay in the harness. Operator tooling provisions and rotates random project tokens, with at most two active keys per project for overlap; the service stores only hashes and lifecycle metadata. Internal supervisor connections use separate operator-managed service credentials over authenticated TLS, scoped to their intended service/host. Customer tokens cannot authorize host administration. Browser-specific stream credentials remain deferred. The harness decides business permissions, approval rules, and which tools its agent may invoke. Neither role is delegated to model output. Token revocation prevents new requests and new execution dispatch under that key, while required reconciliation/stop/cleanup continues under service authority. Revocation alone is not cancellation of an already-running command; use explicit cancellation or destruction to stop it.
+The sandbox authenticates Project/Admin credentials and derived UI sessions, authorizes access, and enforces execution policy. End-user login and memberships stay in the harness. The Sandbox Management UI has credential-based login for its two access levels; see [auth design](auth-design.md) for routes, sessions, CSRF, and audit. The authenticated Admin API/UI and local admin tooling provision and rotate random project tokens, with at most two active keys per project for overlap; the service stores only hashes and lifecycle metadata. Internal supervisor connections use separate operator-managed service credentials over authenticated TLS, scoped to their intended service/host. Project tokens cannot authorize host administration. Admin credentials authorize management APIs, not direct supervisor control. Same-origin UI streams use validated sessions; third-party embedded stream credentials remain deferred. The harness decides business permissions, approval rules, and which tools its agent may invoke. Neither role is delegated to model output. Token revocation prevents new requests and new execution dispatch under that key, while required reconciliation/stop/cleanup continues under service authority. Revocation alone is not cancellation of an already-running command; use explicit cancellation or destruction to stop it.
 
 Use Firecracker jailer, supported seccomp filters, per-VM cgroups/namespaces, restricted host sockets, immutable verified templates, and a private writable filesystem per sandbox. Harden host setup using [Firecracker's production guidance](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md).
 
@@ -229,7 +230,7 @@ There are no sandbox Temporal workers, workflow crates, or Temporal service mani
 
 Begin with one Linux compute host exposing KVM and one supported architecture. A standalone development setup needs the API/controller, PostgreSQL, object storage, and that host. It must run without the Hudson harness or a Temporal service. Kubernetes is the intended platform deployment, not a requirement for every developer unit test.
 
-Operator setup creates the installation's first project and issues its API token once; contributors and self-hosters use the same authenticated setup contract as Hudson deployments. Keep the raw token in the calling backend's secret configuration and only its hash in PostgreSQL. Setup requires installation-administrator authority; no unprotected public bootstrap endpoint is provided. Local development does not disable authentication. This tooling is planned, not implemented yet.
+Local admin setup creates the installation's first admin credential. The Admin UI/API or authenticated tooling then creates projects and issues project tokens once; contributors and self-hosters use the same authenticated setup contract as Hudson deployments. Keep the raw token in the calling backend's secret configuration and only its hash in PostgreSQL. Setup requires installation-administrator authority; no unprotected public bootstrap endpoint is provided. Local development does not disable authentication. This tooling is planned, not implemented yet.
 
 Use a remote Linux host for real VM tests from macOS. An unrestricted local process is not a substitute for the isolation boundary. Publish reproducible guest image builds with immutable digests and compatibility metadata.
 
@@ -264,9 +265,9 @@ Before calling the first version usable, demonstrate:
 | 1: Single-host execution | Standalone Rust API/controller, six-table PostgreSQL model, project tokens, and supervisor with one jailed VM, command output streaming, limits, files, and teardown |
 | 2: Core pause/resume | Complete memory/disk snapshot, durable publication, compute release, and validated restore on the supported host configuration |
 | 3: Recovery and isolation | PostgreSQL-backed controllers, request deduplication, restart/failure tests, fencing, and the validation cases above |
-| 4: Deployment and integration | Kubernetes service manifests, dedicated host deployment, monitoring, and Hudson calling the ordinary APIs from its own tasks |
+| 4: Management UI, deployment, and integration | Project/Admin UI with session/CSRF/audit acceptance checks, Kubernetes service manifests, dedicated hosts, monitoring, and Hudson using the ordinary APIs |
 | 5: Multiple hosts and optimization | Capacity-aware placement, cross-host compatible restore, draining, provider autoscaling, and measured caching/snapshot optimizations |
 
 Open details are exact versions, database schema, object-store vendor, API paths, guest/host transport, supported host configuration, lease/fencing mechanism, and resource/retention defaults. No latency, density, or availability claim is made until measured on explicit workloads.
 
-Live migration, transparent recovery of unsaved memory after host loss, one Kubernetes pod per sandbox, and a custom hypervisor are outside the initial scope. Redis, ClickHouse, a dashboard, and more elaborate scheduling remain deferred.
+Live migration, transparent recovery of unsaved memory after host loss, one Kubernetes pod per sandbox, and a custom hypervisor are outside the initial scope. Redis, ClickHouse, and more elaborate scheduling remain deferred. The scoped Project/Admin management UI is part of the planned delivery; Hudson's agent/task UI remains outside this repository.

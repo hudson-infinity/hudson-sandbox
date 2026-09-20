@@ -10,13 +10,15 @@ The selected stack is Rust, HTTP/JSON with OpenAPI, Firecracker and Linux KVM, P
 
 Authentication uses project-scoped opaque API tokens over HTTPS, with hashed storage, rotation, and revocation. User login stays in Hudson. Live output uses an authenticated streaming endpoint; the controller persists operations and results.
 
-Project-token authentication is required for every client API request and output stream, including local development and self-hosting. Operator setup creates a project and issues its token; there is no option to disable authentication.
+Authentication is required everywhere, including local development and self-hosting. Project access manages one project; Admin access manages the installation. Backend clients use the appropriate bearer credential, and the management UI exchanges a validated credential for a short-lived session. There is no option to disable authentication.
+
+See [authentication and UI access](docs/auth-design.md) for permissions, login, token/session validation, and administrative audit.
 
 Start with [architecture and data flow](docs/artitecture.md) for the system diagram and create, execute, pause, and resume examples.
 
 See [the implementation design](docs/implementation.md) for component boundaries, execution contracts, recovery, security, and phased delivery.
 
-See [data models](docs/data-models.md) for the six tables and their relationships: projects, sandboxes, operations, hosts, allocations, and snapshots.
+See [data models](docs/data-models.md) for the six sandbox resource models and their relationships: projects, sandboxes, operations, hosts, allocations, and snapshots.
 
 See [IDs and resource records](docs/identity-and-resources.md) for sandbox identity, API retry keys, snapshots, allocations, and the proposed database relationships.
 

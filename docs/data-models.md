@@ -2,7 +2,7 @@
 
 Status: proposed initial PostgreSQL design. No migrations or runtime models are implemented yet.
 
-Start with **six tables**. A project owns sandboxes; operations request actions; allocations reserve compute on hosts; snapshots preserve sandbox state. Hudson is a client of this service, and Temporal stays in the harness.
+Start with **six sandbox resource tables**. The management UI additionally uses `ui_sessions` and `audit_events`, defined in [auth design](auth-design.md#storage-and-audit). A project owns sandboxes; operations request actions; allocations reserve compute on hosts; snapshots preserve sandbox state. Hudson is a client of this service, and Temporal stays in the harness.
 
 This is the selected model, replacing the earlier ten-table proposal. See [architecture and data flow](artitecture.md) for how these records connect to the running services, [implementation](implementation.md) for runtime details, and [identities and retries](identity-and-resources.md) for the API contract.
 
@@ -38,9 +38,9 @@ API ID: `prj_<uuidv7>`.
 
 Use project-scoped opaque API tokens, provisioned by operator tooling. Each has a random 256-bit secret and a nonsecret project/key locator; the locator only selects the record to verify and never authorizes access. Hash the entire token, compare the stored digest in constant time, and check expiry/revocation and project status. Return the raw token only at issuance; persist no plaintext tokens. Rotation adds a new key before revoking the old one. Missing or removed keys fail authentication. Never reuse a key ID.
 
-The same token records and validation apply in local development, self-hosting, and Hudson deployments. Every client request requires a valid project token. A project with no active tokens grants no client access; local setup issues a token instead of granting an implicit development identity.
+The same validation applies in local development, self-hosting, and Hudson deployments. Project access requires a valid project token or a UI session derived from one. Admin access uses a separate validated admin credential/session. A project with no active tokens grants no Project access; local setup never grants an implicit identity.
 
-Token metadata lives on the project initially, preserving six tables. User login, memberships, and business permissions remain in Hudson; there is no sandbox user/role model. Operator tooling manages credentials outside the customer sandbox API. Internal service credentials are separate and stored in deployment secret configuration. Project names may repeat and IDs are never reused. See [architecture](artitecture.md#simple-project-token-authentication) for the request and streaming rules.
+Token metadata lives on the project initially, preserving the six resource tables. End-user login, memberships, and business permissions remain in the calling harness; the Sandbox Management UI has credential-based Project/Admin login without a user directory. The authenticated Admin API/UI and admin tooling manage project credentials; installation admin credentials are provisioned separately. Internal service credentials are separate and stored in deployment secret configuration. Project names may repeat and IDs are never reused. See [architecture](artitecture.md#simple-project-token-authentication) for the request and streaming rules.
 
 ### 2. sandboxes — the persistent environment
 
@@ -65,7 +65,7 @@ API ID: `op_<uuidv7>`.
 | Fields | Purpose |
 | --- | --- |
 | `id`, `project_id`, `sandbox_id`, `kind` | One admitted create, execute, pause, resume, destroy, cancel, or file mutation |
-| `initiator_key_id` (nullable for internal maintenance) | Audit and pre-dispatch authorization reference; never a raw token or token hash |
+| `initiator_kind`, `initiator_key_id`, `initiator_session_id` (nullable where inapplicable) | Server-assigned `project`, `admin`, or `service` authority and audit references; no raw credentials or credential hashes |
 | `idempotency_key`, `request_digest`, `digest_version` | Deduplicate the caller's mutation and reject changed payloads under the same key |
 | `payload`, `input_refs`, `target_operation_id` (nullable) | Validated request, pinned image/snapshot inputs, and cancellation target |
 | `status`, `phase`, `result`, `error`, `output_refs` | Progress, bounded results, and stored-output metadata |
@@ -75,9 +75,9 @@ API ID: `op_<uuidv7>`.
 
 Use `UNIQUE (project_id, idempotency_key)` directly on this table. Admission inserts the operation and related resource changes in one transaction. A repeated key with identical content returns the same operation; a changed request returns a conflict.
 
-Check the initiating key before starting new customer execution. Revocation does not erase receipts or prevent required reconciliation, stop, and cleanup. Internal maintenance operations use service authority, not customer tokens. Record lifecycle phases and confirmation receipts, including guest freeze, manifest publication, restore handshake, and customer-process release. Streaming cursors are scoped to operation/output and survive allocation changes; replay gaps must be explicit. Output chunks do not become individual database rows.
+Check the initiating project or admin credential before starting new customer execution. Session expiry alone does not cancel already-admitted work. Revocation does not erase receipts or prevent required reconciliation, stop, and cleanup. Internal maintenance operations use service authority, not customer tokens. Record lifecycle phases and confirmation receipts, including guest freeze, manifest publication, restore handshake, and customer-process release. Streaming cursors are scoped to operation/output and survive allocation changes; replay gaps must be explicit. Output chunks do not become individual database rows.
 
-Every client-admitted operation requires an `initiator_key_id`, including local requests. Only authenticated internal maintenance may omit it. An absent key ID never grants service authority, and customer payloads cannot set or override initiator identity.
+Every client-admitted operation requires its project or admin `initiator_key_id`, including local and UI requests. Admin operations on sandboxes retain the target project's ownership. Only authenticated internal maintenance may omit the key ID. An absent key ID never grants service authority, and customer payloads cannot set or override initiator identity.
 
 Bound retries and receipt metadata. Preserve earlier allocation receipts when reconnecting after resume. If history exceeds the inline bound, publish an immutable history object and persist its reference before removing inline entries; do not discard unresolved execution evidence. No separate attempt table is required initially.
 
@@ -136,6 +136,10 @@ Reserve worst-case staging capacity and a host upload slot before freezing the g
 | `artifacts` | Output references on `operations`, containing object key/version, digest, size, retention, and cleanup state |
 
 There are no public image or artifact IDs initially. Retrieve outputs through their authorized operation. Output names identify entries within that operation, not arbitrary bucket paths. Separate catalogs or artifact management can be introduced when needed.
+
+## Supporting UI security records
+
+`ui_sessions` stores hashed session secrets, source credential references, scope, CSRF verifiers, and expiry/revocation state. `audit_events` stores redacted admin action/read history and mutation admission receipts. These are two additional security tables, separate from the six sandbox resource models; see [auth design](auth-design.md#storage-and-audit) for their fields, retention, and atomicity rules. Admin credentials stay in controlled deployment configuration, not project token JSON.
 
 ## Database rules
 
