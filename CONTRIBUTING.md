@@ -2,7 +2,7 @@
 
 Hudson Sandbox is being designed in public by Hudson Labs. Start with the [README](README.md) and [documentation guide](docs/README.md). The runtime is not implemented yet; documentation checks work today, while VM integration tests and installation commands will arrive with the code.
 
-License selection is pending. Resolve licensing with the maintainers before submitting substantial implementation contributions; public visibility alone does not grant an open-source license. No CLA or commit-signoff requirement is currently configured.
+License selection is pending. Resolve licensing with the maintainers before submitting substantial implementation contributions; public visibility alone does not grant an open-source license. Asking each contributor to negotiate this individually is a stopgap, and selecting a license is tracked as a [blocking decision](docs/roadmap.md#blocking-non-engineering-decisions). No CLA or commit-signoff requirement is currently configured.
 
 ## From idea to pull request
 
@@ -41,7 +41,7 @@ The `docs-check` GitHub Actions job checks repository Markdown for local inline 
 
 Keep the job name stable because branch protection requires it. CI runs on every PR to `main` and on pushes to `main`, including fork PRs with read-only permissions and no repository secrets. GitHub may require maintainer approval before a first-time contributor's workflow runs. Use GitHub-hosted runners for untrusted PR checks. Do not run fork code on privileged sandbox hosts or introduce `pull_request_target` execution of contributor code.
 
-As runtime code lands, add formatting, linting, unit/integration checks, and the applicable [roadmap gates](docs/roadmap.md). Real Firecracker tests need a controlled Linux/KVM environment. A docs-only PR does not need a VM test; a change to snapshot correctness does.
+As runtime code lands, add formatting, linting, unit/integration checks, and the applicable [roadmap gates](docs/roadmap.md). The Rust toolchain, `cargo fmt`, `cargo clippy`, and unit-test jobs belong to [Phase 1](docs/roadmap.md#scope-discipline-for-phase-1) rather than a later cleanup. Real Firecracker tests need a controlled Linux/KVM environment. A docs-only PR does not need a VM test; a change to snapshot correctness does.
 
 ## Review and branch rules
 

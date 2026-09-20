@@ -78,7 +78,7 @@ A disconnected client does not cancel admitted work or extend sandbox lifetime. 
 
 The sandbox row and its ID remain. Its old allocation becomes released, so the host's capacity can serve another sandbox. The snapshot's bytes remain in object storage. Freezing Firecracker alone does not release compute.
 
-Reserve staging bytes and an upload slot before freezing; while waiting, prevent new command dispatch but leave existing guest work runnable. Full snapshots are the initial format. Differential snapshots, lazy loading, and warm pools are future optimizations.
+Reserve staging bytes and an upload slot before freezing; while waiting, prevent new command dispatch but leave existing guest work runnable. Full snapshots are the initial format. Differential snapshots, lazy loading, and warm pools are future optimizations, but the manifest and object layout must keep them reachable from the start: see [performance](performance.md#constraints-on-designs-we-are-choosing-now) for the constraints that apply to the first implementation.
 
 A failed upload leaves the operation incomplete and the original VM's actual phase recorded. Continue safely or explicitly roll back to running under current policy; do not delete the only viable state and report successful pause. Rollback after publication must clear any current-pause pointer that would otherwise misrepresent the now-running VM; the historical snapshot remains immutable. Do not reuse an old snapshot to claim a fresh pause succeeded.
 
@@ -101,6 +101,8 @@ After resume: Sandbox S → Allocation B → Host 1 or another compatible host
 
 An already-running script resumes under its original execute-operation ID. We do not submit it again. A host crash does not guarantee recovery of work since the last snapshot, and the service never silently restores old state that could repeat external side effects.
 
+Moving a sandbox's memory to another host means fetching all of it before any customer process runs, and that transfer dominates resume latency. Design the restore path to read ranges from published components rather than downloading whole objects, and instrument each restore stage separately. [Performance](performance.md#the-dominant-cost-is-snapshot-bytes) owns the budgets and the reporting rules.
+
 Publish and test a compatibility matrix covering CPU architecture/model, host and guest kernels, guest agent, and Firecracker versions. Existing network connections and credentials are not assumed valid after restore. No filesystem-only fallback can claim memory continuation. A failed partial restore must be stopped/fenced before replacement; its generation is consumed even if readiness was never reached.
 
 ## Deadlines and cancellation
@@ -110,6 +112,20 @@ Persist sandbox and command wall-clock deadlines outside snapshots. Pause does n
 Cancellation is an idempotent operation referencing its target. A request to cancel is not confirmed cancellation. A running process must have confirmed process-tree termination; a lifecycle operation must reach a safe stop or rollback boundary. If a snapshot is already published, resolve stop/cleanup ownership before reporting cancellation. Cancellation while paused must durably record the decision for enforcement before thaw; do not claim physical process termination without evidence.
 
 Timeout or cancellation does not roll back external side effects. Revoking a credential blocks new requests/new execution dispatch under it but does not undo already-executed work. [Auth design](auth-design.md) owns credential/session policy; service authority continues required stop and cleanup.
+
+## Idle limits and automatic pause
+
+This section applies once pause ships; [roadmap](roadmap.md#implementation-phases) places that in Phase 4. Paused sandboxes cost storage; running idle sandboxes cost a host's CPU, memory, and disk. Reclaiming idle compute automatically is the point of having pause at all, so the policy belongs in this contract rather than arriving later as operational improvisation. Until pause exists, an idle sandbox can only be destroyed, and that outcome is reported as destruction rather than dressed up as saved state.
+
+Define idleness explicitly before implementing it. A proposed definition: no running execute operation, no attached output stream, and no client request against the sandbox for a configured interval. Guest-internal activity is not observable to the service and must not be assumed either way; say which signal is authoritative rather than inferring liveness.
+
+An automatic pause is an ordinary pause operation with `initiator_kind` `service`. It takes the same snapshot verification, publication, and release evidence path as a caller's pause, appears in the sandbox's operation history, and is visible to the owning project. A policy-driven transition that skipped those checks would be a second control path, which [architecture](architecture.md#purpose-and-ownership) rules out.
+
+Automatic pause never implies automatic resume. The next authorized resume request restores the sandbox; the service does not speculatively restore state on a caller's behalf.
+
+Separate the timers. An active-compute idle timeout decides when a running sandbox is paused. A paused-retention timeout decides when its snapshot expires and resume becomes impossible. A sandbox lifetime deadline decides when the identity is destroyed regardless of state. Each needs its own configured default and its own project-visible value, and expiry of the second must be distinguishable in the API from expiry of the third.
+
+Where policy destroys rather than pauses, or where a hard limit forces termination without saving state, that outcome is reported as such. Failure to save state is never presented as a completed pause.
 
 ## Destroy and recovery
 

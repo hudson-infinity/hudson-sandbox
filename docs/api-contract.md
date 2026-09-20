@@ -34,7 +34,7 @@ The CLI displays the operation handle or waits when explicitly requested. It rep
 
 | Operation | Contract |
 | --- | --- |
-| Create | Accept an authorized immutable image digest and limits; pin verified template compatibility at admission; identical retries return the original operation |
+| Create | Accept an authorized immutable image digest and limits; pin verified template compatibility at admission; identical retries return the original operation. Only operator-allowlisted digests are accepted, so a project cannot supply its own image today |
 | Execute | Accept executable, argument array, working directory, nonsecret environment, deadline, and output bounds; return an operation handle |
 | Pause | Save guest memory and matching disk state, publish the snapshot, release compute, and report completion only after those stages are confirmed |
 | Resume | Restore a completed snapshot into one authorized allocation and report ready after guest communication is reestablished |
@@ -127,6 +127,18 @@ Stored output is retrieved by authorized operation and output name. The service 
 
 The streaming wire format and cursor encoding remain to be specified; authentication and periodic rechecks are authoritative in [auth design](auth-design.md#live-output-and-revocation).
 
+## Versioning and deprecation
+
+The `/v1` and `/admin/v1` prefixes are a compatibility promise, and the promise needs stating before anything ships against it.
+
+Within a major version, only additive changes are allowed: new optional request fields, new response fields, new routes, and new enum members in fields documented as extensible. Clients must ignore unknown response fields and must not depend on field order or on an exhaustive enum. Removing a field, narrowing a type, making an optional field required, changing a default, or changing an existing status code is a breaking change and needs a new prefix.
+
+Two versions carry their own compatibility rules and are not the HTTP version. `digest_version` covers idempotency-key request normalization, so an API upgrade cannot reinterpret an old retry; [admission](#retries-and-admission) owns it. `manifest_version` covers the snapshot format, so a later snapshot layout does not invalidate published snapshots; [data models](data-models.md#6-snapshots--saved-sandbox-state) owns it. Both may change while `/v1` stays stable.
+
+Before 1.0, releases are `0.x` and breaking changes are possible between them, but each one must be called out in release notes with an upgrade path. That is a smaller promise than `/v1` stability and should not be described as the same thing.
+
+When a deprecation eventually happens, publish the replacement first, keep the old surface working through a stated window, and announce the removal in release notes. The window length, any deprecation response headers, and whether server and client versions are checked at handshake are open decisions; pick them before the first release, not after callers depend on the current behavior.
+
 ## Errors and retention
 
 | Condition | HTTP behavior |
@@ -152,4 +164,4 @@ No API tests exist yet. Test concurrent same-key admission, changed-payload conf
 
 Client acceptance must also cover equivalent API/SDK/CLI outcomes, key reuse across client restarts, no resubmission after a wait timeout, structured output without credential leakage, output truncation/reconnects, and explicit file transfer. These checks require implemented clients and are not available today.
 
-Before implementation, define initial SDK languages/distribution, CLI syntax/credential configuration/exit codes, OpenAPI schemas, list pagination/filtering, error envelopes, request-size limits, stream encoding/cursor semantics, and file commit routes. Examples remain proposals until validated against those schemas.
+Before implementation, define initial SDK languages/distribution, CLI syntax/credential configuration/exit codes, OpenAPI schemas, list pagination/filtering, error envelopes, request-size limits, stream encoding/cursor semantics, file commit routes, and the deprecation window in [versioning](#versioning-and-deprecation). Whether projects can register their own guest images, and what that adds to this surface, is an owner decision tracked in [roadmap](roadmap.md#blocking-non-engineering-decisions). Examples remain proposals until validated against those schemas.

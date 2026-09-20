@@ -1,6 +1,6 @@
 # Product goal
 
-Status: selected product direction; design only. No runtime or security guarantees have been implemented or verified. This document owns product scope and priorities; the [roadmap](roadmap.md) owns delivery gates and evidence.
+Status: selected product direction; design only. No runtime or security guarantees have been implemented or verified. This document owns product scope and priorities; the [roadmap](roadmap.md) owns delivery gates and evidence, [threat model](threat-model.md) owns the security contract this scope requires, [performance](performance.md) owns the budgets it must meet, and [alternatives](alternatives.md) owns why we build it rather than adopt it.
 
 ## What we are building
 
@@ -29,7 +29,7 @@ Customization initially comes through supported images and configuration. Specia
 
 ## Immediate engineering priorities
 
-1. **Define the security and workload contract.** Identify trusted components, attacker capabilities, tenant boundaries, and unsupported privileges. Decide guest-root support explicitly; a customer-controlled guest kernel cannot be assumed to protect the management agent or its process-freeze boundary.
+1. **Define the security and workload contract.** [Threat model](threat-model.md) states the trusted components, attacker capabilities, tenant boundaries, and unsupported privileges; turning it into enforced behavior is Phase 1 work. Decide guest-root support explicitly; a customer-controlled guest kernel cannot be assumed to protect the management agent or its process-freeze boundary.
 2. **Build the execution boundary.** Use Firecracker/jailer with isolated storage and networking. Enforce resource and connectivity limits outside customer control; protect host services, platform credentials, cloud metadata, and other sandboxes.
 3. **Provide a small, useful API.** Mandatory authentication, durable operation handles, execution, files, output, cancellation, and destruction come first. Define generic service connectivity without coupling it to an application framework.
 4. **Make failure and cleanup correct.** Preserve ownership across crashes and lost acknowledgements. Never blindly repeat an uncertain command or free a reservation without evidence. Bound resource exhaustion and account for cleanup that is still pending.
