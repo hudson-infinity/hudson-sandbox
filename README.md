@@ -10,7 +10,7 @@ The selected stack is Rust, HTTP/JSON with OpenAPI, Firecracker and Linux KVM, P
 
 Authentication uses project-scoped opaque API tokens over HTTPS, with hashed storage, rotation, and revocation. User login stays in Hudson. Live output uses an authenticated streaming endpoint; the controller persists operations and results.
 
-Contributors will have an explicit [local-development mode without API tokens](docs/artitecture.md#local-development-without-api-tokens): one default project on a loopback-only listener. Hosted and shared deployments keep token auth enabled; sandbox isolation and internal service authentication apply in both modes. This is a documented contract, not a working configuration yet.
+Project-token authentication is required for every client API request and output stream, including local development and self-hosting. Operator setup creates a project and issues its token; there is no option to disable authentication.
 
 Start with [architecture and data flow](docs/artitecture.md) for the system diagram and create, execute, pause, and resume examples.
 

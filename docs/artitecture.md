@@ -56,39 +56,19 @@ Initially run the API/controller, PostgreSQL, object storage, and one dedicated 
 
 ## Simple project-token authentication
 
-Token authentication is the default for hosted and self-hosted deployments. The explicit local-development exception below only skips the client token check.
+Project-token authentication is required in every environment: local development, self-hosted installations, and Hudson deployments. All client API requests and output streams use the same checks. There is no unauthenticated mode, bypass header, or configuration switch. Missing or invalid credentials and unavailable authentication storage fail closed.
 
 Hudson's backend sends `Authorization: Bearer <project-api-token>` over HTTPS. The API validates the token, resolves its project, checks that the project is active, and checks resource ownership on every request. A caller-supplied project or sandbox ID never grants access. User login and business permissions stay in Hudson.
 
 Use opaque tokens with a cryptographically random 256-bit secret. Store only token hashes and lifecycle metadata on the project, never the raw token. Support expiry, revocation, and two active tokens per project so rotation can overlap. Provision and rotate them through operator tooling initially; there is no login UI, OAuth flow, JWT requirement, or role-management system in this service. See [token storage](data-models.md#1-projects--ownership-and-limits) for the small record inside `projects`.
 
+Local contributors and self-hosters use operator setup to create their own project and token, then keep that token in their calling application's backend secret configuration. Setup runs under the installation administrator's authority, not through an unprotected public bootstrap endpoint. It requires no Hudson account or validation call to Hudson. The setup tooling remains to be implemented.
+
 The project token authorizes that project's sandbox API operations. It does not grant host administration. Keep customer tokens in the trusted client backend, out of browser code, URLs, logs, guest memory, and snapshots. Internal API/controller-to-supervisor calls use separate operator-managed service credentials over authenticated TLS, bound to the intended service/host; project tokens are never forwarded to the supervisor or guest.
 
 Revocation blocks new requests and new execution dispatch under that token. It does not undo an already-executed command or abandon required stop/cleanup work. Preserve admitted receipts and use the explicit cancellation/destroy APIs when stopping existing work is intended. Recheck current project policy at resume. This follows the baseline of HTTPS and per-endpoint authorization in [OWASP REST guidance](https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html).
 
-### Local development without API tokens
-
-Contributors can opt into a standalone development profile with one default project. Proposed configuration (not implemented yet):
-
-```dotenv
-RUN_MODE=development
-AUTH_MODE=disabled
-API_BIND=127.0.0.1:8080
-```
-
-The normal default is `AUTH_MODE=token`. Unknown values, missing token configuration in token mode, or an unavailable authentication store fail closed; they never activate development mode. Changing auth mode requires an operator-controlled process restart, not an API request or header.
-
-In disabled mode, bootstrap one marked development project in a dedicated local-development database and reuse its generated ID across restarts. If the database contains ordinary projects, refuse this profile rather than granting access to their records. Every local request maps to the one development project; caller-supplied IDs cannot select another owner. Use the same ownership checks, idempotency rules, quota accounting, and lifecycle controllers as token mode. No token is issued or needed, including for output streaming. The mode grants anyone who can reach this listener full API access within that development project.
-
-Require the standalone development profile and a literal loopback bind (`127.0.0.1` or `::1`) for both the API and streaming listener. Refuse wildcard/non-loopback listeners and hosted/Kubernetes deployment profiles. Plain HTTP is allowed only on this loopback listener. Validate local Host headers and loopback peers; reject browser Origin headers and forwarded/proxy headers in this mode. Do not publish the listener through a reverse proxy, public tunnel, or container port mapping; headers alone cannot detect a proxy that deliberately hides itself. Use token mode for shared or remotely exposed installations.
-
-Record local requests as `local_development`, separate from internal service operations. Before dispatch and periodically during streams, confirm the mode, project identity, and active project policy still match. Switching back to token mode must not dispatch pending development requests automatically; leave them blocked for explicit operator resolution. Stop/reconciliation/cleanup remains available under service authority.
-
-Firecracker/jailer isolation, guest restrictions, network policy, limits, supervisor authentication, and database/object-storage credentials remain required. Print a clear startup banner identifying the unauthenticated local listener. This mode is a contributor convenience, not a second path into deployed project resources.
-
 ## Live output without routing bytes through the controller
-
-The following token rules apply to normal deployments; local development uses the single-project context above with the same ownership and stream-lifetime checks.
 
 The initial streaming endpoint lives in the API service; it does not require another deployment. After a command is admitted, Hudson's backend connects using the same project token. The endpoint verifies the operation's ownership and current allocation, then opens an authenticated internal connection to the supervisor. The supervisor sends output from the guest directly along this path:
 

@@ -53,7 +53,7 @@ Avoid extra resource types initially:
 
 Provision a local project identity in the sandbox service. Authenticate callers with opaque project API tokens over HTTPS, using the hash and expiry/revocation metadata on that project. User login remains in the calling harness. See [authentication](artitecture.md#simple-project-token-authentication). An optional external reference can associate it with a Hudson workspace or organization without coupling the ID format or requiring the harness to exist. Deleting a project revokes its callers and never permits reuse of its ID.
 
-The explicit [local-development exception](artitecture.md#local-development-without-api-tokens) maps token-free loopback requests to one marked development project in a dedicated database. Ownership checks still apply. Development identity is assigned by server configuration, never a project ID or bypass header supplied by the client. Normal deployments never fall back to this identity when authentication fails.
+Client authentication is mandatory in every environment, including localhost and self-hosted installations. Local setup provisions an ordinary project and token. Missing, invalid, expired, or revoked credentials are rejected, with no implicit project identity or authentication-disable option. Token validation uses this installation's stored hashes and never requires calling Hudson.
 
 ## 4. What changes during a session
 
@@ -101,8 +101,6 @@ Neither an operation ID nor an idempotency key guarantees exactly-once external 
 ## 6. API example
 
 The endpoints and field names below are the proposed first API shape. Full IDs are shown so the examples can be checked for format consistency. A valid project API token resolves the project. The header below is a placeholder, never a usable credential.
-
-In explicitly configured local-development mode, omit the Authorization header and use the loopback listener; the same API bodies, IDs, idempotency keys, and project ownership rules apply. Stream connections use the same local project context and periodic project/mode checks instead of token checks. This is not an exemption for shared or remote deployments.
 
 ```http
 POST /v1/sandboxes
@@ -207,7 +205,6 @@ Before implementing the schema and API, turn these cases into contract/integrati
 11. Invalid, expired, or revoked tokens cannot admit requests, read another project, or retain streaming access beyond the 30-second recheck bound; internal host endpoints reject project tokens.
 12. Concurrent pause admissions respect disk/upload reservations; expired leases do not free staging bytes that still exist.
 13. Restore runs the guest agent while customer processes remain frozen until policy and deadline checks succeed.
-14. Disabled auth requires the standalone development profile, loopback listeners, and an isolated development database. Normal token failures never trigger it; local requests cannot access another project or claim service identity.
-15. Switching to token mode blocks pending development dispatch and closes development streams on their next check; supervised stop/cleanup still works. Browser/proxy requests are rejected by the local profile.
+14. Local, self-hosted, and Hudson clients all require valid project tokens for API requests and output streams. Authentication storage failures deny access, and missing credentials cannot produce a development or service identity.
 
 The remaining schema work is executable migrations, concrete index/constraint definitions, pagination, retention defaults, and the internal transport implementation. Project-token authentication is selected; its storage and revocation contract are in [data models](data-models.md). This document selects resource identity and retry semantics without adding a Temporal or harness dependency.

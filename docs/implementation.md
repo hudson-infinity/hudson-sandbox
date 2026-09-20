@@ -30,7 +30,6 @@ The parent context is Hudson's [product goals](https://github.com/hudson-infinit
 | Implementation | Rust | API, controller, supervisor, guest agent, and shared protocol types |
 | Public interface | HTTP/JSON with OpenAPI | Lifecycle, commands, files, status, and a separate authenticated output stream |
 | Client authentication | Opaque project API tokens over HTTPS | Hashed token storage, expiry, rotation, revocation, and project ownership checks |
-| Contributor authentication | Explicit loopback-only development exception | Single development project, with ownership and isolation still enforced |
 | Isolation | Firecracker with Linux KVM | One microVM per sandbox |
 | Durable metadata | PostgreSQL | Ownership, desired state, placements, operations, receipts, and snapshot manifests |
 | Artifact storage | S3-compatible object storage | Memory snapshots, disk snapshots, workspace exports, and output artifacts |
@@ -110,7 +109,7 @@ Do not store credentials or large streams in operation records. Store artifact r
 
 Use `Authorization: Bearer <project-api-token>` over HTTPS for backend clients. Validate the opaque token against its project token hash and expiry/revocation metadata, then authorize the requested resource. The same token authenticates backend output streams. Tokens stay out of URLs, logs, operation payloads, and guests. See [architecture auth](artitecture.md#simple-project-token-authentication) and [project token storage](data-models.md#1-projects--ownership-and-limits).
 
-These are the default token-mode rules. The explicit [local-development profile](artitecture.md#local-development-without-api-tokens) supplies a fixed development-project identity without a token on a loopback-only API/stream listener. Ownership, policy, and periodic stream checks remain. Record this as `local_development`, never as service authority. No request parameter or missing/invalid credential can select the profile.
+These requirements apply equally to local development, self-hosting, and Hudson deployments. Every client API request and stream requires a valid project token. Missing/invalid credentials or an unavailable authentication store fail closed; there is no configuration or request-level authentication bypass.
 
 Requests are scoped to an authenticated project and sandbox. The [identity and resource design](identity-and-resources.md) defines prefixed UUIDv7 IDs, PostgreSQL relationships, retry semantics, and storage keys. The sandbox ID survives pause/resume; each new VM allocation receives a separate identity and increasing generation.
 
@@ -196,8 +195,6 @@ Automatic retries are appropriate only when receipts and operation semantics mak
 
 ## 10. Security and harness integration
 
-The optional local-development profile only skips customer API-token verification. It does not disable Firecracker/jailer isolation, guest process controls, egress policy, quotas, supervisor service authentication, or database/object-storage credentials. Its listener may use loopback HTTP; remote and shared deployments use the default token mode over HTTPS. Operator configuration must reject the disabled mode with a non-loopback bind or deployment profile.
-
 The sandbox authenticates project tokens, authorizes access to sandbox resources, and enforces execution policy. User login and memberships stay in the harness. Operator tooling provisions and rotates random project tokens, with at most two active keys per project for overlap; the service stores only hashes and lifecycle metadata. Internal supervisor connections use separate operator-managed service credentials over authenticated TLS, scoped to their intended service/host. Customer tokens cannot authorize host administration. Browser-specific stream credentials remain deferred. The harness decides business permissions, approval rules, and which tools its agent may invoke. Neither role is delegated to model output. Token revocation prevents new requests and new execution dispatch under that key, while required reconciliation/stop/cleanup continues under service authority. Revocation alone is not cancellation of an already-running command; use explicit cancellation or destruction to stop it.
 
 Use Firecracker jailer, supported seccomp filters, per-VM cgroups/namespaces, restricted host sockets, immutable verified templates, and a private writable filesystem per sandbox. Harden host setup using [Firecracker's production guidance](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md).
@@ -232,7 +229,7 @@ There are no sandbox Temporal workers, workflow crates, or Temporal service mani
 
 Begin with one Linux compute host exposing KVM and one supported architecture. A standalone development setup needs the API/controller, PostgreSQL, object storage, and that host. It must run without the Hudson harness or a Temporal service. Kubernetes is the intended platform deployment, not a requirement for every developer unit test.
 
-Contributors may explicitly set `RUN_MODE=development`, `AUTH_MODE=disabled`, and `API_BIND=127.0.0.1:8080`, following the [local-development contract](artitecture.md#local-development-without-api-tokens). Bootstrap one marked development project in a dedicated database and preserve its generated ID. Refuse ordinary-project databases, non-loopback listeners, and hosted profiles; emit an unauthenticated-listener banner. Validate loopback Host/peer information and reject browser Origin and forwarded/proxy headers. Never expose this listener through a proxy, tunnel, or published container port. A remote KVM supervisor still uses authenticated internal service transport. Switching modes requires restart; pending development operations cannot acquire token-mode execution authority.
+Operator setup creates the installation's first project and issues its API token once; contributors and self-hosters use the same authenticated setup contract as Hudson deployments. Keep the raw token in the calling backend's secret configuration and only its hash in PostgreSQL. Setup requires installation-administrator authority; no unprotected public bootstrap endpoint is provided. Local development does not disable authentication. This tooling is planned, not implemented yet.
 
 Use a remote Linux host for real VM tests from macOS. An unrestricted local process is not a substitute for the isolation boundary. Publish reproducible guest image builds with immutable digests and compatibility metadata.
 
@@ -260,8 +257,7 @@ Before calling the first version usable, demonstrate:
 12. Concurrent creates and pauses cannot over-reserve disk or upload slots; partial failures retain reservations until cleanup is confirmed.
 13. Customer processes remain frozen throughout restore management and deadline/policy refresh; a lost release acknowledgement never causes another VM to run.
 14. Stream reconnects preserve operation identity and use explicit cursors/gaps without rerunning commands.
-15. Disabled auth works only in the explicit standalone, loopback-only development profile with one isolated development project; invalid token configuration never enables it automatically.
-16. Local requests preserve ownership/limits and cannot forge service initiators. Mode changes block pending development dispatch, and browser/proxy traffic cannot use the local profile's supported entry path.
+15. Authentication is enforced for local, self-hosted, and Hudson clients alike. Missing credentials, failed validation, and authentication-store failures cannot grant client or service access; no configuration switch skips these checks.
 
 | Phase | Exit condition |
 | --- | --- |
