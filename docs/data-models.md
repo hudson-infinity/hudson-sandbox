@@ -187,6 +187,18 @@ A Project session requires a project ID; an Admin session is installation-scoped
 
 Use a unique session hash. Administrative admission receipts require the unique admin-credential/idempotency-key contract specified by auth design, separate from sandbox operations' project/key uniqueness. Detailed audit expiry must not remove compact deduplication receipts. Schema/index definitions remain migration work.
 
+## Database access and migrations
+
+**Use PostgreSQL with SQLx and explicit parameterized SQL; no ORM.** Keep database queries, row mapping, and transaction boundaries together in the proposed `sandbox-store` crate. API handlers and lifecycle controllers call focused storage functions rather than scattering SQL across services. PostgreSQL remains the source of durable metadata; SQLx is the Rust access library.
+
+Bind customer-supplied values as query parameters instead of interpolating them into SQL strings. Any dynamic identifiers or sort expressions must come from trusted, fixed choices. Map results into Rust types and keep ownership checks, operation admission, and resource reservations within the transactions required below. SQLx does not supply tenant authorization or correct locking automatically.
+
+Use SQLx connection pooling and explicit transactions. Its query macros can check queries against the database schema at build time; use them where practical, with a test schema or prepared offline metadata. Keep that metadata consistent with migrations in CI. Dynamic queries still need runtime validation, and compile-time checks do not replace PostgreSQL integration tests for concurrent claims, constraints, or isolation.
+
+Maintain versioned SQL migration files in the repository. Review schema changes alongside the storage code that uses them; do not edit migrations already applied to a released installation. Validate a fresh database and upgrades from supported schema versions before release. Keep migration execution an explicit deployment step with one coordinated runner, rather than letting every API/controller replica change the schema independently. Exact migration paths, tooling commands, and upgrade/rollback procedures remain implementation work.
+
+No SQLx dependency, migration files, or database access code exists yet. Pin the library version and select runtime/TLS features during implementation. The library's capabilities are described in the [official SQLx documentation](https://github.com/transact-rs/sqlx).
+
 ## Database rules
 
 - Tenant-owned references carry `project_id`. Composite foreign keys must also ensure sandbox-local links point to the same sandbox: current allocation/snapshot, active transition, cancellation target, and snapshot source/pause operation.
@@ -228,4 +240,4 @@ No migrations or database tests exist yet. Verify typed UUIDv7 parsing and colli
 
 UI session/credential constraints and audit admission must satisfy [auth acceptance](auth-design.md#acceptance-checks). Use [lifecycle](lifecycle.md) for release evidence and [API contract](api-contract.md) for retry response behavior. The session's stable-ID example lives in [lifecycle](lifecycle.md#identity-through-a-sandbox-session).
 
-Open work: executable SQL types/enums, indexes/composite constraints, migration ordering, retention defaults, encryption/object-store configuration, and storage cleanup tests. Link actual migrations and tests here once implemented.
+Open work: SQLx version/features and query-check setup, migration tooling and fresh/upgrade database tests, executable SQL types/enums, indexes/composite constraints, migration ordering, retention defaults, encryption/object-store configuration, and storage cleanup tests. Link actual migrations and tests here once implemented.
