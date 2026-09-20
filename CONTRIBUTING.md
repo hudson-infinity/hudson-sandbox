@@ -11,9 +11,9 @@ License selection is pending. Resolve licensing with the maintainers before subm
 3. **Make one focused change.** Preserve unrelated edits. Update the authoritative document when behavior changes. Add tests that demonstrate the behavior or regression when executable code is involved. Do not claim a planned feature is implemented.
 4. **Check locally.** Run the commands below and any tests relevant to the change. Report skipped checks and their reason.
 5. **Open a PR against `main`.** Use the PR template. Draft PRs are welcome for early feedback; mark ready when the change and its validation are reviewable.
-6. **Review and merge.** Address feedback, rerun affected checks after edits, and obtain approval on the current change. A maintainer squash-merges after required checks pass and review threads are resolved.
+6. **Review and merge.** Address feedback, rerun affected checks after edits, and request review when useful. A separate approval is optional. A maintainer squash-merges after required checks pass and review threads are resolved.
 
-Maintainers have write/maintain/admin repository access. The initial code owners are the existing administrators, @itsafal and @dipeshbabu; either can review. The PR author cannot provide the required approval on their own PR. Auth, isolation, snapshot, and recovery changes require a maintainer familiar with the affected boundary; ownership alone is not evidence of expertise.
+Maintainers have write/maintain/admin repository access. The initial code owners are the existing administrators, @itsafal and @dipeshbabu; either can review. Maintainers may merge their own PRs when required checks pass. Seek a reviewer familiar with auth, isolation, snapshot, or recovery boundaries for changes in those areas; ownership alone is not evidence of expertise.
 
 ## Commit and PR titles
 
@@ -47,14 +47,14 @@ As runtime code lands, add formatting, linting, unit/integration checks, and the
 
 `main` uses these repository settings:
 
-- Pull requests with at least one approving review; code-owner review applies to owned files once CODEOWNERS is on the base branch.
+- Pull requests are required, but approving reviews and code-owner approvals are optional.
 - Stale approvals dismissed after changes, required `docs-check` success, and an up-to-date branch before merge.
 - Resolved review conversations and linear history; squash is the enabled PR merge method.
 - No force pushes, branch deletion, or administrator exemption from these protections.
 
 CODEOWNERS routes review; GitHub settings enforce the gates. Changes to those settings must preserve the agreed review process. CI does not replace human review. If checks fail, fix the cause or document a genuine infrastructure failure for maintainer investigation; do not disable a required check to land a PR.
 
-For the initial process PR, GitHub cannot use a CODEOWNERS file that has not reached `main` yet. The required approving review still applies. Future PRs use the merged ownership file.
+For the initial process PR, GitHub cannot use a CODEOWNERS file that has not reached `main` yet. This does not block merging. Future PRs use the merged ownership file for review routing, without a mandatory approval gate.
 
 ## Coding agents
 

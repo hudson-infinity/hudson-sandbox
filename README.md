@@ -31,7 +31,7 @@ Our first complete milestone is **create → execute → pause → release compu
 
 ## Contribute
 
-Small fixes can start with a pull request. For larger changes, open an issue to agree on scope first. Contributions go through a branch, relevant checks, maintainer review, and a squash merge into `main`.
+Small fixes can start with a pull request. For larger changes, open an issue to agree on scope first. Contributions go through a branch, relevant checks, optional review, and a maintainer squash merge into `main`.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for commits, PRs, local checks, and releases. Report vulnerabilities through the private channel in [SECURITY.md](SECURITY.md).
 
