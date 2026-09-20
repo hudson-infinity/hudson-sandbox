@@ -6,6 +6,7 @@ The repository is currently **design only**. These documents record selected dir
 
 | Document | Owns | Read it to understand |
 | --- | --- | --- |
+| [Product goal](goal.md) | Product scope, core capabilities, and engineering priorities | What we are building and how validation supports the product |
 | [Architecture](architecture.md) | Components, stack, topology, isolation boundaries | What runs where and how data moves |
 | [Data models](data-models.md) | Fields, relationships, IDs, database constraints, storage layout | What we persist and how records connect |
 | [Authentication](auth-design.md) | Project/Admin permissions, credentials, sessions, CSRF, revocation, audit semantics | Who can do what and how access is enforced |
@@ -14,7 +15,7 @@ The repository is currently **design only**. These documents record selected dir
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |
 | [Roadmap](roadmap.md) | Implementation sequence, exit gates, evidence, deferred work | What to build next and when it is ready |
 
-Start with Architecture for a system overview. Backend contributors then read Data models, Lifecycle, API contract, and Authentication. UI contributors read UI design, Authentication, and API contract. Installation work starts with Roadmap; a working self-hosting guide will follow a validated installer.
+Start with Product goal for scope, then Architecture for a system overview. Backend contributors then read Data models, Lifecycle, API contract, and Authentication. UI contributors read UI design, Authentication, and API contract. Installation work starts with Roadmap; a working self-hosting guide will follow a validated installer.
 
 ## Keeping the docs together
 
@@ -33,4 +34,4 @@ Start with Architecture for a system overview. Backend contributors then read Da
 | `identity-and-resources.md` | IDs/storage in [Data models](data-models.md); retries/routes/errors in [API contract](api-contract.md) |
 | `implementation.md` | Components/security in [Architecture](architecture.md); execution/recovery in [Lifecycle](lifecycle.md); delivery/operations planning in [Roadmap](roadmap.md) |
 
-The previous documents are retired rather than maintained in parallel. Their earlier versions remain available in Git history. The reorganization preserves the chosen stack, standalone service boundary, mandatory authentication, six resource models plus two UI security tables, and the core pause/resume milestone.
+The previous documents are retired rather than maintained in parallel. Their earlier versions remain available in Git history. The chosen stack, standalone service boundary, mandatory authentication, planned resource/security models, and pause/resume contracts remain. Product goal and Roadmap now prioritize a usable secure runtime before pause/resume and the management UI.
