@@ -13,9 +13,13 @@ The repository is currently **design only**. These documents record selected dir
 | [Lifecycle](lifecycle.md) | State transitions, completion evidence, deadlines, cancellation, recovery | How create/pause/resume/destroy actually work |
 | [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |
-| [Roadmap](roadmap.md) | Implementation sequence, exit gates, evidence, deferred work | What to build next and when it is ready |
+| [Threat model](threat-model.md) | Adversaries, trust boundaries, explicit promises and non-promises | What we defend against and what we deliberately do not |
+| [Performance](performance.md) | Latency/size budgets, format constraints they impose, measurement rules | Whether the design is fast enough to be usable |
+| [Alternatives](alternatives.md) | Build-versus-adopt argument and revisit triggers | Why we are building this instead of using something existing |
+| [Roadmap](roadmap.md) | Implementation sequence, exit gates, evidence, blocking owner decisions, deferred work | What to build next and when it is ready |
+| [Decisions](decisions/README.md) | Records of significant choices and their supersession | Why a hard-to-reverse choice was made |
 
-Start with Product goal for scope, then Architecture for a system overview. Backend contributors then read Data models, Lifecycle, API contract, and Authentication. UI contributors read UI design, Authentication, and API contract. Installation work starts with Roadmap; a working self-hosting guide will follow a validated installer.
+Start with Product goal for scope, then Architecture for a system overview. Alternatives and Threat model explain why the system exists in this shape and what it must withstand. Backend contributors then read Data models, Lifecycle, API contract, Authentication, and Performance. UI contributors read UI design, Authentication, and API contract. Installation work starts with Roadmap; a working self-hosting guide will follow a validated installer.
 
 For branches, commits, reviews, and local documentation checks, read [Contributing](../CONTRIBUTING.md). Security reports use the private channel in [Security](../SECURITY.md).
 
@@ -25,15 +29,9 @@ For branches, commits, reviews, and local documentation checks, read [Contributi
 - Distinguish selected design, unresolved proposals, implemented behavior, and verified behavior. Do not mark a contract implemented without the code and applicable evidence.
 - Each detailed contract has acceptance checks and open decisions. Add links to real test files/CI evidence as implementation lands; do not link to hypothetical test paths.
 - Update the owning document with a change, then update affected links/examples and the delivery gate. Keep API examples consistent with OpenAPI once that specification exists.
-- Record major new tradeoffs in `decisions/` when they are made. Mark superseded decisions rather than maintaining two contradictory current contracts.
+- Record major new tradeoffs in [decisions](decisions/README.md) when they are made. Mark superseded decisions rather than maintaining two contradictory current contracts.
 - Keep the root README short. Add runnable development/deployment/operations guides when the underlying commands and procedures work, not as empty placeholders.
 
 ## Where the earlier documents went
 
-| Previous document | Current home |
-| --- | --- |
-| `artitecture.md` | [Architecture](architecture.md), with detailed flows moved to [Lifecycle](lifecycle.md) |
-| `identity-and-resources.md` | IDs/storage in [Data models](data-models.md); retries/routes/errors in [API contract](api-contract.md) |
-| `implementation.md` | Components/security in [Architecture](architecture.md); execution/recovery in [Lifecycle](lifecycle.md); delivery/operations planning in [Roadmap](roadmap.md) |
-
-The previous documents are retired rather than maintained in parallel. Their earlier versions remain available in Git history. The chosen stack, standalone service boundary, mandatory authentication, planned resource/security models, and pause/resume contracts remain. Product goal and Roadmap now prioritize a usable secure runtime before pause/resume and the management UI.
+`artitecture.md`, `identity-and-resources.md`, and `implementation.md` were retired into the documents above rather than maintained in parallel. Their contents live in Architecture, Lifecycle, Data models, API contract, and Roadmap; the originals remain in Git history. The chosen stack, standalone service boundary, mandatory authentication, planned resource/security models, and pause/resume contracts remain; Product goal and Roadmap now prioritize a usable secure runtime before pause/resume and the management UI. Remove this section once the first runtime code lands and the old filenames stop appearing in open branches.

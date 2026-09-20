@@ -157,9 +157,12 @@ API ID: `snp_<uuidv7>`.
 | `status`, `upload_attempt_number` | Preparation, publication, and cleanup progress |
 | `staging_host_id`, `staging_reserved_mib`, `staging_released_at` (nullable), `upload_slot_held`, `upload_lease_expires_at` | Temporary disk and upload-slot reservations, retained until cleanup/termination evidence |
 | `manifest_key`, `manifest_version`, `manifest_digest`, `compatibility` | Verified immutable references to matching memory, disk, and VM-state objects |
+| `chunk_layout` | Chunk or page size and offsets for the memory component, so a restore can fetch ranges instead of whole objects |
 | `published_at`, `expires_at`, `deleted_at` (nullable) | Publication and retention lifecycle |
 
 PostgreSQL stores metadata; object storage holds the large files. One pause operation reserves one snapshot ID across retries. A published manifest is immutable, and an incomplete upload cannot become resumable state.
+
+`chunk_layout` and `manifest_version` exist for a deferred feature on purpose. Differential snapshots and lazy loading are Phase 6 work, but a published format that only supports whole-object reads would have to break every existing snapshot to get there. Recording the layout and versioning the manifest from the first implementation costs little and keeps that path open. [Performance](performance.md#constraints-on-designs-we-are-choosing-now) owns the reasoning.
 
 Reserve worst-case staging capacity and a host upload slot before freezing the guest. Serialize upload attempts per snapshot initially; a new attempt cannot overwrite or replace the previous reservation until its uploader is stopped and leftover bytes are accounted for. Release the upload slot after confirmed upload completion/termination; release staging bytes only after confirmed file deletion or host storage retirement. Expired leases alone release neither. No additional reservation table is required.
 
@@ -170,9 +173,12 @@ Reserve worst-case staging capacity and a host upload slot before freezing the g
 | `request_keys` | Retry key and digest fields on `operations` |
 | `operation_attempts` | Bounded attempt receipts and history references on `operations` |
 | `image_versions` | Verified image digest and compatibility pinned on the sandbox/create operation; an operator-configured image allowlist controls permitted inputs |
+| `usage_records` | Derived from allocations and operations rather than sampled; revisit before any billing, per-project reporting, or hosted offering depends on it |
 | `artifacts` | Output references on `operations`, containing object key/version, digest, size, retention, and cleanup state |
 
 There are no public image or artifact IDs initially. Retrieve outputs through their authorized operation. Output names identify entries within that operation, not arbitrary bucket paths. Separate catalogs or artifact management can be introduced when needed.
+
+Two of these deferrals are product gaps, not just schema simplifications. An operator-configured digest allowlist means a project cannot bring its own dependencies, which is likely to block real workloads; and deriving usage after the fact is only adequate while nobody is billed or quota-reported from it. [Roadmap](roadmap.md#blocking-non-engineering-decisions) tracks both as decisions the owner has to make rather than open schema questions.
 
 ## Supporting UI security records
 
@@ -226,7 +232,7 @@ projects/{project_id}/sandboxes/{sandbox_id}/
   operations/{operation_id}/outputs/{output_name}/{upload_attempt_number}/content
 ```
 
-Upload attempts get distinct paths. An interrupted or stale uploader must not overwrite the objects selected by a completed publication. Use immutable/conditional writes or pinned object versions, and put the exact keys, sizes, digests, source allocation/generation, format version, and compatibility data in the manifest. PostgreSQL publishes one verified manifest; clients never infer readiness by listing a prefix.
+Upload attempts get distinct paths. An interrupted or stale uploader must not overwrite the objects selected by a completed publication. Use immutable/conditional writes or pinned object versions, and put the exact keys, sizes, digests, source allocation/generation, format version, chunk layout, and compatibility data in the manifest. The layout entry is what lets a restore issue ranged reads against `memory.bin` instead of downloading it whole. PostgreSQL publishes one verified manifest; clients never infer readiness by listing a prefix.
 
 Unpublished upload attempts can be garbage-collected after their leases and retention expire. Published components remain referenced until deletion policy permits removal. The controller must distinguish abandoned uploads from an in-progress publication before deleting bytes.
 

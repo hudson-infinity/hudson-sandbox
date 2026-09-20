@@ -1,6 +1,6 @@
 # Architecture
 
-Status: selected design; implementation and verification pending. This document owns component boundaries, technology choices, deployment topology, and isolation boundaries. Read [the documentation index](README.md) for the detailed contracts.
+Status: selected design; implementation and verification pending. This document owns component boundaries, technology choices, deployment topology, and isolation mechanisms. [Threat model](threat-model.md) owns the adversary model those mechanisms answer to, [alternatives](alternatives.md) owns why this system is built rather than adopted, and [performance](performance.md) owns the budgets the design must meet. Read [the documentation index](README.md) for the detailed contracts.
 
 ## Purpose and ownership
 
@@ -50,7 +50,7 @@ For an agent with shell access, the integration is **agent shell tool → `hudso
 
 Installing the CLI does not redirect the harness's built-in file edits or shell commands into our sandbox. The agent must explicitly use the CLI for remote execution and file transfers. Instructions help it choose the tool; they do not enforce isolation of other harness tools. A caller that needs all execution confined to our sandbox must enforce that through its harness configuration. A chat client with no custom-tool or shell integration cannot use the service merely because an HTTP endpoint exists.
 
-**No MCP server is planned for the current scope.** We will deliver API-based integrations and the CLI first. This decision avoids an additional protocol adapter; it does not claim that CLI instructions or command output consume no agent context. The initial SDK languages, package distribution, and exact CLI syntax remain implementation decisions. [API contract](api-contract.md#sdk-and-cli-behavior) owns client request/result behavior, and [roadmap](roadmap.md) owns delivery sequencing.
+**No MCP server is planned for the current scope.** We will deliver API-based integrations and the CLI first. This decision avoids an additional protocol adapter; it does not claim that CLI instructions or command output consume no agent context. It is recorded in [decision 0002](decisions/0002-no-mcp-server-initially.md) with an explicit revisit trigger, so it is reconsidered deliberately rather than by drift as agent clients standardize. The initial SDK languages, package distribution, and exact CLI syntax remain implementation decisions. [API contract](api-contract.md#sdk-and-cli-behavior) owns client request/result behavior, and [roadmap](roadmap.md) owns delivery sequencing.
 
 ## System and data flow
 
@@ -122,11 +122,13 @@ Firecracker's host API supplies VM controls; the supervisor uses that interface 
 
 ## Deployment and placement boundary
 
-Use the deployment pattern documented by [E2B](https://github.com/e2b-dev/runtime/blob/main/docs/ARCHITECTURE.md#deployment-topology): Kubernetes hosts platform services, while an orchestrator on each compute host manages individual Firecracker VMs. E2B is an architectural reference, not a dependency.
+Use the deployment pattern documented by [E2B](https://github.com/e2b-dev/runtime/blob/main/docs/ARCHITECTURE.md#deployment-topology): Kubernetes hosts platform services, while an orchestrator on each compute host manages individual Firecracker VMs. E2B is an architectural reference, not a dependency; [alternatives](alternatives.md) explains why we build on this pattern instead of adopting a product that implements it.
 
 **An individual sandbox is not a Kubernetes pod in the initial design.** Kubernetes scheduling the API or supervisor does not automatically schedule or account for the VMs that supervisor creates. Our placement component reserves sandbox CPU, memory, and disk capacity; the host supervisor enforces those limits.
 
 Start with standalone API/controller processes and one compute host, making placement a capacity check and reservation. Kubernetes deployment follows the verified single-host lifecycle. Add multiple eligible hosts later. Keep sandbox compute capacity dedicated, or explicitly reserve it from other Kubernetes workloads, so two schedulers cannot allocate the same resources independently. Account for host overhead and bounded image caches; exclude draining or unhealthy hosts. Reserve local writable/restore disk alongside CPU/RAM, and reserve snapshot staging space and upload slots before freezing a VM. Expired leases alone cannot free disk bytes or stop an uploader.
+
+Capacity accounting must be able to represent cached snapshot bytes as a category distinct from allocation disk and snapshot staging, even before any cache exists. A host-local snapshot cache is the most likely answer to cross-host restore latency, and retrofitting a third category into reservation arithmetic later is avoidable work. See [performance](performance.md#constraints-on-designs-we-are-choosing-now).
 
 Kubernetes may deploy a privileged launcher for the host supervisor, but its exact packaging must be validated separately. The supervisor's host privileges never extend to customer processes. Node eviction, draining, or termination must coordinate with active sandboxes; replacing a service pod is not evidence that guest memory was saved.
 
@@ -141,6 +143,8 @@ Authentication is required for local, self-hosted, and Hudson deployments. Proje
 Hudson owns its users, agent tasks, approvals, and business credentials. The sandbox does not call Hudson to validate access. An optional external tool gateway belongs to the caller's trusted infrastructure, not this service.
 
 ## Isolation and data protection
+
+These are the mechanisms. [Threat model](threat-model.md) states which adversary each one answers, and which attacks we explicitly do not defend against.
 
 Use Firecracker jailer, supported seccomp filters, per-VM cgroups/namespaces, restricted host sockets, immutable verified templates, and a private writable filesystem per sandbox. Harden host setup using [Firecracker's production guidance](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md).
 
@@ -176,4 +180,6 @@ This layout is a proposal; the directories and binaries do not exist yet. The UI
 
 Choose exact dependency versions, internal transport, frontend framework, host packaging, and telemetry storage backends during implementation. Start with one supported KVM host configuration; use a remote Linux host for real VM testing from macOS. No performance or isolation guarantee is established by this diagram.
 
-Validation: integration and isolation tests are not written yet. Required gates and planned delivery are in [roadmap](roadmap.md); lifetime/recovery checks are in [lifecycle](lifecycle.md#acceptance-checks).
+Validation: integration and isolation tests are not written yet. Required gates and planned delivery are in [roadmap](roadmap.md); lifetime/recovery checks are in [lifecycle](lifecycle.md#acceptance-checks); adversarial tests are listed in [threat model](threat-model.md#required-validation); latency and size budgets are in [performance](performance.md).
+
+The guest agent's separation from frozen customer process groups is the least proven element of this design and is not settled by any document here. [Roadmap](roadmap.md#feasibility-spikes-phase-0) makes proving it on real hardware a Phase 0 spike, ahead of the pause/resume phase that depends on it.
