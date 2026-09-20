@@ -1,0 +1,30 @@
+name: Feature or design proposal
+description: Agree on a use case and scope before substantial work.
+title: "proposal: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case
+      description: Who needs this, and what are they trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change and scope
+      description: Describe the behavior, affected contracts, and what can wait.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What observable result would show this is complete?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+      description: Include dependencies, compatibility, or security implications where relevant.

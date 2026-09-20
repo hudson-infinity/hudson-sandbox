@@ -1,0 +1,36 @@
+name: Bug report
+description: Report an ordinary defect or documentation inconsistency.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The runtime is not implemented yet. Identify whether this affects docs or implemented code.
+        Report vulnerabilities privately: https://github.com/hudson-infinity/hudson-sandbox/security/advisories/new
+        Do not include credentials or customer data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Expected and actual behavior
+      description: What did you expect, and what happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction or affected document
+      description: Provide minimal steps, or the document section and conflicting statements.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      description: Include the commit, release, or document URL you checked.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and safe supporting evidence
+      description: If applicable, include OS, deployment details, and redacted logs.
