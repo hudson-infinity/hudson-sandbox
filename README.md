@@ -1,25 +1,26 @@
 # Hudson Sandbox
 
-**Give your agent a sandbox.**
+**Run untrusted workloads in isolated environments.**
 
-Hudson Sandbox is a project from **Hudson Labs** building isolated Linux environments for AI agents. Give an agent a place to run code and work with files, save its running environment when work pauses, and resume it later.
+Hudson Sandbox is a project from **Hudson Labs** building a general-purpose secure runtime for untrusted Linux workloads. Run scripts, applications, build jobs, automation, and services with controlled resources, controlled connectivity, and a reliable lifecycle. AI agents are one possible client.
 
 **Status: design stage.** Architecture and contracts are documented; the runtime, SDKs, CLI, management UI, and installer are not implemented yet. There are no validated isolation or performance guarantees, and no working quickstart to run today.
 
 ## What we are building
 
 - **Create and execute:** start a sandbox with explicit resource limits, run commands, and read output.
-- **Pause and resume:** save memory and disk, release compute, then continue the same sandbox.
+- **Files and networking:** transfer files safely and enforce connectivity policy.
+- **Pause and resume, later:** save memory and disk, release compute, then continue the same sandbox.
 - **Manage:** inspect operations, cancel work, and destroy sandboxes with tracked cleanup.
-- **Self-host:** operate the service independently, with Project and Admin access through an API and management UI.
+- **Self-host:** operate the service independently, with Project and Admin access through an API and CLI, with a management UI to follow.
 
 ```text
-Your agent or harness → Sandbox API → Controller → Firecracker microVM
+Your application      → Sandbox API → Controller → Firecracker microVM
                               │
                     Status, output, snapshots
 ```
 
-[Hudson](https://github.com/hudson-infinity/hudson) is the agent harness. Hudson Sandbox supplies the execution environment and works with other harnesses too. Agent workflows and Temporal stay with the caller. Authentication is required everywhere, including local development.
+[Hudson](https://github.com/hudson-infinity/hudson) is the agent harness. Hudson Sandbox supplies the execution environment and works with other applications and harnesses too. Agent workflows and Temporal stay with the caller. Authentication is required everywhere, including local development.
 
 The selected stack is **Rust, Firecracker/Linux KVM, PostgreSQL with SQLx, and S3-compatible object storage**, with HTTP/JSON APIs. We start with one Linux compute host; Kubernetes deployment and multiple hosts follow a verified lifecycle.
 
@@ -37,9 +38,9 @@ Output streaming and file transfers are API capabilities. We are not adding MCP 
 
 ## Follow the build
 
-Start with the [documentation guide](docs/README.md), [architecture](docs/architecture.md), and [roadmap](docs/roadmap.md).
+Start with the [product goal](docs/goal.md), [documentation guide](docs/README.md), [architecture](docs/architecture.md), and [roadmap](docs/roadmap.md).
 
-Our first complete milestone is **create → execute → pause → release compute → resume → destroy**, without requiring Hudson, Temporal, or Kubernetes.
+Our first usable milestone is **create → execute and transfer files → enforce isolation and limits → destroy**, including failure recovery and a reproducible installation on one supported host. Pause/resume follows. Hudson, Temporal, and Kubernetes are not required.
 
 ## Contribute
 

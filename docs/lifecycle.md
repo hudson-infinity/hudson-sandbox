@@ -128,7 +128,7 @@ If the API or controller restarts, pending operations and reservations remain in
 | Customer processes released, readiness reply lost | Release receipt bound to allocation/generation | Reconcile the same VM and record outcome; do not restore a second copy |
 | Destroy stopped VM, cleanup incomplete | Destroy operation, stop evidence, pending cleanup references | Continue cleanup; retain outstanding disk reservations and destruction tombstone |
 
-Persist intent before each external action and confirmed evidence afterward. Every transition validates the current claim revision and allocation generation. Failure-injection tests must interrupt each row's boundary before the first complete milestone is accepted.
+Persist intent before each external action and confirmed evidence afterward. Every transition validates the current claim revision and allocation generation. Failure-injection tests must interrupt every applicable boundary before that capability ships. The first runtime covers create, execute, and destroy; pause/resume must pass the additional snapshot and restore boundaries before its later delivery gate is accepted. See [roadmap](roadmap.md).
 
 ## Host leases and capacity recovery
 

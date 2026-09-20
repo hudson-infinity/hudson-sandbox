@@ -4,6 +4,8 @@ Status: selected design; implementation and verification pending. This document 
 
 ## Purpose and ownership
 
+Hudson Sandbox is a general-purpose secure runtime for untrusted Linux workloads. Scripts, applications, build jobs, automation, and services use the same core interfaces; AI agents are one possible client. [Product goal](goal.md) owns scope and priorities, including the initial secure execution milestone before pause/resume.
+
 **Hudson is the agent harness. Hudson Sandbox is a tool it calls.**
 
 Hudson Sandbox provides APIs to create, execute, pause, resume, and destroy isolated Linux sandboxes. It also handles files, execution limits, operation status, and resource cleanup. Clients do not need to use Hudson or Temporal to call these APIs.
