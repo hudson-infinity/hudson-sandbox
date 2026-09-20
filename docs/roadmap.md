@@ -12,7 +12,7 @@ The phases below organize implementation, not optional shortcuts around the comp
 
 | Phase | Deliverable and exit gate | Status |
 | --- | --- | --- |
-| 1. Foundation and single-host execution | Rust protocol/API/controller/supervisor/guest, six resource-model migrations and admin audit persistence, authenticated setup and project requests; one jailed VM executes commands, streams output, enforces CPU/RAM/disk limits, and tears down | Planned |
+| 1. Foundation and single-host execution | Rust protocol/API/controller/supervisor/guest, SQLx storage access with versioned SQL migrations for the six resource models and admin audit persistence, authenticated setup and project requests; one jailed VM executes commands, streams output, enforces CPU/RAM/disk limits, and tears down | Planned |
 | 2. Pause/resume | Verified complete memory/disk snapshot, durable publication, compute release, compatible restore, guest handshake, and original deadlines | Planned |
 | 3. Recovery and isolation | Failure-injection at every lifecycle boundary; fenced ownership, honest unknown outcomes, retry deduplication, egress/tenant isolation, and cleanup convergence | Planned |
 | 4. Management UI and delivery | Session migrations, shared Project/Admin policy, UI flows and acceptance checks, self-hosting setup, deployment/monitoring, CLI/SDK packaging and client conformance, and Hudson using ordinary APIs; Kubernetes packaging follows the standalone proof | Planned |
@@ -26,7 +26,7 @@ API contracts come first; implement the CLI against working endpoints and add SD
 | --- | --- | --- |
 | Lifecycle correctness | Every [lifecycle acceptance case](lifecycle.md#acceptance-checks), including controller/host failure and cleanup | Not implemented/tested |
 | API behavior | [Admission, retries, errors, and streaming checks](api-contract.md#acceptance-checks-and-open-decisions) | Not implemented/tested |
-| Ownership/storage | [Model constraints and ID/storage checks](data-models.md#acceptance-checks-and-open-decisions) | Not implemented/tested |
+| Ownership/storage | SQLx query/schema checks, fresh and supported-upgrade migration tests, and [model constraints and ID/storage checks](data-models.md#acceptance-checks-and-open-decisions) | Not implemented/tested |
 | Authentication | [Auth acceptance](auth-design.md#acceptance-checks), mandatory locally and in deployment | Not implemented/tested |
 | Host isolation | Adversarial tests for guest privilege, filesystem traversal, metadata/control-plane egress, and cross-tenant access | Not implemented/tested |
 | Management UI | [UI acceptance](ui-design.md#acceptance-checks) before shipping the dashboard | Not implemented/tested |

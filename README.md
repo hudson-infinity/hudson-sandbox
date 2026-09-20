@@ -21,7 +21,7 @@ Your agent or harness → Sandbox API → Controller → Firecracker microVM
 
 [Hudson](https://github.com/hudson-infinity/hudson) is the agent harness. Hudson Sandbox supplies the execution environment and works with other harnesses too. Agent workflows and Temporal stay with the caller. Authentication is required everywhere, including local development.
 
-The selected stack is **Rust, Firecracker/Linux KVM, PostgreSQL, and S3-compatible object storage**, with HTTP/JSON APIs. We start with one Linux compute host; Kubernetes deployment and multiple hosts follow a verified lifecycle.
+The selected stack is **Rust, Firecracker/Linux KVM, PostgreSQL with SQLx, and S3-compatible object storage**, with HTTP/JSON APIs. We start with one Linux compute host; Kubernetes deployment and multiple hosts follow a verified lifecycle.
 
 ## Ways to use it
 
