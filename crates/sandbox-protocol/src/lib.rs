@@ -34,3 +34,5 @@ pub mod command;
 pub mod output;
 
 pub mod live_output;
+
+pub mod files;

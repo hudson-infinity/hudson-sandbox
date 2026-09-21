@@ -153,7 +153,7 @@ Poll `GET /v1/operations/{operation_id}`. Confirmed exits provide `result.exit_c
 
 Execute operation status and list responses also include `output_status`: `none`, `pending`, `uploading`, `published`, or `expired`. This is independent of the process outcome. A confirmed exit initially reports `pending`; the opt-in independent archival worker can subsequently publish verified private references. Private object references are never returned in these status bodies. [Output storage](output-storage.md#database-publication) defines publication and expiry.
 
-Output bytes are not returned by these routes. Retained output is available through the separate endpoint below; file transfer remains unfinished; live output uses the SSE endpoint below and command interruption uses the [cancellation route](command-cancellation.md).
+Output bytes are not returned by these routes. Retained output is available through the separate endpoint below; public file transfer remains unfinished (the [guest file engine](file-transfer.md) is implemented); live output uses the SSE endpoint below and command interruption uses the [cancellation route](command-cancellation.md).
 
 New execute admission reserves one of 32 command slots and its full `output_limit` within a 64 MiB budget per allocation. A request exceeding either bound returns `409 execution_capacity_exhausted`, with no operation ID, operation insertion or retry-key consumption. A smaller output limit can fit remaining bytes; exhausted command slots require a new sandbox. Existing identical retries still resolve to their original handle (or `410 response_expired`); changed retries still conflict. Destroy remains available.
 
