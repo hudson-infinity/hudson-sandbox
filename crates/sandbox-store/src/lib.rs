@@ -12,6 +12,7 @@ pub mod execute;
 pub mod leases;
 pub mod lists;
 pub mod output;
+pub mod output_cleanup;
 pub mod placement;
 pub mod projects;
 pub mod provision;

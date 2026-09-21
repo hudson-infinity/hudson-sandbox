@@ -197,7 +197,7 @@ pub(crate) async fn execution_evidence(
     })
 }
 
-async fn evidence(db: &mut PgConnection, row: &PgRow) -> Result<Evidence, OutputError> {
+pub(crate) async fn evidence(db: &mut PgConnection, row: &PgRow) -> Result<Evidence, OutputError> {
     let evidence = execution_evidence(db, row).await?;
     let receipt = &evidence.receipt;
     let (status, phase) = match receipt.state {
@@ -235,7 +235,7 @@ fn validate_plans(
     }
     Ok(())
 }
-fn saved(row: &PgRow, e: &Evidence) -> Result<Option<OutputWork>, OutputError> {
+pub(crate) fn saved(row: &PgRow, e: &Evidence) -> Result<Option<OutputWork>, OutputError> {
     let Some(value) = row.try_get::<Option<Value>, _>("output_ticket")? else {
         return Ok(None);
     };

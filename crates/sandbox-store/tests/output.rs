@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 
+#[path = "support/output_cleanup.rs"]
+mod cleanup_tests;
+
 fn now() -> i64 {
     (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
