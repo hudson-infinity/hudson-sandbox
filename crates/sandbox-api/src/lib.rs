@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod headers;
 pub mod problem;
+pub mod reads;
 pub mod sandboxes;
 
 use axum::Router;
@@ -28,5 +29,8 @@ impl FromRef<AppState> for Store {
 
 /// Build the router.
 pub fn router(state: AppState) -> Router {
-    Router::new().merge(sandboxes::routes()).with_state(state)
+    Router::new()
+        .merge(sandboxes::routes())
+        .merge(reads::routes())
+        .with_state(state)
 }
