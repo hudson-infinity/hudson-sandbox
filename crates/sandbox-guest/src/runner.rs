@@ -197,24 +197,7 @@ impl Runner {
                     && path == receipt_path(&config, receipt.operation_id),
                 "invalid receipt ownership"
             );
-            ensure!(
-                (1..=MAX_OUTPUT).contains(&receipt.output_limit)
-                    && receipt.stdout.stored <= receipt.stdout.seen
-                    && receipt.stderr.stored <= receipt.stderr.seen
-                    && receipt
-                        .stdout
-                        .stored
-                        .checked_add(receipt.stderr.stored)
-                        .is_some_and(|n| n <= receipt.output_limit)
-                    && receipt.stdout.truncated == (receipt.stdout.stored < receipt.stdout.seen)
-                    && receipt.stderr.truncated == (receipt.stderr.stored < receipt.stderr.seen)
-                    && if receipt.state == State::Exited {
-                        receipt.exit_code.is_some() ^ receipt.signal.is_some()
-                    } else {
-                        receipt.exit_code.is_none() && receipt.signal.is_none()
-                    },
-                "invalid retained receipt"
-            );
+            receipt.validate()?;
             reserved = reserved
                 .checked_add(receipt.output_limit)
                 .context("output reservation overflow")?;
@@ -252,6 +235,9 @@ impl Runner {
             }),
             _lock: lock,
         })))
+    }
+    pub fn context(&self) -> &Context {
+        &self.0.config.context
     }
     pub async fn start(&self, request: Execute) -> Result<Receipt> {
         request.validate()?;
@@ -524,4 +510,113 @@ async fn capture(
     }
     output.sync_all().await?;
     Ok(result)
+}
+
+impl Runner {
+    pub async fn output(
+        &self,
+        request: &sandbox_protocol::guest::ReadOutput,
+    ) -> Result<sandbox_protocol::guest::OutputChunk> {
+        use sandbox_protocol::{guest as w, guest_wire::MAX_CHUNK};
+        use std::os::unix::fs::FileExt;
+        let id: OperationId = request.operation_id.parse()?;
+        ensure!(
+            request.limit > 0 && request.limit <= MAX_CHUNK,
+            "invalid output length"
+        );
+        let stream = w::Stream::try_from(request.stream)?;
+        let suffix = match stream {
+            w::Stream::Stdout => "stdout",
+            w::Stream::Stderr => "stderr",
+            w::Stream::Unspecified => anyhow::bail!("unspecified output stream"),
+        };
+        let receipt = self.inspect(id).await.context("unknown operation")?;
+        let stored = match stream {
+            w::Stream::Stdout => receipt.stdout.stored,
+            w::Stream::Stderr => receipt.stderr.stored,
+            w::Stream::Unspecified => unreachable!(),
+        };
+        ensure!(
+            request.offset <= receipt.output_limit,
+            "output offset outside reservation"
+        );
+        // Guest-root reports remain untrusted, but this read must not follow a planted
+        // symlink or block on a FIFO/device created in place of an output file.
+        let path = self.0.config.state_dir.join(format!("{id}.{suffix}"));
+        let file = match OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+            )
+            .open(path)
+        {
+            Ok(file) => Some(file),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && stored == 0 => None,
+            Err(e) => return Err(e.into()),
+        };
+        let mut data = Vec::new();
+        let len = if let Some(file) = file {
+            let metadata = file.metadata()?;
+            ensure!(
+                metadata.is_file() && metadata.len() <= receipt.output_limit,
+                "invalid retained output file"
+            );
+            ensure!(
+                request.offset <= metadata.len(),
+                "offset past retained output"
+            );
+            data.resize(
+                (metadata.len() - request.offset).min(u64::from(request.limit)) as usize,
+                0,
+            );
+            let count = file.read_at(&mut data, request.offset)?;
+            data.truncate(count);
+            metadata.len()
+        } else {
+            ensure!(request.offset == 0, "offset past retained output");
+            0
+        };
+        let next_offset = request.offset + data.len() as u64;
+        Ok(w::OutputChunk {
+            operation_id: id.to_string(),
+            stream: request.stream,
+            offset: request.offset,
+            data,
+            next_offset,
+            at_end: next_offset >= len,
+            complete: receipt.state.terminal()
+                && receipt.state != State::Unknown
+                && receipt.cleanup_confirmed,
+        })
+    }
+}
+
+impl Runner {
+    /// Stop admitted work before an orderly guest agent shutdown; host watchdog still owns VM death.
+    pub async fn shutdown(&self) -> Result<()> {
+        let active = self
+            .0
+            .registry
+            .lock()
+            .await
+            .active
+            .as_ref()
+            .map(|(id, _)| *id);
+        if let Some(id) = active {
+            self.cancel(id).await?;
+            timeout(Duration::from_secs(10), async {
+                loop {
+                    let receipt = self.inspect(id).await.context("missing shutdown receipt")?;
+                    if receipt.state.terminal() {
+                        ensure!(receipt.cleanup_confirmed, "shutdown cleanup unconfirmed");
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                    sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .context("guest shutdown deadline")??;
+        }
+        Ok(())
+    }
 }

@@ -1,0 +1,52 @@
+syntax = "proto3";
+package hudson.guest.v1;
+
+// One request/response per mutually authenticated TLS connection, framed by a
+// four-byte big-endian length. Never reuse deleted field numbers.
+message Context { string allocation_id = 1; int64 generation = 2; string boot_id = 3; }
+message Hello {}
+message Operation { string operation_id = 1; }
+message Execute {
+  string operation_id = 1;
+  repeated string argv = 2;
+  map<string, string> env = 3;
+  string cwd = 4;
+  int64 deadline_unix_ms = 5;
+  uint64 output_limit = 6;
+}
+enum Stream { STREAM_UNSPECIFIED = 0; STREAM_STDOUT = 1; STREAM_STDERR = 2; }
+message ReadOutput { string operation_id = 1; Stream stream = 2; uint64 offset = 3; uint32 limit = 4; }
+message Request {
+  uint32 version = 1;
+  string request_id = 2;
+  Context context = 3;
+  oneof action { Hello hello = 4; Execute execute = 5; Operation inspect = 6; Operation cancel = 7; ReadOutput output = 8; }
+}
+enum State { STATE_UNSPECIFIED = 0; STATE_LAUNCH_INTENT = 1; STATE_EXITED = 2; STATE_TIMED_OUT = 3; STATE_CANCELLED = 4; STATE_UNKNOWN = 5; }
+message OutputStats { uint64 seen = 1; uint64 stored = 2; bool truncated = 3; }
+message Receipt {
+  uint32 version = 1;
+  Context context = 2;
+  string operation_id = 3;
+  bytes digest = 4;
+  State state = 5;
+  int64 deadline_unix_ms = 6;
+  uint64 output_limit = 7;
+  bool cancel_requested = 8;
+  bool cleanup_confirmed = 9;
+  optional int32 exit_code = 10;
+  optional int32 signal = 11;
+  OutputStats stdout = 12;
+  OutputStats stderr = 13;
+  optional string reason = 14;
+}
+message OutputChunk {
+  string operation_id = 1; Stream stream = 2; uint64 offset = 3;
+  bytes data = 4; uint64 next_offset = 5; bool at_end = 6; bool complete = 7;
+}
+enum ErrorCode { ERROR_CODE_UNSPECIFIED = 0; ERROR_CODE_INVALID = 1; ERROR_CODE_NOT_FOUND = 2; ERROR_CODE_REJECTED = 3; ERROR_CODE_UNCERTAIN = 4; }
+message Error { ErrorCode code = 1; }
+message Response {
+  uint32 version = 1; string request_id = 2; Context context = 3;
+  oneof result { Hello hello = 4; Receipt receipt = 5; OutputChunk output = 6; Error error = 7; }
+}

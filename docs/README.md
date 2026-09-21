@@ -11,6 +11,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [Data models](data-models.md) | Fields, relationships, IDs, database constraints, storage layout | What we persist and how records connect |
 | [Authentication](auth-design.md) | Project/Admin permissions, credentials, sessions, CSRF, revocation, audit semantics | Who can do what and how access is enforced |
 | [Lifecycle](lifecycle.md) | State transitions, completion evidence, deadlines, cancellation, recovery | How create/pause/resume/destroy actually work |
+| [Guest protocol](guest-protocol.md) | Authenticated vsock framing, host client and guest listener | How commands, receipts and bounded output cross the VM boundary |
 | [Guest runner](guest-runner.md) | Guest process execution, bounded output and local recovery receipts | What the command component implements and what host protections remain |
 | [Linux development](linux-development.md) | Nested Linux/KVM setup and real boot evidence | How to develop the guest and real supervisor |
 | [API server](api-server.md) | HTTPS transport, offline provisioning, and runnable local setup | How to start and call the implemented API |

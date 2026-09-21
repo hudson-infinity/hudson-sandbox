@@ -9,7 +9,12 @@ fn main() {
         }
         return;
     }
-    if cli().is_err() {
+    let result = if mode.as_deref() == Some("serve") {
+        serve_cli()
+    } else {
+        cli()
+    };
+    if result.is_err() {
         eprintln!("guest runner failed; retained state requires inspection");
         std::process::exit(1);
     }
@@ -88,4 +93,85 @@ fn cli() -> anyhow::Result<()> {
         }
         Ok::<_, anyhow::Error>(())
     })
+}
+
+#[cfg(target_os = "linux")]
+fn serve_cli() -> anyhow::Result<()> {
+    use clap::Parser;
+    use sandbox_guest::{
+        model::Context,
+        runner::{Config, Runner},
+    };
+    use sandbox_protocol::guest_wire::ServerTls;
+    use std::{
+        io::Read,
+        path::{Path, PathBuf},
+    };
+    #[derive(Parser)]
+    struct Args {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        cgroup_root: PathBuf,
+        #[arg(long)]
+        allocation_id: sandbox_protocol::AllocationId,
+        #[arg(long)]
+        generation: i64,
+        #[arg(long, default_value_t = 52)]
+        port: u32,
+        #[arg(long)]
+        ca: PathBuf,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        host_pin: String,
+    }
+    fn bounded(path: &Path) -> anyhow::Result<Vec<u8>> {
+        let mut data = Vec::new();
+        std::fs::File::open(path)?
+            .take(65537)
+            .read_to_end(&mut data)?;
+        anyhow::ensure!(data.len() <= 65536, "TLS file too large");
+        Ok(data)
+    }
+    let args = Args::parse_from(std::env::args().skip(1));
+    let pin: [u8; 32] = hex::decode(&args.host_pin)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid host pin"))?;
+    let tls = ServerTls::new(
+        &bounded(&args.ca)?,
+        &bounded(&args.cert)?,
+        &bounded(&args.key)?,
+        pin,
+    )?;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async move {
+            let runner = Runner::open(Config {
+                state_dir: args.state_dir,
+                cgroup_root: args.cgroup_root,
+                launcher: std::env::current_exe()?,
+                context: Context {
+                    allocation_id: args.allocation_id,
+                    generation: args.generation,
+                    boot_id: std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?
+                        .trim()
+                        .into(),
+                },
+            })
+            .await?;
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut interrupt = signal(SignalKind::interrupt())?;
+            let mut terminate = signal(SignalKind::terminate())?;
+            let served = tokio::select! {
+                result=sandbox_guest::server::serve_vsock(runner.clone(),tls,args.port)=>result,
+                _=interrupt.recv()=>Ok(()),
+                _=terminate.recv()=>Ok(()),
+            };
+            runner.shutdown().await?;
+            served
+        })
 }
