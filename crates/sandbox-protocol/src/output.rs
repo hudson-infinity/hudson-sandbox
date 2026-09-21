@@ -200,12 +200,15 @@ impl OutputRetirement {
         }
         if let Some(previous) = &self.previous {
             previous.validate()?;
-            if &previous.plan != plan
-                || previous
-                    .object_version
-                    .as_deref()
-                    .is_some_and(|v| v != "null" && self.marker_version.as_deref() == Some(v))
-            {
+            let compatible = match (
+                previous.object_version.as_deref(),
+                self.marker_version.as_deref(),
+            ) {
+                (None, None) | (Some("null"), Some("null")) => true,
+                (Some(old), Some(marker)) => old != marker,
+                _ => false,
+            };
+            if &previous.plan != plan || !compatible {
                 return Err(InvalidOutput);
             }
         }

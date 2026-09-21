@@ -1,17 +1,17 @@
-//! Durable, fenced cleanup inventory. This module grants no storage deletion
-//! authority and never claims that bytes have been removed. A later storage
-//! worker must reconcile each exact attempt and retain deletion receipts.
+//! Durable, fenced cleanup inventory and metadata-only completion receipts.
+//! Trusted cleanup workers verify storage retirement; this module validates
+//! its binding to the frozen attempt and preserves execution history.
 use crate::{
     Store,
     output::{self, OutputError},
 };
 use sandbox_protocol::{
     Id, OperationId,
-    output::{OutputPlans, OutputRefs, OutputTicket},
+    output::{OutputPlans, OutputRefs, OutputRetirement, OutputTicket},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::Row;
+use sqlx::{PgConnection, Row, postgres::PgRow};
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone)]
@@ -34,6 +34,37 @@ pub struct CleanupManifest {
     pub simulated: bool,
 }
 
+/// Accepted only from a trusted cleanup worker after storage verification.
+/// Never deserialize a customer request into cleanup authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CleanupCompletion {
+    NoUploadsAuthorized,
+    Retired {
+        stdout: Box<OutputRetirement>,
+        stderr: Box<OutputRetirement>,
+    },
+}
+impl CleanupCompletion {
+    fn validate(&self, manifest: &CleanupManifest) -> Result<(), OutputError> {
+        match (self, &manifest.plans) {
+            (Self::NoUploadsAuthorized, None) if manifest.references.is_none() => Ok(()),
+            (Self::Retired { stdout, stderr }, Some(plans)) => {
+                stdout.validate(&plans.stdout)?;
+                stderr.validate(&plans.stderr)?;
+                if manifest.references.as_ref().is_some_and(|refs| {
+                    stdout.previous.as_ref() != Some(&refs.stdout)
+                        || stderr.previous.as_ref() != Some(&refs.stderr)
+                }) {
+                    return Err(OutputError::BadEvidence);
+                }
+                Ok(())
+            }
+            _ => Err(OutputError::BadEvidence),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum CleanupPreparation {
     /// Retention ended, but the persisted cleanup grace has not elapsed. The
@@ -51,7 +82,105 @@ fn lease(seconds: u32) -> Result<f64, OutputError> {
     Ok(f64::from(seconds))
 }
 
+async fn manifest(db: &mut PgConnection, row: &PgRow) -> Result<CleanupManifest, OutputError> {
+    let status: String = row.try_get("output_status")?;
+    if !matches!(status.as_str(), "uploading" | "published" | "expired") {
+        return Err(OutputError::Corrupt);
+    }
+    let evidence = output::evidence(db, row).await?;
+    let work = output::saved(row, &evidence)?.ok_or(OutputError::Corrupt)?;
+    let raw: Value = row.try_get("output_refs")?;
+    let items = raw.as_array().ok_or(OutputError::Corrupt)?;
+    let references = match items.len() {
+        0 if status != "published" => None,
+        2 if status != "uploading" => {
+            let refs = OutputRefs {
+                stdout: serde_json::from_value(items[0].clone())
+                    .map_err(|_| OutputError::Corrupt)?,
+                stderr: serde_json::from_value(items[1].clone())
+                    .map_err(|_| OutputError::Corrupt)?,
+            };
+            refs.validate(&evidence.owner, evidence.receipt.output_limit)
+                .map_err(|_| OutputError::Corrupt)?;
+            if work.plans.as_ref() != Some(&refs.plans()) {
+                return Err(OutputError::Corrupt);
+            }
+            Some(refs)
+        }
+        _ => return Err(OutputError::Corrupt),
+    };
+    Ok(CleanupManifest {
+        version: 1,
+        ticket: work.ticket,
+        plans: work.plans,
+        references,
+        simulated: work.simulated,
+    })
+}
+
 impl Store {
+    /// Record both streams under the same live cleanup claim. A lost commit
+    /// acknowledgement can be reconciled by repeating this exact receipt with
+    /// the same revision; a replacement worker otherwise recovers the markers.
+    /// This does not verify S3 itself or mutate command/VM lifecycle state.
+    pub async fn complete_output_cleanup(
+        &self,
+        claim: &CleanupClaim,
+        receipt: &CleanupCompletion,
+        allow_simulated: bool,
+    ) -> Result<(), OutputError> {
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query("SELECT * FROM operations WHERE id=$1 FOR UPDATE")
+            .bind(claim.operation_id.uuid())
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(OutputError::LostClaim)?;
+        let inventory = sqlx::query("SELECT * FROM output_cleanup WHERE operation_id=$1
+            AND claim_revision=$2 AND (lease_expires_at>clock_timestamp() OR completed_at IS NOT NULL) FOR UPDATE")
+            .bind(claim.operation_id.uuid()).bind(claim.revision).fetch_optional(&mut *tx).await?.ok_or(OutputError::LostClaim)?;
+        let current = manifest(&mut tx, &row).await?;
+        let saved: CleanupManifest = serde_json::from_value(
+            inventory
+                .try_get::<Option<Value>, _>("manifest")?
+                .ok_or(OutputError::BadEvidence)?,
+        )
+        .map_err(|_| OutputError::Corrupt)?;
+        let eligible_at = OffsetDateTime::from_unix_timestamp_nanos(
+            i128::from(current.ticket.delete_after_unix_ms) * 1_000_000,
+        )
+        .map_err(|_| OutputError::Corrupt)?;
+        if saved != current
+            || row.try_get::<String, _>("output_status")? != "expired"
+            || inventory.try_get::<Option<OffsetDateTime>, _>("eligible_at")? != Some(eligible_at)
+        {
+            return Err(OutputError::Corrupt);
+        }
+        if current.simulated && !allow_simulated {
+            return Err(OutputError::SimulationDenied);
+        }
+        receipt.validate(&current)?;
+        if inventory
+            .try_get::<Option<OffsetDateTime>, _>("completed_at")?
+            .is_some()
+        {
+            if inventory.try_get::<Option<Value>, _>("receipt")? != Some(json!(receipt)) {
+                return Err(OutputError::BadEvidence);
+            }
+            tx.commit().await?;
+            return Ok(());
+        }
+        let n = sqlx::query("UPDATE output_cleanup SET completed_at=clock_timestamp(),receipt=$3,
+            lease_expires_at=NULL,next_retry_at=NULL WHERE operation_id=$1 AND claim_revision=$2
+            AND lease_expires_at>clock_timestamp() AND eligible_at<=clock_timestamp() AND completed_at IS NULL")
+            .bind(claim.operation_id.uuid()).bind(claim.revision).bind(json!(receipt))
+            .execute(&mut *tx).await?.rows_affected();
+        if n != 1 {
+            return Err(OutputError::LostClaim);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Bounded discovery, including unpublished attempts and deleting projects.
     /// Queue identity is unique and durable, so retries cannot duplicate work.
     /// This does not parse or trust metadata, expire output, or delete bytes.
@@ -83,7 +212,7 @@ impl Store {
     ) -> Result<Option<CleanupClaim>, OutputError> {
         let row = sqlx::query(
             "WITH candidate AS (SELECT operation_id FROM output_cleanup
-            WHERE (lease_expires_at IS NULL OR lease_expires_at<=clock_timestamp())
+            WHERE completed_at IS NULL AND (lease_expires_at IS NULL OR lease_expires_at<=clock_timestamp())
             AND (next_retry_at IS NULL OR next_retry_at<=clock_timestamp())
             AND (eligible_at IS NULL OR eligible_at<=clock_timestamp())
             ORDER BY created_at,operation_id FOR UPDATE SKIP LOCKED LIMIT 1)
@@ -122,46 +251,14 @@ impl Store {
             .ok_or(OutputError::LostClaim)?;
         let inventory = sqlx::query(
             "SELECT * FROM output_cleanup WHERE operation_id=$1
-            AND claim_revision=$2 AND lease_expires_at>clock_timestamp() FOR UPDATE",
+            AND claim_revision=$2 AND lease_expires_at>clock_timestamp() AND completed_at IS NULL FOR UPDATE",
         )
         .bind(claim.operation_id.uuid())
         .bind(claim.revision)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(OutputError::LostClaim)?;
-        let status: String = row.try_get("output_status")?;
-        if !matches!(status.as_str(), "uploading" | "published" | "expired") {
-            return Err(OutputError::Corrupt);
-        }
-        let evidence = output::evidence(&mut tx, &row).await?;
-        let work = output::saved(&row, &evidence)?.ok_or(OutputError::Corrupt)?;
-        let raw: Value = row.try_get("output_refs")?;
-        let items = raw.as_array().ok_or(OutputError::Corrupt)?;
-        let references = match items.len() {
-            0 if status != "published" => None,
-            2 if status != "uploading" => {
-                let refs = OutputRefs {
-                    stdout: serde_json::from_value(items[0].clone())
-                        .map_err(|_| OutputError::Corrupt)?,
-                    stderr: serde_json::from_value(items[1].clone())
-                        .map_err(|_| OutputError::Corrupt)?,
-                };
-                refs.validate(&evidence.owner, evidence.receipt.output_limit)
-                    .map_err(|_| OutputError::Corrupt)?;
-                if work.plans.as_ref() != Some(&refs.plans()) {
-                    return Err(OutputError::Corrupt);
-                }
-                Some(refs)
-            }
-            _ => return Err(OutputError::Corrupt),
-        };
-        let manifest = CleanupManifest {
-            version: 1,
-            ticket: work.ticket,
-            plans: work.plans,
-            references,
-            simulated: work.simulated,
-        };
+        let manifest = manifest(&mut tx, &row).await?;
         let eligible_at = OffsetDateTime::from_unix_timestamp_nanos(
             i128::from(manifest.ticket.delete_after_unix_ms) * 1_000_000,
         )

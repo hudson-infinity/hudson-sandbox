@@ -2187,6 +2187,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox-cleanup"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "sandbox-artifacts",
+ "sandbox-protocol",
+ "sandbox-store",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "sandbox-cli"
 version = "0.0.0"
 
@@ -2283,9 +2299,12 @@ name = "sandbox-store"
 version = "0.0.0"
 dependencies = [
  "hex",
+ "sandbox-artifacts",
+ "sandbox-cleanup",
  "sandbox-protocol",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
  "time",

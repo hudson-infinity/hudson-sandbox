@@ -1,6 +1,6 @@
 # Documentation guide
 
-The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. The real Linux supervisor connects create, command execution, renewal and destroy to Firecracker. [Public execute](controller.md#command-admission-and-dispatch-ownership) has durable admission, retry fencing and result handling with local microVM evidence. Output/file/cancel routes, the UI, and an installer remain unfinished. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
+The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. The real Linux supervisor connects create, command execution, renewal and destroy to Firecracker. [Public execute](controller.md#command-admission-and-dispatch-ownership) has durable admission, retry fencing and result handling with local microVM evidence. Authenticated output reads, SSE streaming and an opt-in cleanup worker are implemented. File/cancel routes, the UI, and an installer remain unfinished. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
 
 ## Reading order and ownership
 
@@ -19,7 +19,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [Linux development](linux-development.md) | Nested Linux/KVM setup and real boot evidence | How to develop the guest and real supervisor |
 | [API server](api-server.md) | HTTPS transport, offline provisioning, and runnable local setup | How to start and call the implemented API |
 | [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |
-| [Output storage](output-storage.md) | Private artifact identity, archival, publication, verified reads and cleanup inventory | How output is retrieved and streamed; the remaining storage reclamation work |
+| [Output storage](output-storage.md) | Private artifact identity, archival, publication, verified reads and cleanup worker | How output is retrieved, streamed and retired with recoverable completion receipts |
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |
 | [Supported configuration](compatibility.md) | Host and guest envelope, privilege layers, boot inputs | What a supported installation and a sandbox actually are |
 | [Networking](networking.md) | Egress policy, name resolution, ingress, bandwidth | What a sandbox can reach and what can reach it |

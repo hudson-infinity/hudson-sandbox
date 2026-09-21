@@ -1,6 +1,6 @@
 # Private output storage
 
-Status: shared output metadata, the S3 transport library, independently fenced PostgreSQL publication, and the supervisor archival worker are implemented. Operation status responses expose output progress. Authenticated retained-byte retrieval is connected. A separate [supervisor read-only live-output RPC](supervisor-protocol.md#read-only-live-output) now supplies the guest transport; [authenticated public SSE](api-contract.md#implemented-output-streams) now consumes that transport and prefers verified archived objects. Cleanup has a durable database inventory, publication fence, and a storage retirement primitive. Persisted cleanup completion and the worker connecting these pieces remain unfinished. [Issue #46](https://github.com/hudson-infinity/hudson-sandbox/issues/46) tracks the remaining output work. Upload success alone is neither execution success nor publication.
+Status: shared output metadata, the S3 transport library, independently fenced PostgreSQL publication, and the supervisor archival worker are implemented. Operation status responses expose output progress. Authenticated retained-byte retrieval is connected. A separate [supervisor read-only live-output RPC](supervisor-protocol.md#read-only-live-output) now supplies the guest transport; [authenticated public SSE](api-contract.md#implemented-output-streams) now consumes that transport and prefers verified archived objects. An opt-in standalone cleanup worker connects durable inventory and storage retirement to fenced database completion receipts. History compaction remains unfinished. [Issue #46](https://github.com/hudson-infinity/hudson-sandbox/issues/46) tracks the remaining output work. Upload success alone is neither execution success nor publication.
 
 ## Object identity and integrity
 
@@ -60,7 +60,7 @@ Two supervisor archive slots bound concurrency separately from lifecycle workers
 
 ## Cleanup inventory
 
-[Migration 0007](../migrations/0007_output_cleanup.sql) adds private `output_cleanup` rows keyed by operation. The [store interface](../crates/sandbox-store/src/output_cleanup.rs) implements discovery, claims, preparation and deferral. It is not scheduled by the controller yet and exposes no customer endpoint. The migration creates an empty inventory and leaves existing operation records unchanged.
+[Migration 0007](../migrations/0007_output_cleanup.sql) adds private `output_cleanup` rows keyed by operation. The [store interface](../crates/sandbox-store/src/output_cleanup.rs) implements discovery, claims, preparation, deferral and completion. A separate opt-in worker schedules cleanup; the controller does not start it and there is no customer cleanup endpoint. Migration 0007 creates an empty inventory and leaves existing operation records unchanged. [Migration 0008](../migrations/0008_output_cleanup_completion.sql) adds paired `completed_at` and `receipt` fields while preserving pending inventory.
 
 1. `enqueue_expired_output` discovers at most 100 expired tickets per call. A unique operation key makes concurrent discovery and retries idempotent. Both published references and unfinished uploads are candidates, including suspended or deleting projects. Pending executions without a ticket have no authorized artifact keys to inventory.
 2. `claim_output_cleanup` gives one worker an independent revision and a database-time lease of at most 300 seconds. Workers use `SKIP LOCKED`; corrupt records can be deferred for up to one hour without blocking other operations.
@@ -69,7 +69,7 @@ Two supervisor archive slots bound concurrency separately from lifecycle workers
 
 Plans without selected references identify possible orphan objects from interrupted publication. A ticket without plans records that no upload was authorized. Neither state proves object absence. Current publication permits only one stable upload attempt per operation; arbitrary bucket objects and legacy attempts outside that protocol are not discovered by this inventory. There is no bucket listing or customer-controlled object path.
 
-`Ready` means eligible metadata, not deleted bytes. The inventory does not yet persist completed status or retirement receipts. The storage primitive below can retire an exact attempt, but a worker must connect it to these claims and save its evidence under the same fence before reporting reclamation. The database publication fence alone cannot stop an already-issued storage request from finishing.
+`Ready` means eligible metadata, not deleted bytes. After storage verification, `complete_output_cleanup` validates both stream receipts against the frozen plans and any selected references, rechecks the live claim after lock waits, and atomically stores completion while clearing lease/retry state. It accepts `NoUploadsAuthorized` only when neither plans nor references exist. Completed rows are never claimed again. Retrying the same receipt under the same completed revision reconciles a lost database acknowledgement; changed receipts or replaced revisions fail. Simulation requires explicit opt-in. The database publication fence alone cannot stop an already-issued storage request from finishing.
 
 ## Storage retirement
 
@@ -86,17 +86,37 @@ This protocol requires a private namespace with only managed create-only uploade
 
 The primitive reclaims known payloads while retaining compact storage markers. It does not compact database or guest/host journals, reclaim their reservations, or prove every backend/versioning combination is supported. Current integration evidence covers the pinned MinIO release in versioned and unversioned modes, not a live AWS deployment.
 
-## Integration still required
+## Cleanup worker
+
+The [sandbox-cleanup executable](../crates/sandbox-cleanup/src/main.rs) runs independently of the controller and supervisor. Set `DATABASE_URL` in the service environment and provide a private storage configuration file using the format above, with a separate cleanup credential authorized for retirement:
+
+```sh
+cargo run -p sandbox-cleanup -- --output-config /absolute/path/cleanup-storage.json
+# One bounded discovery/cleanup tick, with nonzero exit on failure:
+cargo run -p sandbox-cleanup -- --output-config /absolute/path/cleanup-storage.json --once
+```
+
+Startup applies the repository migrations. The file must satisfy the same ownership and permission checks as other output configurations. The worker needs no host endpoint, supervisor certificate, guest access or command-dispatch capability. `--allow-simulated` is an explicit development-only option and defaults to false.
+
+Each [worker tick](../crates/sandbox-cleanup/src/lib.rs) discovers at most 100 expired attempts, claims one for 120 seconds, prepares its manifest, retires stdout and stderr sequentially, and persists their paired receipts. Database calls have five-second bounds and claimed processing has a 90-second bound; each storage retirement retains its 30-second bound. Failures defer that attempt with exponential delay based on claim revision, starting at five seconds and capped at one hour. The loop waits 500 milliseconds between ticks; multiple processes coordinate through database claims. Logs identify the operation without output bytes, credentials or storage descriptors.
+
+If stdout retirement succeeds and stderr fails, database completion stays unset. A replacement worker recovers stdout's existing marker and finishes stderr without needing the guest or re-executing the command. Process death or cancellation can leave an uncertain storage/commit outcome; markers, claim expiry and idempotent completion support reconciliation. A prepared ticket with no authorized uploads completes without contacting storage. Grace-period work remains waiting without storage effects.
+
+Completion records retirement of the exact archived attempt. It does not certify physical erasure across provider replicas/backups, reclaim guest/host journals or reservations, or establish VM cleanup or sandbox release readiness. The public API continues to report output as expired and never exposes private cleanup receipts.
+
+## Remaining history work
 
 The [retained-output endpoint](api-contract.md#implemented-retained-output-reads) consumes selected references and rechecks credentials after storage and metadata lookups. The [SSE endpoint](api-contract.md#implemented-output-streams) now adds pinned live-guest reads, independent credential rechecks, byte-position cursors and explicit gaps.
 
-`expires_unix_ms` stops reads; `delete_after_unix_ms` is an earliest eligibility timestamp, not a deletion receipt. The cleanup inventory retains the complete execution and publication history. Scheduling storage retirement, persisting completion receipts and compacting history into operation tombstones remain unfinished: retain retry keys, request digests, outcomes and reconciliation evidence, and never make an old command runnable again. Destroy remains independent of publication. The API exposes missing/expired history and reconnect semantics.
+`expires_unix_ms` stops reads; `delete_after_unix_ms` is an earliest eligibility timestamp, not a deletion receipt. Even after retirement completion, the cleanup inventory retains the complete execution and publication history. Compacting that history into operation tombstones remains unfinished: retain retry keys, request digests, outcomes and reconciliation evidence, and never make an old command runnable again. Destroy remains independent of publication and retirement. The API exposes missing/expired history and reconnect semantics.
 
 ## Evidence and local verification
 
 [PostgreSQL publication tests](../crates/sandbox-store/tests/output.rs) cover simultaneous claims/publications, exact-plan recovery after claim replacement, lost commit acknowledgement, every owner/statistic/retention mismatch, claim expiry during lock waits at preparation and publication, corrupt stored evidence, simulation opt-in, tenant/project restrictions, retention without a cleanup worker, and upgrades over populated v5 data. These use synthetic guest receipts, not VM execution. Existing controller/API tests also confirm that a successful command reports pending output.
 
 [Cleanup inventory tests](../crates/sandbox-store/tests/support/output_cleanup.rs) cover concurrent discovery/claims, stale-worker rejection, recovery of exact manifests, orphan and absent plans, grace periods, corruption deferral, early-cleanup rejection, lease expiry at both operation and inventory lock waits, ownership after destroy/host restart/project deletion, and an upgrade over populated v6 data. They use real PostgreSQL with synthetic receipts and do not exercise storage deletion.
+
+[Completion and worker tests](../crates/sandbox-store/tests/support/cleanup_completion.rs) cover paired-receipt validation, immutable manifests, stale claims, lock-wait expiry, idempotent completion, simulation opt-in, grace periods, schema constraints and a populated v7 upgrade. Two explicit PostgreSQL/MinIO cases recover a failure between stream retirements and retire orphan/missing objects after allocation, epoch and project changes, while preserving execution evidence. They retain markers in the dedicated versioned fixture bucket; use disposable test storage and remove that owned fixture after testing. The [executable test](../crates/sandbox-cleanup/tests/cli.rs) verifies `--once` against an isolated database, private-file enforcement and credential redaction without needing storage for an empty queue.
 
 [Retirement tests](../crates/sandbox-artifacts/src/retirement/tests.rs) exercise binary/empty output, owner and retention gates, missing/orphan objects, bounded capacity, corrupt markers, and concurrent cleanup/late uploads. Three explicit MinIO cases additionally cover real version deletion, interrupted cleanup, lost and false delete acknowledgements, corrupted old-version bytes, cancelled workers, concurrent recovery and retained markers blocking stale uploads. CI creates a dedicated versioned fixture bucket and runs these with the existing artifact MinIO checks. Fixture teardown removes only the tests' randomly scoped keys/versions; production retirement never removes its marker.
 
@@ -118,12 +138,11 @@ HUDSON_TEST_S3_BUCKET=hudson-output-test \
 HUDSON_TEST_S3_VERSIONED_BUCKET=hudson-output-version-test \
 HUDSON_TEST_S3_ACCESS_KEY=sandbox \
 HUDSON_TEST_S3_SECRET_KEY=sandbox-dev-secret \
-cargo test -p sandbox-artifacts output_minio -- --ignored
-# With the same HUDSON_TEST_S3_* variables and DATABASE_URL set:
-cargo test -p sandbox-controller output_minio -- --ignored --test-threads=1
+cargo test -p sandbox-artifacts -p sandbox-controller -p sandbox-api -p sandbox-store \
+  output_minio -- --ignored --test-threads=1
 ```
 
-These credentials are the repository's synthetic local fixture, not production credentials. The ignored test requires its configuration and fails if storage is unavailable; CI invokes it explicitly rather than treating a skip as evidence.
+Set `DATABASE_URL` to the local test PostgreSQL instance for that combined invocation. These credentials are the repository's synthetic local fixture, not production credentials. The ignored tests require their configuration and fail if storage is unavailable; CI invokes them explicitly rather than treating a skip as evidence. Keep the explicit package list: workspace-wide ignored tests also include supervisor cases that require controlled Linux/KVM infrastructure.
 
 [Controlled archival evidence](evidence/2026-09-21-aarch64-output-archive.json) records eight passing real-host tests, source/artifact hashes, binary stdout/stderr and empty-stream verification, one execution marker, and object reconciliation after VM destruction and host epoch advancement. This is nested aarch64 development evidence; that recording predates the public read endpoint and does not satisfy supported-release isolation gates.
 

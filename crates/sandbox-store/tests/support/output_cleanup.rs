@@ -1,6 +1,9 @@
 use super::*;
 use sandbox_store::output_cleanup::{CleanupClaim, CleanupManifest, CleanupPreparation};
 
+#[path = "cleanup_completion.rs"]
+mod completion_tests;
+
 // Move this fixture's entire saved retention policy together, preserving exact
 // equality between ticket, plans and references. No shared database is reset.
 async fn age(f: &Fixture, future_grace: bool) {

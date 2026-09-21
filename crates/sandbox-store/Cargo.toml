@@ -20,6 +20,9 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+sandbox-cleanup = { path = "../sandbox-cleanup" }
+sandbox-artifacts.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 uuid = { workspace = true }
 

@@ -92,7 +92,7 @@ jobs:
           docker exec hudson-output-minio sh -c \
             'MC_HOST_hudson="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@127.0.0.1:9000" mc version enable hudson/hudson-output-version-test'
 
-      - name: Verify S3 conditional output writes and reads
+      - name: Verify output storage and cleanup
         env:
           HUDSON_TEST_S3_ENDPOINT: http://127.0.0.1:59000
           HUDSON_TEST_S3_BUCKET: hudson-output-test
@@ -100,9 +100,10 @@ jobs:
           HUDSON_TEST_S3_ACCESS_KEY: sandbox
           HUDSON_TEST_S3_SECRET_KEY: sandbox-dev-secret
         run: |
-          cargo test -p sandbox-artifacts output_minio -- --ignored
-          cargo test -p sandbox-controller output_minio -- --ignored --test-threads=1
-          cargo test -p sandbox-api output_minio -- --ignored --test-threads=1
+          # Explicit unprivileged packages: workspace-wide ignored tests would
+          # also select real-host cases requiring a controlled KVM machine.
+          cargo test -p sandbox-artifacts -p sandbox-controller -p sandbox-api -p sandbox-store \
+            output_minio -- --ignored --test-threads=1
 
       - name: Remove test object storage
         if: always()
