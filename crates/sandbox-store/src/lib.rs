@@ -8,6 +8,7 @@ pub mod admission;
 pub mod claims;
 pub mod destroy;
 pub mod dispatch;
+pub mod leases;
 pub mod placement;
 pub mod projects;
 pub mod reads;

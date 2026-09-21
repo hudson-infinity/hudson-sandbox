@@ -5,8 +5,9 @@
 use sandbox_protocol::{
     AllocationId, HostId, OperationId, ProjectId, SandboxId,
     supervisor::{
-        AllocationState, CreateRequest, HealthRequest, HostInfo, InspectRequest, Observation,
-        Ownership, Resources, StopRequest, supervisor_server::Supervisor,
+        AllocationState, CreateRequest, HealthRequest, HostInfo, InspectRequest, LeaseInspection,
+        LeaseObservation, LeaseOwnership, LeaseRequest, Observation, Ownership, Resources,
+        StopRequest, supervisor_server::Supervisor,
     },
 };
 use std::{
@@ -43,6 +44,8 @@ struct State {
     fences: HashMap<String, Fence>,
     lose_next_create_reply: bool,
     lose_next_stop_reply: bool,
+    lose_next_renew_reply: bool,
+    fail_next_health: bool,
     total_starts: u64,
 }
 
@@ -51,6 +54,7 @@ struct Record {
     create: CreateRequest,
     state: AllocationState,
     expires: Instant,
+    lease_until: i64,
     reason: &'static str,
 }
 
@@ -59,6 +63,8 @@ struct Fence {
     owner: Ownership,
     revisions: HashMap<String, i64>,
     stopped: bool,
+    lease_revision: i64,
+    lease_request: Option<(i64, i64)>,
 }
 
 /// Database/controller deadlines and the supervisor wall clock must be synchronized.
@@ -112,6 +118,14 @@ impl FakeHost {
     /// Fault injection: apply a stop/fence, then lose its acknowledgement.
     pub async fn lose_next_stop_reply(&self) {
         self.state.lock().await.lose_next_stop_reply = true;
+    }
+
+    pub async fn fail_next_health_check(&self) {
+        self.state.lock().await.fail_next_health = true;
+    }
+
+    pub async fn lose_next_renew_reply(&self) {
+        self.state.lock().await.lose_next_renew_reply = true;
     }
 
     /// Also called by the binary's independent watchdog when no RPCs arrive.
@@ -175,6 +189,8 @@ impl FakeHost {
                 owner: owner.clone(),
                 revisions: HashMap::new(),
                 stopped: false,
+                lease_revision: 0,
+                lease_request: None,
             });
         if fence.owner.project_id != owner.project_id
             || fence.owner.sandbox_id != owner.sandbox_id
@@ -260,11 +276,118 @@ impl FakeHost {
         }
         Ok(observation)
     }
+
+    async fn lease_observation(
+        &self,
+        owner: Option<LeaseOwnership>,
+        until: Option<i64>,
+    ) -> Result<LeaseObservation, Status> {
+        let mut state = self.state.lock().await;
+        Self::expire(&mut state);
+        let now = unix_ms()?;
+        let owner = owner.ok_or_else(|| Status::invalid_argument("lease ownership required"))?;
+        let invalid = || Status::invalid_argument("invalid lease ownership");
+        owner.host_id.parse::<HostId>().map_err(|_| invalid())?;
+        owner
+            .project_id
+            .parse::<ProjectId>()
+            .map_err(|_| invalid())?;
+        owner
+            .sandbox_id
+            .parse::<SandboxId>()
+            .map_err(|_| invalid())?;
+        owner
+            .allocation_id
+            .parse::<AllocationId>()
+            .map_err(|_| invalid())?;
+        if owner.revision <= 0 || owner.generation <= 0 {
+            return Err(invalid());
+        }
+        if owner.host_id != self.config.host.to_string()
+            || owner.supervisor_epoch != self.config.epoch
+        {
+            return Err(Status::failed_precondition(
+                "wrong host or supervisor epoch",
+            ));
+        }
+        bounded_deadline(owner.claim_expires_unix_ms, now)?;
+        if let Some(until) = until {
+            bounded_deadline(until, now)?;
+        }
+        // Maintenance can never create evidence for an allocation this epoch
+        // has not seen. In particular, an empty restart cannot prove release.
+        let Some(fence) = state.fences.get_mut(&owner.allocation_id) else {
+            return Ok(LeaseObservation {
+                ownership: Some(owner),
+                state: AllocationState::Absent as i32,
+                simulated: true,
+                allocation_expires_unix_ms: 0,
+                observed_unix_ms: now,
+            });
+        };
+        if fence.owner.project_id != owner.project_id
+            || fence.owner.sandbox_id != owner.sandbox_id
+            || fence.owner.generation != owner.generation
+            || owner.revision < fence.lease_revision
+        {
+            return Err(Status::failed_precondition(
+                "stale or mismatched lease ownership",
+            ));
+        }
+        fence.lease_revision = owner.revision;
+        if let Some(until) = until {
+            if fence
+                .lease_request
+                .is_some_and(|(revision, deadline)| revision == owner.revision && deadline != until)
+            {
+                return Err(Status::already_exists(
+                    "lease retry changed the requested deadline",
+                ));
+            }
+            fence.lease_request = Some((owner.revision, until));
+        }
+        let stopped = fence.stopped;
+        let record = state.allocations.get_mut(&owner.allocation_id);
+        let (allocation_state, lease_until) = if let Some(record) = record {
+            if let Some(until) = until
+                && !stopped
+                && record.state == AllocationState::Ready
+                && until > record.lease_until
+            {
+                // Earlier/lost/reordered requests cannot shorten a newer lease.
+                record.expires = Instant::now() + bounded_deadline(until, now)?;
+                record.lease_until = until;
+            }
+            (record.state, record.lease_until)
+        } else {
+            (
+                if stopped {
+                    AllocationState::FencedAbsent
+                } else {
+                    AllocationState::Absent
+                },
+                0,
+            )
+        };
+        if until.is_some() && std::mem::take(&mut state.lose_next_renew_reply) {
+            return Err(Status::unavailable("injected lost renewal acknowledgement"));
+        }
+        Ok(LeaseObservation {
+            ownership: Some(owner),
+            state: allocation_state as i32,
+            simulated: true,
+            allocation_expires_unix_ms: lease_until,
+            observed_unix_ms: now,
+        })
+    }
 }
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
     async fn health(&self, _: Request<HealthRequest>) -> Result<Response<HostInfo>, Status> {
+        if std::mem::take(&mut self.state.lock().await.fail_next_health) {
+            return Err(Status::unavailable("injected health failure"));
+        }
         Ok(Response::new(HostInfo {
             host_id: self.config.host.to_string(),
             supervisor_epoch: self.config.epoch,
@@ -369,6 +492,7 @@ impl Supervisor for FakeHost {
             ),
         );
         let record = Record {
+            lease_until: request.allocation_expires_unix_ms,
             create: request,
             state: AllocationState::Ready,
             expires: Instant::now() + duration,
@@ -394,6 +518,25 @@ impl Supervisor for FakeHost {
 
     async fn stop(&self, request: Request<StopRequest>) -> Result<Response<Observation>, Status> {
         self.observe(request.into_inner().ownership, true)
+            .await
+            .map(Response::new)
+    }
+
+    async fn renew_lease(
+        &self,
+        request: Request<LeaseRequest>,
+    ) -> Result<Response<LeaseObservation>, Status> {
+        let request = request.into_inner();
+        self.lease_observation(request.ownership, Some(request.allocation_expires_unix_ms))
+            .await
+            .map(Response::new)
+    }
+
+    async fn inspect_lease(
+        &self,
+        request: Request<LeaseInspection>,
+    ) -> Result<Response<LeaseObservation>, Status> {
+        self.lease_observation(request.into_inner().ownership, None)
             .await
             .map(Response::new)
     }
