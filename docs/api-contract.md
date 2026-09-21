@@ -175,3 +175,7 @@ No API tests exist yet. Test concurrent same-key admission, changed-payload conf
 Client acceptance must also cover equivalent API/SDK/CLI outcomes, key reuse across client restarts, no resubmission after a wait timeout, structured output without credential leakage, output truncation/reconnects, and explicit file transfer. These checks require implemented clients and are not available today.
 
 Before implementation, define SDK distribution per registry, CLI syntax, credential configuration and exit codes, the OpenAPI schemas themselves, list filtering, the machine-readable error code list, the file size cap, SSE cursor encoding, and the deprecation window in [versioning](#versioning-and-deprecation). Projects cannot register their own guest images in the first release; that capability, and what it adds to this surface, follows the operator allowlist described in [data models](data-models.md#what-we-keep-inside-these-models). Examples remain proposals until validated against those schemas.
+
+## Observation source
+
+Sandbox status responses optionally include `observation_simulated`: true for confirmed development fake-host observations, false for real supervisor evidence, and absent before an observation source is confirmed. Successful fake create operations also return `result.simulated=true`. The [create controller](controller.md#simulated-observations-remain-visible) requires explicit simulation opt-in; these responses do not establish VM execution or isolation.

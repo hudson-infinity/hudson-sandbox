@@ -8,5 +8,29 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+sandbox-protocol = { workspace = true }
+sandbox-store = { workspace = true }
+sandbox-supervisor = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tonic = { workspace = true }
+
+[dev-dependencies]
+sandbox-api = { path = "../sandbox-api" }
+sandbox-fake-host = { path = "../sandbox-fake-host" }
+axum = { workspace = true }
+http = { workspace = true }
+hex = { workspace = true }
+rcgen = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+tokio-stream = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+uuid = { workspace = true }
+
 [lints]
 workspace = true

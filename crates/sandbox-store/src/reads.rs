@@ -38,6 +38,8 @@ pub struct OperationView {
 /// A sandbox as a caller sees it.
 #[derive(Debug, Clone)]
 pub struct SandboxView {
+    /// True for explicitly enabled fake-host observations; absent before confirmation.
+    pub observation_simulated: Option<bool>,
     /// The sandbox.
     pub id: SandboxId,
     /// Optional display name.
@@ -121,7 +123,7 @@ impl Store {
     ) -> Result<Option<SandboxView>, StoreError> {
         let row = sqlx::query(
             r"
-            SELECT id, name, desired_state, observed_state, observed_at, image_digest,
+            SELECT id, name, desired_state, observed_state, observed_at, observation_simulated, image_digest,
                    resources, generation, active_transition_operation_id, created_at
               FROM sandboxes
              WHERE id = $1 AND project_id = $2
@@ -136,6 +138,9 @@ impl Store {
         let Some(row) = row else { return Ok(None) };
 
         Ok(Some(SandboxView {
+            observation_simulated: row
+                .try_get("observation_simulated")
+                .map_err(StoreError::Query)?,
             id: SandboxId::from_uuid(row.try_get::<Uuid, _>("id").map_err(StoreError::Query)?),
             name: row.try_get("name").map_err(StoreError::Query)?,
             desired_state: row.try_get("desired_state").map_err(StoreError::Query)?,

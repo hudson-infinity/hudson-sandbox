@@ -2,7 +2,7 @@
 
 Status: partially implemented; the initial PostgreSQL schema and storage operations have tests. This document owns fields, relationships, identity formats, database constraints, and object-storage references. [Auth design](auth-design.md) owns credential/session enforcement; [API contract](api-contract.md) owns retry behavior; [lifecycle](lifecycle.md) owns transitions and completion evidence.
 
-Implementation evidence: [the initial migration](../migrations/0001_initial.sql) creates projects, hosts, sandboxes, operations, and allocations. [Schema tests](../crates/sandbox-store/tests/schema.rs), [claims](../crates/sandbox-store/tests/claims.rs), and [single-host reservation tests](../crates/sandbox-store/tests/placement.rs) exercise PostgreSQL constraints and concurrency. Snapshot and UI security schemas remain planned; database reservations are not proof that a VM exists or is isolated.
+Implementation evidence: [the initial migration](../migrations/0001_initial.sql) creates projects, hosts, sandboxes, operations, and allocations. [Schema tests](../crates/sandbox-store/tests/schema.rs), [claims](../crates/sandbox-store/tests/claims.rs), and [single-host reservation tests](../crates/sandbox-store/tests/placement.rs) exercise PostgreSQL constraints and concurrency. The [source-field upgrade](../migrations/0002_observation_source.sql) and [upgrade test](../crates/sandbox-store/tests/upgrade.rs) preserve observation provenance; [create completion](controller.md) records evidence transactionally. Snapshot and UI security schemas remain planned; database reservations are not proof that a VM exists or is isolated.
 
 There are **six sandbox resource tables** plus **two supporting UI security tables**, not a user/role directory. The schemas below define the target design; the migration implements the current subset.
 
@@ -93,7 +93,7 @@ API ID: `sbx_<uuidv7>`.
 | --- | --- |
 | `id`, `project_id`, `name`, `labels` | Identity and ownership |
 | `image_digest`, `image_compatibility`, `resources` | Verified immutable starting image and requested CPU, RAM, and disk limits |
-| `desired_state`, `observed_state`, `observed_at`, `state_revision` | Intent, last confirmed state, observation freshness, and concurrent-update protection |
+| `desired_state`, `observed_state`, `observed_at`, `observation_simulated`, `state_revision` | Intent, last confirmed state, observation freshness/source, and concurrent-update protection |
 | `generation`, `current_allocation_id` (nullable) | Latest allocation generation and current compute reservation |
 | `current_snapshot_id` (nullable) | Published pause snapshot used for ordinary resume |
 | `active_transition_operation_id` (nullable) | Serializes create/pause/resume/destroy transitions |
