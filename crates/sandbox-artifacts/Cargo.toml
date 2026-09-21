@@ -1,0 +1,27 @@
+[package]
+name = "sandbox-artifacts"
+description = "Private, bounded, immutable output artifact transport."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+sandbox-protocol.workspace = true
+object_store.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+url.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tokio-rustls.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -71,3 +71,31 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      # Ordinary unprivileged object storage, never a KVM/host integration test.
+      # Pin the upstream multi-architecture release, not a mutable latest tag.
+      - name: Start private test object storage
+        run: |
+          docker run -d --name hudson-output-minio -p 127.0.0.1:59000:9000 \
+            -e MINIO_ROOT_USER=sandbox -e MINIO_ROOT_PASSWORD=sandbox-dev-secret \
+            quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
+            server /data
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:59000/minio/health/live > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:59000/minio/health/live > /dev/null
+          docker exec hudson-output-minio sh -c \
+            'MC_HOST_hudson="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@127.0.0.1:9000" mc mb hudson/hudson-output-test'
+
+      - name: Verify S3 conditional output writes and reads
+        env:
+          HUDSON_TEST_S3_ENDPOINT: http://127.0.0.1:59000
+          HUDSON_TEST_S3_BUCKET: hudson-output-test
+          HUDSON_TEST_S3_ACCESS_KEY: sandbox
+          HUDSON_TEST_S3_SECRET_KEY: sandbox-dev-secret
+        run: cargo test -p sandbox-artifacts output_minio -- --ignored
+
+      - name: Remove test object storage
+        if: always()
+        run: docker rm -f hudson-output-minio || true

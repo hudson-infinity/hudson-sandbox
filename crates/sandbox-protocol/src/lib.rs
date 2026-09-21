@@ -31,3 +31,4 @@ pub mod guest_wire;
 pub mod bootstrap;
 
 pub mod command;
+pub mod output;
