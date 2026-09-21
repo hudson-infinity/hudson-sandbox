@@ -160,3 +160,30 @@ message FileObservation {
   // Unspecified is absence of a guest observation, not a terminal result.
   hudson.guest.v1.FileState state = 6; bool not_started = 7; optional uint64 stored = 8;
 }
+
+// Optional read authority, configured independently of controller and output-reader pins.
+service FileDownloads {
+  rpc Capture(FileCaptureRequest) returns (FileAccessObservation);
+  rpc Read(FileDownloadRequest) returns (FileAccessObservation);
+  rpc Release(FileReleaseRequest) returns (FileAccessObservation);
+}
+message FileDownloadHandle {
+  string id = 1;
+  hudson.guest.v1.Context context = 2;
+  hudson.guest.v1.FileCapture capture = 3;
+  int64 expires_unix_ms = 4;
+}
+message FileCaptureRequest { bytes scope_json = 1; string path = 2; int64 expires_unix_ms = 3; }
+message FileDownloadRequest {
+  bytes scope_json = 1; FileDownloadHandle handle = 2;
+  uint64 offset = 3; uint32 limit = 4; int64 expires_unix_ms = 5;
+}
+message FileReleaseRequest { bytes scope_json = 1; FileDownloadHandle handle = 2; int64 expires_unix_ms = 3; }
+message FileAccessObservation {
+  bytes scope_json = 1; bool simulated = 2; int64 observed_unix_ms = 3;
+  oneof result {
+    FileDownloadHandle captured = 4;
+    hudson.guest.v1.FileChunk chunk = 5;
+    FileDownloadHandle released = 6;
+  }
+}

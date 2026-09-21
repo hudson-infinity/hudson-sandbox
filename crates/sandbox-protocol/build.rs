@@ -3,6 +3,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .skip_debug([
+            ".hudson.supervisor.v1.FileDownloadHandle",
+            ".hudson.supervisor.v1.FileCaptureRequest",
+            ".hudson.supervisor.v1.FileDownloadRequest",
+            ".hudson.supervisor.v1.FileReleaseRequest",
+            ".hudson.supervisor.v1.FileAccessObservation",
             ".hudson.supervisor.v1.LiveOutputRequest",
             ".hudson.supervisor.v1.FileWriteRequest",
             ".hudson.supervisor.v1.LiveOutputObservation",

@@ -29,6 +29,8 @@ pub(super) struct Record {
     pub lease_request: Option<(i64, i64)>,
     #[serde(skip)]
     pub gate: Arc<Mutex<()>>,
+    #[serde(skip, default = "file_io")]
+    pub file_io: Arc<tokio::sync::Semaphore>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -275,4 +277,8 @@ pub(super) fn save(config: &Config, journal: &mut Journal) -> anyhow::Result<()>
     File::open(&config.state_root)?.sync_all()?;
     journal.poisoned = false;
     Ok(())
+}
+
+pub(super) fn file_io() -> Arc<tokio::sync::Semaphore> {
+    Arc::new(tokio::sync::Semaphore::new(1))
 }

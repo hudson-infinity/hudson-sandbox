@@ -4,6 +4,7 @@
 
 mod archive;
 mod commands;
+mod file_downloads;
 mod files;
 mod live_output;
 use sandbox_protocol::{
@@ -41,9 +42,10 @@ pub struct FakeHost {
     artifacts: Option<sandbox_artifacts::ArtifactStore>,
     archive_workers: Arc<tokio::sync::Semaphore>,
     output_readers: Arc<tokio::sync::Semaphore>,
+    file_readers: sandbox_supervisor::file_downloads::Workers,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct State {
     allocations: HashMap<String, Record>,
     /// Retained after release so old generations cannot start again.
@@ -57,12 +59,26 @@ struct State {
     total_commands: u64,
     file_commits: u64,
     lose_next_file_reply: bool,
+    published_files: HashMap<(String, String), Vec<u8>>,
+    downloads: sandbox_supervisor::file_downloads::Registry,
+    captured_files: HashMap<OperationId, (String, Vec<u8>)>,
+    lose_next_download_reply: bool,
+    file_captures: u64,
     hold_next_command: bool,
     lose_next_command_reply: bool,
     lose_next_cancel_reply: bool,
     lose_next_archive_reply: bool,
     archive_delay: Duration,
     archives_started: u64,
+}
+
+impl std::fmt::Debug for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FakeState")
+            .field("allocations", &self.allocations.len())
+            .field("file_captures", &self.file_captures)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -125,6 +141,7 @@ impl FakeHost {
             artifacts: None,
             archive_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             output_readers: Arc::new(tokio::sync::Semaphore::new(4)),
+            file_readers: sandbox_supervisor::file_downloads::Workers::default(),
         })
     }
 
@@ -165,6 +182,20 @@ impl FakeHost {
                 record.reason = "simulated lease expiry";
             }
         }
+        state.downloads.prune(Instant::now().into_std());
+        state.published_files.retain(|(id, _), _| {
+            state
+                .allocations
+                .get(id)
+                .is_some_and(|r| r.state != AllocationState::Released)
+        });
+        state.captured_files.retain(|ticket, (id, _)| {
+            state.downloads.contains(ticket)
+                && state
+                    .allocations
+                    .get(id)
+                    .is_some_and(|r| r.state != AllocationState::Released)
+        });
         for (id, record) in &state.allocations {
             if record.state == AllocationState::Released
                 && let Some(fence) = state.fences.get_mut(id)
@@ -275,6 +306,12 @@ impl FakeHost {
             fence.file_data.clear();
         }
         if stop {
+            state
+                .published_files
+                .retain(|(id, _), _| id != &owner.allocation_id);
+            state
+                .captured_files
+                .retain(|_, (id, _)| id != &owner.allocation_id);
             state
                 .sandboxes
                 .entry(owner.sandbox_id.clone())

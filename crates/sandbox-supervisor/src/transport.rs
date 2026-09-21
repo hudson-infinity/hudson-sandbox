@@ -182,3 +182,30 @@ async fn channel(
         .await?;
     Ok(channel)
 }
+
+/// Optional file-reader service; certificate authorization is independent of output reads.
+pub async fn connect_file_reader(
+    endpoint: &str,
+    host: HostId,
+    ca_pem: &[u8],
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> Result<
+    sandbox_protocol::supervisor::file_downloads_client::FileDownloadsClient<Channel>,
+    TransportError,
+> {
+    let channel = channel(
+        endpoint,
+        host,
+        ca_pem,
+        cert_pem,
+        key_pem,
+        Duration::from_secs(5),
+    )
+    .await?;
+    Ok(
+        sandbox_protocol::supervisor::file_downloads_client::FileDownloadsClient::new(channel)
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES),
+    )
+}

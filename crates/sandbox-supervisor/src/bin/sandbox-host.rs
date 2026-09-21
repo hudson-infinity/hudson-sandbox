@@ -33,6 +33,9 @@ async fn main() -> anyhow::Result<()> {
         /// SHA-256 of a distinct read-only API client certificate. Repeat for rotation.
         #[arg(long)]
         output_reader_cert_sha256: Vec<String>,
+        /// SHA-256 of an authorized file-reader certificate, distinct from the controller.
+        #[arg(long)]
+        file_reader_cert_sha256: Vec<String>,
         /// Private service-owned JSON file with operator S3 credentials/configuration.
         #[arg(long)]
         output_config: Option<PathBuf>,
@@ -53,6 +56,20 @@ async fn main() -> anyhow::Result<()> {
     } else {
         let pins = args
             .output_reader_cert_sha256
+            .iter()
+            .map(|p| {
+                let mut bytes = [0u8; 32];
+                hex::decode_to_slice(p, &mut bytes)?;
+                Ok(bytes)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Some(ControllerIdentity::output_reader(pins, &identity)?)
+    };
+    let file_identity = if args.file_reader_cert_sha256.is_empty() {
+        None
+    } else {
+        let pins = args
+            .file_reader_cert_sha256
             .iter()
             .map(|p| {
                 let mut bytes = [0u8; 32];
@@ -83,6 +100,15 @@ async fn main() -> anyhow::Result<()> {
                 .max_encoding_message_size(MAX_MESSAGE_BYTES);
         tonic::service::interceptor::InterceptedService::new(service, identity)
     });
+    let file_service = file_identity.map(|identity| {
+        let service =
+            sandbox_protocol::supervisor::file_downloads_server::FileDownloadsServer::new(
+                host.clone(),
+            )
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        tonic::service::interceptor::InterceptedService::new(service, identity)
+    });
     let service = SupervisorServer::new(host.clone())
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -100,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         .tls_config(tls)?
         .add_service(service)
         .add_optional_service(reader_service)
+        .add_optional_service(file_service)
         .serve_with_shutdown(args.listen, async {
             let _ = tokio::signal::ctrl_c().await;
         })

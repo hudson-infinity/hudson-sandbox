@@ -40,3 +40,5 @@ pub mod files;
 pub mod file_wire;
 
 pub mod supervisor_files;
+
+pub mod file_downloads;
