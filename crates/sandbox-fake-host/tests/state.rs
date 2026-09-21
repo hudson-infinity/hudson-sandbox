@@ -509,3 +509,38 @@ async fn renewal_requires_exact_incarnation_and_bounded_deadlines() {
         );
     }
 }
+
+#[tokio::test]
+async fn simulator_uses_the_real_hosts_minimum_resources() {
+    let (fake, request) = fixture();
+    for (memory, disk) in [(127, 64), (128, 63)] {
+        let mut undersized = request.clone();
+        undersized.resources = Some(Resources {
+            vcpu: 1,
+            memory_mib: memory,
+            disk_mib: disk,
+        });
+        assert_eq!(
+            fake.create(Request::new(undersized))
+                .await
+                .unwrap_err()
+                .code(),
+            Code::InvalidArgument
+        );
+    }
+    assert_eq!(fake.total_starts().await, 0);
+    let mut smallest = request;
+    smallest.resources = Some(Resources {
+        vcpu: 1,
+        memory_mib: 128,
+        disk_mib: 64,
+    });
+    assert_eq!(
+        fake.create(Request::new(smallest))
+            .await
+            .unwrap()
+            .get_ref()
+            .state,
+        AllocationState::Ready as i32
+    );
+}

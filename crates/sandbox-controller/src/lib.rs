@@ -365,6 +365,9 @@ impl Controller {
             Err(DispatchError::ImageDenied) => {
                 return self.reject(claim, CreateRejection::ImageDenied).await;
             }
+            Err(DispatchError::InvalidResources) => {
+                return self.reject(claim, CreateRejection::InvalidResources).await;
+            }
             Err(DispatchError::HostUnavailable | DispatchError::Conflict) => {
                 return self.defer(claim).await;
             }

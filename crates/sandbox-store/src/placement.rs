@@ -132,7 +132,7 @@ impl Store {
         let cpu = positive(&resources, "vcpu")?;
         let memory = positive(&resources, "memory_mib")?;
         let disk = positive(&resources, "disk_mib")?;
-        if cpu > 4 || memory > 8192 || disk > 65536 {
+        if !sandbox_protocol::resources::supported(cpu.into(), memory.into(), disk.into()) {
             return Err(PlacementError::InvalidResources);
         }
         let limits: Value = project.try_get("limits")?;

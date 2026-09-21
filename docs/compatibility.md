@@ -25,7 +25,8 @@ A host outside this envelope is not refused by the software — we simply make n
 | Init | Ours, PID 1, starts the guest agent before any customer process exists |
 | Userland | Debian slim — glibc, `apt`, the packages customers expect to find |
 | Customer privilege | Root in userspace ([decision 0003](decisions/0003-guest-root-with-our-kernel.md)) |
-| Largest sandbox | 4 vCPU, 8 GiB memory |
+| Smallest sandbox | 1 vCPU, 128 MiB memory, 64 MiB writable disk |
+| Largest sandbox | 4 vCPU, 8 GiB memory, 64 GiB writable disk |
 | Long-running processes | Supported — a process may outlive the request that started it |
 | Inbound connections | None ([networking](networking.md#ingress)) |
 

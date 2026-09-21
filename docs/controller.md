@@ -24,7 +24,7 @@ A lost response, absent allocation, or rejected observation records `unknown`, r
 
 The crash boundary after intent but before sending remains deliberately unresolved when the supervisor reports absence. The create loop preserves that uncertainty; the destroy path below can take cleanup ownership and resolve it using stop/fencing evidence. It cannot infer that an absent in-memory record proves there was no external action in a different incarnation.
 
-A revoked credential or disallowed image can fail an operation before dispatch. Service-owned rejection frees a reservation only when the locked records prove zero dispatch attempts, no execution lease, and an undispatched phase. It records that proof atomically with failure. Unknown or previously dispatched work cannot use this shortcut.
+A revoked credential, disallowed image, or unsupported resource size can fail an operation before dispatch. Placement and first-dispatch preparation both check the shared [guest resource envelope](compatibility.md#sandbox), including reservations retained from an earlier policy. A recorded dispatch intent still selects inspection before that policy check, preserving uncertain work. Service-owned rejection frees a reservation only when the locked records prove zero dispatch attempts, no execution lease, and an undispatched phase. It records that proof atomically with failure. Unknown or previously dispatched work cannot use this shortcut.
 
 ## Destroy admission and cleanup
 

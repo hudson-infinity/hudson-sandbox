@@ -482,3 +482,73 @@ async fn host_health_cannot_change_epoch_or_promote_a_draining_host(pool: PgPool
     assert_eq!(epoch, 1);
     assert_eq!(f.fake.total_starts().await, 0);
 }
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn legacy_reserved_size_is_rejected_before_first_dispatch(pool: PgPool) {
+    let f = Fixture::new(&pool).await;
+    f.admit().await;
+    let claim = f
+        .store
+        .claim_next(OperationKind::Create, 30)
+        .await
+        .unwrap()
+        .unwrap();
+    f.store
+        .observe_configured_host(f.config.host, 1)
+        .await
+        .unwrap();
+    f.store
+        .reserve_create(&claim, f.config.host, 1)
+        .await
+        .unwrap();
+    // This reserved row predates the shared host minimum; no intent was committed.
+    sqlx::query("UPDATE allocations SET memory_mib=127")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE sandboxes SET resources=jsonb_set(resources,'{memory_mib}','127')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    f.reclaim_now().await;
+    assert_eq!(f.controller().await.tick().await.unwrap(), Tick::Rejected);
+    assert_eq!(f.fake.total_starts().await, 0);
+    let (status, attempts, code): (String, i32, String) =
+        sqlx::query_as("SELECT status,attempt_count,error->>'code' FROM operations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (status.as_str(), attempts, code.as_str()),
+        ("failed", 0, "invalid_resources")
+    );
+    let (released,):(bool,)=sqlx::query_as("SELECT released_at IS NOT NULL AND release_evidence->>'dispatch_intent_absent'='true' FROM allocations").fetch_one(&pool).await.unwrap();
+    assert!(released);
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn sizing_changes_never_replay_or_reject_a_dispatched_incarnation(pool: PgPool) {
+    let f = Fixture::new(&pool).await;
+    f.admit().await;
+    let (_, request) = f.prepared().await;
+    f.fake.create(tonic::Request::new(request)).await.unwrap();
+    // Retained sizing now falls below current policy, but its recorded dispatch
+    // still requires inspection of the original incarnation, not a new admission.
+    sqlx::query("UPDATE allocations SET memory_mib=127")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE sandboxes SET resources=jsonb_set(resources,'{memory_mib}','127')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    f.reclaim_now().await;
+    assert_eq!(f.controller().await.tick().await.unwrap(), Tick::Confirmed);
+    assert_eq!(f.fake.total_starts().await, 1);
+    let (attempts, status): (i32, String) =
+        sqlx::query_as("SELECT attempt_count,status FROM operations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((attempts, status.as_str()), (1, "succeeded"));
+}

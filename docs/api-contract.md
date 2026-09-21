@@ -100,6 +100,8 @@ Content-Type: application/json
 }
 ```
 
+New create requests must fit the shared [guest resource envelope](compatibility.md#sandbox): 1–4 vCPU, 128–8192 MiB memory, and 64–65536 MiB writable disk. Unsupported sizes return `400 bad_request` without creating a sandbox or operation or consuming the idempotency key. Tightening a minimum does not erase an already admitted identical retry handle; changed input under that key still conflicts. These size bounds are separate from project quotas, host overhead, and image compatibility.
+
 Wait for create success, then call execute. An execute request returns an operation ID used for results, output, and cancellation. Proposed routes are:
 
 ```text

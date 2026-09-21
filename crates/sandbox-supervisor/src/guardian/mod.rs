@@ -217,9 +217,11 @@ impl Manifest {
             "invalid allocation ownership"
         );
         ensure!(
-            (1..=4).contains(&self.start.vcpu)
-                && (128..=8192).contains(&self.start.memory_mib)
-                && (64..=65536).contains(&self.start.disk_mib),
+            sandbox_protocol::resources::supported(
+                self.start.vcpu.into(),
+                self.start.memory_mib.into(),
+                self.start.disk_mib.into()
+            ),
             "invalid VM resource bounds"
         );
         ensure!(

@@ -440,10 +440,11 @@ impl Supervisor for FakeHost {
             .resources
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("resources required"))?;
-        if !(1..=4).contains(&resources.vcpu)
-            || !(1..=8192).contains(&resources.memory_mib)
-            || !(1..=65536).contains(&resources.disk_mib)
-        {
+        if !sandbox_protocol::resources::supported(
+            resources.vcpu.into(),
+            resources.memory_mib.into(),
+            resources.disk_mib.into(),
+        ) {
             return Err(Status::invalid_argument(
                 "resources outside supported envelope",
             ));
