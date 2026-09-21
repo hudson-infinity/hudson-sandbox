@@ -8,8 +8,8 @@ use crate::{
 use sandbox_protocol::{
     AllocationId, HostId, Id, IdempotencyKey, OperationId, ProjectId, RequestDigest, SandboxId,
     TokenKeyId,
-    command::{CommandInput, MAX_DURATION_MS},
-    guest_model::Execute,
+    command::{CommandInput, MAX_COMMANDS, MAX_DURATION_MS},
+    guest_model::{Execute, MAX_RESERVED_OUTPUT},
     idempotency::DIGEST_VERSION,
     supervisor::Ownership,
 };
@@ -39,6 +39,7 @@ pub enum ExecuteAdmission {
     InvalidCommand,
     InvalidDeadline,
     NotRunning,
+    CapacityExhausted,
     Busy(OperationId),
 }
 #[derive(Debug)]
@@ -208,6 +209,9 @@ impl Store {
         if ready != Some((true,)) {
             return Ok(ExecuteAdmission::NotRunning);
         }
+        if !has_capacity(&mut tx, allocation, Some(r.command.output_limit)).await? {
+            return Ok(ExecuteAdmission::CapacityExhausted);
+        }
         // A host lock wait may outlive the deadline or credential. Recheck both
         // using database time in the committing statement.
         let operation = OperationId::generate();
@@ -284,12 +288,19 @@ impl Store {
             && sandbox.try_get::<i64, _>("generation")? == owner.generation
             && allocation_row.try_get::<String, _>("status")? == "running"
             && host_row.try_get::<i64, _>("supervisor_epoch")? == owner.supervisor_epoch;
-        if !authorized.0 || !current {
-            let code = if authorized.0 {
-                "execution_target_changed"
-            } else {
-                "execution_authority_expired"
-            };
+        // Old queued rows may predate capacity admission. Never write their
+        // first dispatch intent if retained history already exceeds the bound.
+        // Dispatched/unknown work took the inspection path above.
+        let rejection = if !authorized.0 {
+            Some("execution_authority_expired")
+        } else if !current {
+            Some("execution_target_changed")
+        } else if !has_capacity(&mut tx, allocation, None).await? {
+            Some("execution_capacity_exhausted")
+        } else {
+            None
+        };
+        if let Some(code) = rejection {
             dispatch::fence(&mut tx, claim).await?;
             let changed = sqlx::query("UPDATE operations SET status='failed',phase='rejected_before_dispatch',completed_at=clock_timestamp(),
                 lease_expires_at=NULL,next_retry_at=NULL,error=$2,updated_at=clock_timestamp()
@@ -330,6 +341,43 @@ impl Store {
         tx.commit().await?;
         Ok(ExecuteAction::Dispatch { owner, command })
     }
+}
+
+/// Called under the project/sandbox locks shared by admission and dispatch.
+/// Every admitted command conservatively reserves a journal slot and its full
+/// output limit for this allocation's lifetime, even if it never starts. Do not
+/// lock operation rows here: reconciliation locks operation before project.
+/// Compaction atomically replaces the payload with a descriptor of equal budget.
+async fn has_capacity(
+    db: &mut PgConnection,
+    allocation: uuid::Uuid,
+    additional_output: Option<u64>,
+) -> Result<bool, DispatchError> {
+    let rows = sqlx::query(
+        "SELECT * FROM operations
+        WHERE execution_allocation_id=$1 AND kind='execute' ORDER BY id LIMIT $2",
+    )
+    .bind(allocation)
+    .bind((MAX_COMMANDS + 1) as i64)
+    .fetch_all(db)
+    .await?;
+    if rows.len() + usize::from(additional_output.is_some()) > MAX_COMMANDS {
+        return Ok(false);
+    }
+    let mut reserved = additional_output.unwrap_or(0);
+    for row in &rows {
+        let summary = crate::compaction::command_summary(row).map_err(|error| match error {
+            crate::output::OutputError::Query(error) => DispatchError::Query(error),
+            _ => DispatchError::InvalidData,
+        })?;
+        if summary.output_limit == 0 {
+            return Err(DispatchError::InvalidData);
+        }
+        reserved = reserved
+            .checked_add(summary.output_limit)
+            .ok_or(DispatchError::InvalidData)?;
+    }
+    Ok(reserved <= MAX_RESERVED_OUTPUT)
 }
 
 struct Context {

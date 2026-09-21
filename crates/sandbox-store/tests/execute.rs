@@ -15,6 +15,9 @@ use serde_json::json;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
+#[path = "support/execution_capacity.rs"]
+mod capacity;
+
 fn now_ms() -> i64 {
     (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
 }
