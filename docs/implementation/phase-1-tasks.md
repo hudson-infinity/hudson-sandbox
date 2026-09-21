@@ -12,7 +12,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Pin the Rust toolchain. `rustfmt` and `clippy` configured, clippy warnings denied in CI.
 - [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
 - [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
-- [ ] A fake supervisor implementing the real gRPC interface, so the control plane is testable before any hardware exists.
+- [ ] Integrate the controller with the implemented [authenticated fake supervisor](../supervisor-protocol.md); extend its shared protocol for execute, files, and outputs.
 - [ ] Self-hosted runner for VM tests, once a host exists. Fork pull requests never run on it.
 
 ---

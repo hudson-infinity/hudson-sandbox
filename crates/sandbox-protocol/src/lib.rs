@@ -13,3 +13,8 @@ pub use ids::{
     AllocationId, HostId, Id, IdParseError, OperationId, ProjectId, SandboxId, SnapshotId,
 };
 pub use token::{ProjectToken, TokenHash, TokenKeyId, TokenParseError};
+
+/// Versioned internal supervisor messages and generated gRPC client/server.
+pub mod supervisor {
+    tonic::include_proto!("hudson.supervisor.v1");
+}

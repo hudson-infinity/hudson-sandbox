@@ -6,7 +6,7 @@ The service runs customer code in Firecracker microVMs, which needs Linux with K
 
 ## Stage 0 — everything except a real VM, on macOS
 
-Runs natively today.
+The Rust libraries and local dependencies run natively today. The process layout below is the target: the API binary, controller loop, and CLI remain incomplete. [The authenticated fake supervisor](../supervisor-protocol.md) now runs on loopback with operator-supplied certificates. Install `protoc` before building (`brew install protobuf` on macOS).
 
 ```text
 macOS
@@ -26,9 +26,9 @@ make down    # stop, keeping data
 
 The stack binds PostgreSQL on 55432 and MinIO on 59000, not their defaults. If you already run PostgreSQL natively, the container binds `::` while `127.0.0.1` stays with your own server, and every connection from the host quietly reaches the wrong database — which surfaces as a missing role rather than a port conflict. Non-default ports remove the ambiguity. `make reset-db` drops the development schema when a migration changes underneath you.
 
-Everything here is real except the sandbox: authentication, transactional admission, idempotency keys, retry behaviour, database constraints, streaming, the CLI. The fake host implements the same gRPC service the supervisor will, and reports a VM that booted instantly and ran nothing. That is enough to build and test the entire control plane before any hardware exists, and it keeps the edit-run loop fast afterwards.
+Authentication, admission, claims, reservations, and read handlers have executable tests. The fake provides the shared gRPC create/inspect/stop service over mTLS and always reports simulated evidence. It starts no VM or process. Controller integration, streaming, the CLI, and real execution remain unfinished.
 
-The fake host is not a simulator. It does not model failure, timing, or resource limits. Anything that depends on those belongs in stage 1 or on real hardware.
+The fake models bounded resource accounting, stale ownership, lease expiry, duplicate requests, and lost acknowledgements for control-plane tests. Those models do not test host resource enforcement or hardware isolation; those require stage 1 and supported hardware.
 
 ## Stage 1 — real Firecracker, still on your Mac
 

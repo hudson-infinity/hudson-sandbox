@@ -1,0 +1,366 @@
+//! Bounded in-memory supervisor for control-plane tests. It never executes code.
+//! Every observation is explicitly simulated. Restart loses evidence and requires
+//! a new externally issued supervisor epoch; absence never proves old VM release.
+
+use sandbox_protocol::{
+    AllocationId, HostId, OperationId, ProjectId, SandboxId,
+    supervisor::{
+        AllocationState, CreateRequest, HealthRequest, HostInfo, InspectRequest, Observation,
+        Ownership, Resources, StopRequest, supervisor_server::Supervisor,
+    },
+};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use tokio::{sync::Mutex, time::Instant};
+use tonic::{Request, Response, Status};
+
+const MAX_RECORDS: usize = 10_000;
+const MAX_LEASE_MS: i64 = 300_000;
+
+#[derive(Debug, Clone)]
+pub struct FakeConfig {
+    pub host: HostId,
+    /// Must be freshly issued externally after every process restart.
+    pub epoch: i64,
+    pub images: BTreeSet<String>,
+    pub capacity: Resources,
+}
+
+#[derive(Debug, Clone)]
+pub struct FakeHost {
+    config: Arc<FakeConfig>,
+    state: Arc<Mutex<State>>,
+}
+
+#[derive(Debug, Default)]
+struct State {
+    allocations: HashMap<String, Record>,
+    /// Retained after release so old generations cannot start again.
+    sandboxes: HashMap<String, (String, String, i64)>,
+    fences: HashMap<String, Fence>,
+    lose_next_create_reply: bool,
+}
+
+#[derive(Debug)]
+struct Record {
+    create: CreateRequest,
+    state: AllocationState,
+    expires: Instant,
+    reason: &'static str,
+}
+
+#[derive(Debug)]
+struct Fence {
+    owner: Ownership,
+    revisions: HashMap<String, i64>,
+    stopped: bool,
+}
+
+/// Database/controller deadlines and the supervisor wall clock must be synchronized.
+/// The watchdog converts a validated wall deadline into a monotonic local deadline.
+pub fn unix_ms() -> Result<i64, Status> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Status::internal("clock predates Unix epoch"))?
+        .as_millis();
+    i64::try_from(millis).map_err(|_| Status::internal("clock out of range"))
+}
+
+fn bounded_deadline(deadline: i64, now: i64) -> Result<Duration, Status> {
+    let remaining = deadline
+        .checked_sub(now)
+        .filter(|v| *v > 0 && *v <= MAX_LEASE_MS)
+        .ok_or_else(|| Status::failed_precondition("expired or unbounded lease"))?;
+    Ok(Duration::from_millis(remaining as u64))
+}
+
+fn valid_digest(digest: &str) -> bool {
+    digest.strip_prefix("sha256:").is_some_and(|s| {
+        s.len() == 64
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+impl FakeHost {
+    pub fn new(config: FakeConfig) -> Result<Self, Status> {
+        if config.epoch <= 0
+            || config.images.is_empty()
+            || config.images.iter().any(|s| !valid_digest(s))
+            || config.capacity.vcpu == 0
+            || config.capacity.memory_mib == 0
+            || config.capacity.disk_mib == 0
+        {
+            return Err(Status::invalid_argument("invalid fake host configuration"));
+        }
+        Ok(Self {
+            config: Arc::new(config),
+            state: Arc::new(Mutex::new(State::default())),
+        })
+    }
+
+    /// Fault injection: apply one create, then lose its acknowledgement.
+    pub async fn lose_next_create_reply(&self) {
+        self.state.lock().await.lose_next_create_reply = true;
+    }
+
+    /// Also called by the binary's independent watchdog when no RPCs arrive.
+    pub async fn expire_leases(&self) {
+        let mut state = self.state.lock().await;
+        Self::expire(&mut state);
+    }
+
+    fn expire(state: &mut State) {
+        let now = Instant::now();
+        for record in state.allocations.values_mut() {
+            if record.state == AllocationState::Ready && record.expires <= now {
+                record.state = AllocationState::Released;
+                record.reason = "simulated lease expiry";
+            }
+        }
+    }
+
+    fn ownership(&self, value: Option<Ownership>, now: i64) -> Result<Ownership, Status> {
+        let value = value.ok_or_else(|| Status::invalid_argument("ownership required"))?;
+        let invalid = || Status::invalid_argument("invalid ownership identity");
+        value.host_id.parse::<HostId>().map_err(|_| invalid())?;
+        value
+            .project_id
+            .parse::<ProjectId>()
+            .map_err(|_| invalid())?;
+        value
+            .sandbox_id
+            .parse::<SandboxId>()
+            .map_err(|_| invalid())?;
+        value
+            .allocation_id
+            .parse::<AllocationId>()
+            .map_err(|_| invalid())?;
+        value
+            .operation_id
+            .parse::<OperationId>()
+            .map_err(|_| invalid())?;
+        if value.host_id != self.config.host.to_string()
+            || value.supervisor_epoch != self.config.epoch
+        {
+            return Err(Status::failed_precondition(
+                "wrong host or supervisor epoch",
+            ));
+        }
+        if value.generation <= 0 || value.claim_revision <= 0 {
+            return Err(invalid());
+        }
+        bounded_deadline(value.claim_expires_unix_ms, now)?;
+        Ok(value)
+    }
+
+    fn fence(state: &mut State, owner: &Ownership) -> Result<(), Status> {
+        if !state.fences.contains_key(&owner.allocation_id) && state.fences.len() >= MAX_RECORDS {
+            return Err(Status::resource_exhausted("fake fence store full"));
+        }
+        let fence = state
+            .fences
+            .entry(owner.allocation_id.clone())
+            .or_insert_with(|| Fence {
+                owner: owner.clone(),
+                revisions: HashMap::new(),
+                stopped: false,
+            });
+        if fence.owner.project_id != owner.project_id
+            || fence.owner.sandbox_id != owner.sandbox_id
+            || fence.owner.generation != owner.generation
+        {
+            return Err(Status::failed_precondition("allocation identity mismatch"));
+        }
+        if !fence.revisions.contains_key(&owner.operation_id) && fence.revisions.len() >= 64 {
+            return Err(Status::resource_exhausted(
+                "fake operation fence store full",
+            ));
+        }
+        let revision = fence
+            .revisions
+            .entry(owner.operation_id.clone())
+            .or_default();
+        if owner.claim_revision < *revision {
+            return Err(Status::failed_precondition("stale controller claim"));
+        }
+        *revision = owner.claim_revision;
+        Ok(())
+    }
+
+    fn observation(owner: Ownership, record: Option<&Record>, now: i64) -> Observation {
+        Observation {
+            ownership: Some(owner),
+            state: record.map_or(AllocationState::Absent, |r| r.state) as i32,
+            simulated: true,
+            start_count: u64::from(record.is_some()),
+            create_operation_id: record
+                .and_then(|r| r.create.ownership.as_ref())
+                .map_or_else(String::new, |o| o.operation_id.clone()),
+            observed_unix_ms: now,
+            reason: record
+                .map_or("no in-memory evidence", |r| r.reason)
+                .to_owned(),
+        }
+    }
+
+    async fn observe(&self, owner: Option<Ownership>, stop: bool) -> Result<Observation, Status> {
+        let mut state = self.state.lock().await;
+        Self::expire(&mut state);
+        let now = unix_ms()?;
+        let owner = self.ownership(owner, now)?;
+        Self::fence(&mut state, &owner)?;
+        if stop && let Some(fence) = state.fences.get_mut(&owner.allocation_id) {
+            fence.stopped = true;
+        }
+        let record = state.allocations.get_mut(&owner.allocation_id);
+        if let Some(record) = record {
+            if stop {
+                record.state = AllocationState::Released;
+                record.reason = "simulated stop";
+            }
+            Ok(Self::observation(owner, Some(record), now))
+        } else {
+            Ok(Self::observation(owner, None, now))
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl Supervisor for FakeHost {
+    async fn health(&self, _: Request<HealthRequest>) -> Result<Response<HostInfo>, Status> {
+        Ok(Response::new(HostInfo {
+            host_id: self.config.host.to_string(),
+            supervisor_epoch: self.config.epoch,
+            simulated: true,
+        }))
+    }
+
+    async fn create(
+        &self,
+        request: Request<CreateRequest>,
+    ) -> Result<Response<Observation>, Status> {
+        let request = request.into_inner();
+        let mut state = self.state.lock().await;
+        Self::expire(&mut state);
+        let now = unix_ms()?;
+        let owner = self.ownership(request.ownership.clone(), now)?;
+        Self::fence(&mut state, &owner)?;
+        if let Some(record) = state.allocations.get_mut(&owner.allocation_id) {
+            let original = record
+                .create
+                .ownership
+                .as_ref()
+                .ok_or_else(|| Status::internal("missing stored owner"))?;
+            if original.operation_id != owner.operation_id
+                || record.create.image_digest != request.image_digest
+                || record.create.resources != request.resources
+                || record.create.allocation_expires_unix_ms != request.allocation_expires_unix_ms
+            {
+                return Err(Status::already_exists(
+                    "allocation retry changed the create request",
+                ));
+            }
+            // Do not restart a released allocation or extend its lease on a retry.
+            return Ok(Response::new(Self::observation(owner, Some(record), now)));
+        }
+        if state
+            .fences
+            .get(&owner.allocation_id)
+            .is_some_and(|f| f.stopped)
+        {
+            return Err(Status::failed_precondition(
+                "allocation was stopped before create",
+            ));
+        }
+        let duration = bounded_deadline(request.allocation_expires_unix_ms, now)?;
+        if !self.config.images.contains(&request.image_digest) {
+            return Err(Status::permission_denied("image not allowed"));
+        }
+        let resources = request
+            .resources
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("resources required"))?;
+        if !(1..=4).contains(&resources.vcpu)
+            || !(1..=8192).contains(&resources.memory_mib)
+            || !(1..=65536).contains(&resources.disk_mib)
+        {
+            return Err(Status::invalid_argument(
+                "resources outside supported envelope",
+            ));
+        }
+        if let Some((project, previous, generation)) = state.sandboxes.get(&owner.sandbox_id)
+            && (owner.project_id != *project
+                || owner.generation <= *generation
+                || state
+                    .allocations
+                    .get(previous)
+                    .is_none_or(|r| r.state != AllocationState::Released))
+        {
+            return Err(Status::failed_precondition(
+                "previous generation not released",
+            ));
+        }
+        if state.allocations.len() >= MAX_RECORDS {
+            return Err(Status::resource_exhausted("fake receipt store full"));
+        }
+        let mut cpu = 0u64;
+        let mut memory = 0u64;
+        let mut disk = 0u64;
+        for r in state
+            .allocations
+            .values()
+            .filter(|r| r.state == AllocationState::Ready)
+        {
+            if let Some(r) = &r.create.resources {
+                cpu += u64::from(r.vcpu);
+                memory += r.memory_mib;
+                disk += r.disk_mib;
+            }
+        }
+        if u64::from(resources.vcpu) > u64::from(self.config.capacity.vcpu).saturating_sub(cpu)
+            || resources.memory_mib > self.config.capacity.memory_mib.saturating_sub(memory)
+            || resources.disk_mib > self.config.capacity.disk_mib.saturating_sub(disk)
+        {
+            return Err(Status::resource_exhausted("fake host capacity full"));
+        }
+        state.sandboxes.insert(
+            owner.sandbox_id.clone(),
+            (
+                owner.project_id.clone(),
+                owner.allocation_id.clone(),
+                owner.generation,
+            ),
+        );
+        let record = Record {
+            create: request,
+            state: AllocationState::Ready,
+            expires: Instant::now() + duration,
+            reason: "simulated readiness; no VM or process started",
+        };
+        let observation = Self::observation(owner.clone(), Some(&record), now);
+        state.allocations.insert(owner.allocation_id, record);
+        if std::mem::take(&mut state.lose_next_create_reply) {
+            return Err(Status::unavailable("injected lost create acknowledgement"));
+        }
+        Ok(Response::new(observation))
+    }
+
+    async fn inspect(
+        &self,
+        request: Request<InspectRequest>,
+    ) -> Result<Response<Observation>, Status> {
+        self.observe(request.into_inner().ownership, false)
+            .await
+            .map(Response::new)
+    }
+
+    async fn stop(&self, request: Request<StopRequest>) -> Result<Response<Observation>, Status> {
+        self.observe(request.into_inner().ownership, true)
+            .await
+            .map(Response::new)
+    }
+}
