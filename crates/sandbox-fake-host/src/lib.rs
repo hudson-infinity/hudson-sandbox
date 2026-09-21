@@ -42,6 +42,7 @@ struct State {
     sandboxes: HashMap<String, (String, String, i64)>,
     fences: HashMap<String, Fence>,
     lose_next_create_reply: bool,
+    total_starts: u64,
 }
 
 #[derive(Debug)]
@@ -100,6 +101,11 @@ impl FakeHost {
             config: Arc::new(config),
             state: Arc::new(Mutex::new(State::default())),
         })
+    }
+
+    /// Count applied simulated starts, including later released incarnations.
+    pub async fn total_starts(&self) -> u64 {
+        self.state.lock().await.total_starts
     }
 
     /// Fault injection: apply one create, then lose its acknowledgement.
@@ -341,6 +347,7 @@ impl Supervisor for FakeHost {
             expires: Instant::now() + duration,
             reason: "simulated readiness; no VM or process started",
         };
+        state.total_starts += 1;
         let observation = Self::observation(owner.clone(), Some(&record), now);
         state.allocations.insert(owner.allocation_id, record);
         if std::mem::take(&mut state.lose_next_create_reply) {

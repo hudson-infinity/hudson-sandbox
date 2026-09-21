@@ -67,6 +67,7 @@ async fn concurrent_duplicate_creates_have_one_start() {
         assert_eq!(observation.state, AllocationState::Ready as i32);
         assert_eq!(observation.start_count, 1);
     }
+    assert_eq!(fake.total_starts().await, 1);
     let mut changed = request.clone();
     changed.resources.as_mut().unwrap().vcpu = 1;
     assert_eq!(
@@ -96,6 +97,7 @@ async fn lost_acknowledgement_reconciles_without_replay() {
         .unwrap()
         .into_inner();
     assert_eq!(observation.start_count, 1);
+    assert_eq!(fake.total_starts().await, 1);
     assert_eq!(observation.state, AllocationState::Ready as i32);
     assert_eq!(
         fake.create(Request::new(request)).await.unwrap_err().code(),
@@ -276,4 +278,5 @@ async fn watchdog_expires_without_traffic_and_retry_cannot_extend_it() {
         .into_inner();
     assert_eq!(result.state, AllocationState::Released as i32);
     assert_eq!(result.start_count, 1);
+    assert_eq!(fake.total_starts().await, 1);
 }
