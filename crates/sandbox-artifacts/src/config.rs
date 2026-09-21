@@ -1,7 +1,8 @@
+use crate::retirement::{ArtifactRetirer, S3VersionDelete};
 use crate::{ArtifactStore, Error};
 use object_store::{
     ClientOptions, RetryConfig,
-    aws::{AmazonS3Builder, S3ConditionalPut},
+    aws::{AmazonS3Builder, AwsCredential, S3ConditionalPut},
     client::{HttpClient, HttpConnector},
 };
 use std::{fmt, sync::Arc, time::Duration};
@@ -113,20 +114,50 @@ impl S3Config {
         Ok(url)
     }
 
-    pub fn build(self) -> Result<ArtifactStore, Error> {
-        let endpoint = self.validate()?;
+    fn http_client() -> Result<reqwest::Client, Error> {
         // reqwest's no-provider feature requires an installed provider even
         // when ring is the only compiled one. Preserve any process default
         // already chosen by the embedding service.
         let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::Client::builder()
+        reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
             .build()
-            .map_err(|_| Error::InvalidConfig)?;
+            .map_err(|_| Error::InvalidConfig)
+    }
+
+    pub fn build(self) -> Result<ArtifactStore, Error> {
+        self.validate()?;
+        self.build_with_client(Self::http_client()?)
+    }
+
+    /// Separate operator-only capability. Requires conditional PUT, GET and
+    /// exact-version DELETE permissions. It never deletes a current key.
+    pub fn build_retirer(self) -> Result<ArtifactRetirer, Error> {
+        let endpoint = self.validate()?;
+        let client = Self::http_client()?;
+        let delete = S3VersionDelete {
+            endpoint,
+            bucket: self.bucket.clone(),
+            region: self.region.clone(),
+            credential: AwsCredential {
+                key_id: self.access_key.clone(),
+                secret_key: self.secret_key.clone(),
+                token: self.session_token.clone(),
+            },
+            client: HttpClient::new(client.clone()),
+        };
+        Ok(ArtifactRetirer {
+            store: self.build_with_client(client)?,
+            delete: Arc::new(delete),
+        })
+    }
+
+    fn build_with_client(self, client: reqwest::Client) -> Result<ArtifactStore, Error> {
+        let endpoint = self.validate()?;
         let mut builder = AmazonS3Builder::new()
             .with_endpoint(endpoint.as_str())
             .with_region(self.region)

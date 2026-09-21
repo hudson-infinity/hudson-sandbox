@@ -177,6 +177,42 @@ impl OutputRef {
     }
 }
 
+/// A verified retirement marker and the previous object it replaced. This is
+/// private storage evidence, not authorization or a database completion flag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputRetirement {
+    pub version: u32,
+    pub plan_sha256: String,
+    pub previous: Option<OutputRef>,
+    pub marker_etag: String,
+    pub marker_version: Option<String>,
+}
+impl OutputRetirement {
+    pub fn validate(&self, plan: &OutputPlan) -> Result<(), InvalidOutput> {
+        if self.version != 1 || self.plan_sha256 != plan.metadata_digest()? {
+            return Err(InvalidOutput);
+        }
+        for value in std::iter::once(&self.marker_etag).chain(self.marker_version.iter()) {
+            if value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
+                return Err(InvalidOutput);
+            }
+        }
+        if let Some(previous) = &self.previous {
+            previous.validate()?;
+            if &previous.plan != plan
+                || previous
+                    .object_version
+                    .as_deref()
+                    .is_some_and(|v| v != "null" && self.marker_version.as_deref() == Some(v))
+            {
+                return Err(InvalidOutput);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Exactly two final streams, including explicit empty ones. Absence of a
 /// reference is not proof of an empty successful stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

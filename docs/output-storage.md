@@ -1,6 +1,6 @@
 # Private output storage
 
-Status: shared output metadata, the S3 transport library, independently fenced PostgreSQL publication, and the supervisor archival worker are implemented. Operation status responses expose output progress. Authenticated retained-byte retrieval is connected. A separate [supervisor read-only live-output RPC](supervisor-protocol.md#read-only-live-output) now supplies the guest transport; [authenticated public SSE](api-contract.md#implemented-output-streams) now consumes that transport and prefers verified archived objects. Cleanup has a durable database inventory and publication fence; storage reclamation and its worker remain unfinished. [Issue #46](https://github.com/hudson-infinity/hudson-sandbox/issues/46) tracks the remaining output work. Upload success alone is neither execution success nor publication.
+Status: shared output metadata, the S3 transport library, independently fenced PostgreSQL publication, and the supervisor archival worker are implemented. Operation status responses expose output progress. Authenticated retained-byte retrieval is connected. A separate [supervisor read-only live-output RPC](supervisor-protocol.md#read-only-live-output) now supplies the guest transport; [authenticated public SSE](api-contract.md#implemented-output-streams) now consumes that transport and prefers verified archived objects. Cleanup has a durable database inventory, publication fence, and a storage retirement primitive. Persisted cleanup completion and the worker connecting these pieces remain unfinished. [Issue #46](https://github.com/hudson-infinity/hudson-sandbox/issues/46) tracks the remaining output work. Upload success alone is neither execution success nor publication.
 
 ## Object identity and integrity
 
@@ -12,7 +12,7 @@ Object keys are derived solely from typed IDs, generation, epoch, attempt and th
 
 Reads pin ETag and storage version when present, verify metadata, length and the full content digest, and only then return a requested binary range of up to 32 KiB. EOF is the end of captured output; `truncated` still indicates discarded process bytes. Missing objects, expired retention, invalid ranges, integrity failures, and unavailable storage are separate errors. Missing output is never a successful empty result. A forged prefix with corrupt bytes later in the object cannot pass a range read. This deliberately trades repeated full-object reads (bounded by 10 MiB) for simple verification; digest-aware caching or chunk manifests may be added after measuring demand.
 
-Four transfers per process share one admission semaphore across handles and buckets. Excess calls fail immediately instead of queuing caller buffers. Transfers have a 30-second overall timeout; HTTP connection and request timeouts are 5 and 15 seconds. Neither client layer automatically retries. Error messages and Debug output exclude credentials, underlying provider responses and output bytes. The wrapper exposes no listing, public URL, overwrite or deletion method.
+Four transfers per process share one admission semaphore across handles and buckets. Excess calls fail immediately instead of queuing caller buffers. Transfers have a 30-second overall timeout; HTTP connection and request timeouts are 5 and 15 seconds. Neither client layer automatically retries. Error messages and Debug output exclude credentials, underlying provider responses and output bytes. The ordinary `ArtifactStore` wrapper exposes no listing, public URL, overwrite or deletion method. A separate operator-only `ArtifactRetirer` handles expired output as described below.
 
 ## Operator configuration
 
@@ -69,13 +69,28 @@ Two supervisor archive slots bound concurrency separately from lifecycle workers
 
 Plans without selected references identify possible orphan objects from interrupted publication. A ticket without plans records that no upload was authorized. Neither state proves object absence. Current publication permits only one stable upload attempt per operation; arbitrary bucket objects and legacy attempts outside that protocol are not discovered by this inventory. There is no bucket listing or customer-controlled object path.
 
-`Ready` means eligible metadata, not deleted bytes. The inventory deliberately has no completed flag or deletion receipt yet. A storage worker must establish object absence or retirement safely, reconcile uncertain acknowledgements, and persist evidence before reporting reclamation. The database publication fence alone cannot stop an already-issued storage request from finishing. The current transport exposes unconditional key deletion, which is insufficient for identity-pinned cleanup and can allow late create-only uploads to recreate a removed key. Versioned storage also requires explicit handling of retained versions. Those storage-side races must be addressed before connecting this inventory to deletion.
+`Ready` means eligible metadata, not deleted bytes. The inventory does not yet persist completed status or retirement receipts. The storage primitive below can retire an exact attempt, but a worker must connect it to these claims and save its evidence under the same fence before reporting reclamation. The database publication fence alone cannot stop an already-issued storage request from finishing.
+
+## Storage retirement
+
+`S3Config::build_retirer` constructs a separate [ArtifactRetirer](../crates/sandbox-artifacts/src/retirement.rs). Its `retire` method accepts the frozen plan, an independently trusted owner, the selected reference when one exists, and service time at or after `delete_after_unix_ms`. It returns a private [OutputRetirement](../crates/sandbox-protocol/src/output.rs) receipt. There is no raw key, bucket, endpoint, version selector or customer cleanup route.
+
+1. Verify the current object's complete bytes and plan metadata, including the pinned reference when published. For an unpublished attempt, recover the reference from the verified object. A missing key is handled explicitly.
+2. Replace verified expired data using `If-Match`, or seal a missing key using `If-None-Match: *`. The replacement is a small JSON marker containing the plan digest and previous reference, with a digest of its own body in metadata. Preserve it at the original key: it stops old create-only uploads from recreating output. A delete marker alone would reopen that key under [S3 conditional-write semantics](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html).
+3. Read back and validate the marker. For unversioned storage, conditional replacement has removed the payload. For versioned storage, verify the exact previous version's bytes again, delete only that version ID, and verify its absence. [Deleting a specific version](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html) removes those bytes; deleting the current key would leave old versions and reopen uploads. A replaced mutable `null` version in a suspended bucket needs no deletion. An ambiguous change of versioning mode fails instead of authorizing current-key deletion.
+4. Recheck the same current marker before returning a receipt. A successful DELETE response alone is insufficient. A missing old version can reconcile a lost acknowledgement, while a changed/corrupt version or unavailable backend remains an error. Retrying preserves the same marker and previous reference; it never reuploads bytes, selects another attempt, executes a command or deletes the marker.
+
+Markers are bounded to 8 KiB and contain metadata, never captured output. Even an originally empty stream retains a marker. Cleanup shares the process-wide four-transfer admission limit and 30-second deadline; credential files, explicit endpoints, TLS, redacted errors and disabled redirects/proxies/retries follow the normal storage configuration. Exact-version DELETE uses the pinned `object_store` SigV4 authorizer and an encoded version query, with no new signing implementation.
+
+This protocol requires a private namespace with only managed create-only uploaders and the retirement worker. Operators must preserve markers, keep bucket versioning stable, and exclude this namespace from lifecycle rules or external writers that remove/overwrite current objects. It inventories managed attempts, not arbitrary historical versions created outside this protocol. A cleanup credential needs GET, conditional PUT and exact-version deletion permissions; readers and uploaders keep separate credentials without deletion authority. Bucket IAM and lifecycle policies are operator responsibilities, not configured by this library. Denied deletion, object locks and incompatible providers leave cleanup incomplete.
+
+The primitive reclaims known payloads while retaining compact storage markers. It does not compact database or guest/host journals, reclaim their reservations, or prove every backend/versioning combination is supported. Current integration evidence covers the pinned MinIO release in versioned and unversioned modes, not a live AWS deployment.
 
 ## Integration still required
 
 The [retained-output endpoint](api-contract.md#implemented-retained-output-reads) consumes selected references and rechecks credentials after storage and metadata lookups. The [SSE endpoint](api-contract.md#implemented-output-streams) now adds pinned live-guest reads, independent credential rechecks, byte-position cursors and explicit gaps.
 
-`expires_unix_ms` stops reads; `delete_after_unix_ms` is an earliest eligibility timestamp, not a deletion receipt. The cleanup inventory retains the complete execution and publication history. Reclaiming storage and compacting history into operation tombstones remain unfinished: retain retry keys, request digests, outcomes and reconciliation evidence, and never make an old command runnable again. Destroy remains independent of publication. The API exposes missing/expired history and reconnect semantics.
+`expires_unix_ms` stops reads; `delete_after_unix_ms` is an earliest eligibility timestamp, not a deletion receipt. The cleanup inventory retains the complete execution and publication history. Scheduling storage retirement, persisting completion receipts and compacting history into operation tombstones remain unfinished: retain retry keys, request digests, outcomes and reconciliation evidence, and never make an old command runnable again. Destroy remains independent of publication. The API exposes missing/expired history and reconnect semantics.
 
 ## Evidence and local verification
 
@@ -83,19 +98,24 @@ The [retained-output endpoint](api-contract.md#implemented-retained-output-reads
 
 [Cleanup inventory tests](../crates/sandbox-store/tests/support/output_cleanup.rs) cover concurrent discovery/claims, stale-worker rejection, recovery of exact manifests, orphan and absent plans, grace periods, corruption deferral, early-cleanup rejection, lease expiry at both operation and inventory lock waits, ownership after destroy/host restart/project deletion, and an upgrade over populated v6 data. They use real PostgreSQL with synthetic receipts and do not exercise storage deletion.
 
+[Retirement tests](../crates/sandbox-artifacts/src/retirement/tests.rs) exercise binary/empty output, owner and retention gates, missing/orphan objects, bounded capacity, corrupt markers, and concurrent cleanup/late uploads. Three explicit MinIO cases additionally cover real version deletion, interrupted cleanup, lost and false delete acknowledgements, corrupted old-version bytes, cancelled workers, concurrent recovery and retained markers blocking stale uploads. CI creates a dedicated versioned fixture bucket and runs these with the existing artifact MinIO checks. Fixture teardown removes only the tests' randomly scoped keys/versions; production retirement never removes its marker.
+
 [Tests](../crates/sandbox-artifacts/src/tests.rs) cover binary ranges, stderr and empty objects, truncation, bounds, full-capacity output, combined command limits, every owner field, retention, conflicting plans, simultaneous identical writes, acknowledgement-loss reconciliation by discarding the first result, separate attempts, out-of-band corruption/deletion, short/oversized/interrupted response bodies, and process-wide transfer admission. The acknowledgement-loss test does not simulate a host crash during a network write.
 
 [Archive collection tests](../crates/sandbox-supervisor/tests/archive.rs) cover binary chunks, truncation, empty versus missing streams, malformed offsets/identities/completion, deadline bounds and receipt ownership. [Controller/MinIO tests](../crates/sandbox-controller/tests/archive.rs) cover lost post-upload acknowledgements followed by destroy and replacement publication without guest access, unchanged execution receipts, stale/changed plans, missing history, and renewal/destroy during a six-second archive delay over real mTLS. CI invokes these explicitly with PostgreSQL and MinIO.
 
 The explicit artifact MinIO test covers conditional races, identical retry, conflicting bytes, binary and empty output, pinned reads after replacement, missing objects, and removal of only its own randomly named objects. CI starts an ephemeral loopback-only MinIO container at the pinned multi-architecture release digest in [rust-check](../.github/workflows/rust.yml). It requires no privileged runner or VM. These storage tests do not establish public-output or sandbox-isolation readiness.
 
-For the existing local development stack, create the private test bucket once:
+For the existing local development stack, provision the private test buckets (enable versioning only on the dedicated versioned fixture):
 
 ```sh
 docker compose exec -T minio sh -c 'MC_HOST_hudson="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@127.0.0.1:9000" mc mb --ignore-existing hudson/hudson-output-test'
+docker compose exec -T minio sh -c 'MC_HOST_hudson="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@127.0.0.1:9000" mc mb --ignore-existing hudson/hudson-output-version-test'
+docker compose exec -T minio sh -c 'MC_HOST_hudson="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@127.0.0.1:9000" mc version enable hudson/hudson-output-version-test'
 cargo test -p sandbox-artifacts
 HUDSON_TEST_S3_ENDPOINT=http://127.0.0.1:59000 \
 HUDSON_TEST_S3_BUCKET=hudson-output-test \
+HUDSON_TEST_S3_VERSIONED_BUCKET=hudson-output-version-test \
 HUDSON_TEST_S3_ACCESS_KEY=sandbox \
 HUDSON_TEST_S3_SECRET_KEY=sandbox-dev-secret \
 cargo test -p sandbox-artifacts output_minio -- --ignored

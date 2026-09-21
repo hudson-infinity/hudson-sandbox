@@ -9,8 +9,8 @@ use sandbox_protocol::{
 
 // Tests share the production process-wide admission semaphore; serialize their
 // fixtures, except for the explicit concurrency test within one fixture.
-static TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-fn owner() -> OutputOwner {
+pub(super) static TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(super) fn owner() -> OutputOwner {
     OutputOwner {
         project_id: ProjectId::generate(),
         sandbox_id: SandboxId::generate(),
@@ -22,7 +22,7 @@ fn owner() -> OutputOwner {
         boot_id: "guest-boot-one".into(),
     }
 }
-fn plan(bytes: &[u8]) -> OutputPlan {
+pub(super) fn plan(bytes: &[u8]) -> OutputPlan {
     OutputPlan {
         version: 1,
         owner: owner(),
@@ -37,7 +37,7 @@ fn plan(bytes: &[u8]) -> OutputPlan {
         delete_after_unix_ms: 3000,
     }
 }
-fn memory() -> ArtifactStore {
+pub(super) fn memory() -> ArtifactStore {
     ArtifactStore {
         inner: Arc::new(object_store::memory::InMemory::new()),
     }

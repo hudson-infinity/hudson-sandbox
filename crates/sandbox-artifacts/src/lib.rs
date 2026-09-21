@@ -2,6 +2,8 @@
 //! publication, or garbage collection is implied by a successful upload.
 mod config;
 pub use config::S3Config;
+mod retirement;
+pub use retirement::ArtifactRetirer;
 
 use futures_util::TryStreamExt;
 use object_store::{
