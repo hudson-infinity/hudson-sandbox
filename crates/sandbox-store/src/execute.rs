@@ -1,0 +1,396 @@
+//! Durable command admission and dispatch intent, independent of lifecycle ownership.
+//! This module does not execute commands; only its Dispatch action permits a first RPC.
+use crate::{
+    Store,
+    claims::Claim,
+    dispatch::{self, DispatchError},
+};
+use sandbox_protocol::{
+    AllocationId, HostId, Id, IdempotencyKey, OperationId, ProjectId, RequestDigest, SandboxId,
+    TokenKeyId,
+    command::{CommandInput, MAX_DURATION_MS},
+    guest_model::Execute,
+    idempotency::DIGEST_VERSION,
+    supervisor::Ownership,
+};
+use serde_json::json;
+use sqlx::{PgConnection, Row};
+use time::OffsetDateTime;
+
+#[derive(Debug, Clone)]
+pub struct ExecuteCommand {
+    pub project_id: ProjectId,
+    pub sandbox_id: SandboxId,
+    pub key_id: TokenKeyId,
+    pub idempotency_key: IdempotencyKey,
+    pub command: CommandInput,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExecuteAdmission {
+    Accepted {
+        operation_id: OperationId,
+        status: String,
+    },
+    NotFound,
+    Gone,
+    Unauthorized,
+    DigestConflict,
+    InvalidCommand,
+    InvalidDeadline,
+    NotRunning,
+    Busy(OperationId),
+}
+#[derive(Debug)]
+pub enum ExecuteAction {
+    Dispatch {
+        owner: Ownership,
+        command: Execute,
+    },
+    Inspect {
+        owner: Ownership,
+        digest: [u8; 32],
+    },
+    /// Proven never dispatched. No VM reservation or lifecycle state changes.
+    Rejected,
+}
+
+async fn existing(
+    db: &mut PgConnection,
+    r: &ExecuteCommand,
+    digest: &RequestDigest,
+) -> Result<Option<ExecuteAdmission>, sqlx::Error> {
+    let row = sqlx::query("SELECT id,request_digest,status FROM operations WHERE project_id=$1 AND idempotency_key=$2")
+        .bind(r.project_id.uuid()).bind(r.idempotency_key.as_str()).fetch_optional(db).await?;
+    row.map(|row| -> Result<ExecuteAdmission, sqlx::Error> {
+        let old: Vec<u8> = row.try_get("request_digest")?;
+        Ok(if old.as_slice() == digest.as_bytes().as_slice() {
+            ExecuteAdmission::Accepted {
+                operation_id: OperationId::from_uuid(row.try_get("id")?),
+                status: row.try_get("status")?,
+            }
+        } else {
+            ExecuteAdmission::DigestConflict
+        })
+    })
+    .transpose()
+}
+
+impl Store {
+    pub async fn admit_execute(
+        &self,
+        r: &ExecuteCommand,
+    ) -> Result<ExecuteAdmission, DispatchError> {
+        if r.command.validate().is_err() {
+            return Ok(ExecuteAdmission::InvalidCommand);
+        }
+        let digest = RequestDigest::compute(
+            "POST",
+            &format!("/v1/sandboxes/{}/execute", r.sandbox_id),
+            &r.command,
+        )
+        .map_err(|_| DispatchError::InvalidData)?;
+        match self.try_admit_execute(r, &digest).await {
+            Err(DispatchError::Query(error))
+                if error
+                    .as_database_error()
+                    .and_then(sqlx::error::DatabaseError::code)
+                    .is_some_and(|code| code == "23505") =>
+            {
+                let mut db = self.pool().acquire().await?;
+                existing(&mut db, r, &digest)
+                    .await?
+                    .ok_or(DispatchError::Conflict)
+            }
+            other => other,
+        }
+    }
+
+    async fn try_admit_execute(
+        &self,
+        r: &ExecuteCommand,
+        digest: &RequestDigest,
+    ) -> Result<ExecuteAdmission, DispatchError> {
+        let mut tx = self.pool().begin().await?;
+        // Admission and credential changes serialize on the project. Do not lock
+        // an existing command here: controllers lock operation before project.
+        let authorized: Option<(bool,)> = sqlx::query_as(
+            "SELECT status='active' AND EXISTS(
+            SELECT 1 FROM jsonb_array_elements(api_tokens) t WHERE t->>'key_id'=$2
+            AND (t->>'revoked_at' IS NULL OR (t->>'revoked_at')::timestamptz>clock_timestamp())
+            AND (t->>'expires_at' IS NULL OR (t->>'expires_at')::timestamptz>clock_timestamp()))
+            FROM projects WHERE id=$1 FOR UPDATE",
+        )
+        .bind(r.project_id.uuid())
+        .bind(r.key_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if authorized != Some((true,)) {
+            return Ok(ExecuteAdmission::Unauthorized);
+        }
+        if let Some(result) = existing(&mut tx, r, digest).await? {
+            return Ok(result);
+        }
+        let sandbox =
+            sqlx::query("SELECT * FROM sandboxes WHERE id=$1 AND project_id=$2 FOR UPDATE")
+                .bind(r.sandbox_id.uuid())
+                .bind(r.project_id.uuid())
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(sandbox) = sandbox else {
+            return Ok(ExecuteAdmission::NotFound);
+        };
+        if sandbox.try_get::<String, _>("desired_state")? == "destroyed" {
+            return Ok(ExecuteAdmission::Gone);
+        }
+        if let Some(id) =
+            sandbox.try_get::<Option<uuid::Uuid>, _>("active_transition_operation_id")?
+        {
+            return Ok(ExecuteAdmission::Busy(OperationId::from_uuid(id)));
+        }
+        if sandbox.try_get::<String, _>("observed_state")? != "running" {
+            return Ok(ExecuteAdmission::NotRunning);
+        }
+        let Some(allocation) = sandbox.try_get::<Option<uuid::Uuid>, _>("current_allocation_id")?
+        else {
+            return Ok(ExecuteAdmission::NotRunning);
+        };
+        let active: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT id FROM operations WHERE sandbox_id=$1
+            AND kind='execute' AND status IN ('queued','running','unknown')",
+        )
+        .bind(r.sandbox_id.uuid())
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((id,)) = active {
+            return Ok(ExecuteAdmission::Busy(OperationId::from_uuid(id)));
+        }
+        let now: (OffsetDateTime,) = sqlx::query_as("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await?;
+        let now_ms = now.0.unix_timestamp_nanos() / 1_000_000;
+        let remaining = i128::from(r.command.deadline_unix_ms) - now_ms;
+        if !(1..=i128::from(MAX_DURATION_MS)).contains(&remaining)
+            || sandbox
+                .try_get::<Option<OffsetDateTime>, _>("expires_at")?
+                .is_some_and(|t| t <= now.0)
+        {
+            return Ok(ExecuteAdmission::InvalidDeadline);
+        }
+        let deadline = OffsetDateTime::from_unix_timestamp_nanos(
+            i128::from(r.command.deadline_unix_ms) * 1_000_000,
+        )
+        .map_err(|_| DispatchError::InvalidData)?;
+        if sandbox
+            .try_get::<Option<OffsetDateTime>, _>("expires_at")?
+            .is_some_and(|t| deadline > t)
+        {
+            return Ok(ExecuteAdmission::InvalidDeadline);
+        }
+        // Lock the host after the sandbox, as placement/maintenance do. The
+        // sandbox lock protects its allocation from concurrent lifecycle changes.
+        let ready: Option<(bool,)> = sqlx::query_as("SELECT a.status='running' AND a.released_at IS NULL
+            AND COALESCE(a.lease_expires_at>clock_timestamp(),false)
+            AND a.generation=$3 AND a.supervisor_epoch=h.supervisor_epoch AND h.status='ready'
+            AND COALESCE(h.last_seen_at>clock_timestamp()-interval '30 seconds',false)
+            FROM allocations a JOIN hosts h ON h.id=a.host_id WHERE a.id=$1 AND a.sandbox_id=$2 FOR UPDATE OF h")
+            .bind(allocation).bind(r.sandbox_id.uuid()).bind(sandbox.try_get::<i64,_>("generation")?)
+            .fetch_optional(&mut *tx).await?;
+        if ready != Some((true,)) {
+            return Ok(ExecuteAdmission::NotRunning);
+        }
+        // A host lock wait may outlive the deadline or credential. Recheck both
+        // using database time in the committing statement.
+        let operation = OperationId::generate();
+        let payload = serde_json::to_value(&r.command).map_err(|_| DispatchError::InvalidData)?;
+        let changed = sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,initiator_key_id,
+            idempotency_key,request_digest,digest_version,payload,status,phase,deadline,execution_allocation_id)
+            SELECT $1,$2,$3,'execute','project',$4,$5,$6,$7,$8,'queued','admitted',$9,$10
+            WHERE $9>clock_timestamp() AND EXISTS(SELECT 1 FROM projects p,
+                LATERAL jsonb_array_elements(p.api_tokens) t WHERE p.id=$2 AND p.status='active' AND t->>'key_id'=$4
+                AND (t->>'revoked_at' IS NULL OR (t->>'revoked_at')::timestamptz>clock_timestamp())
+                AND (t->>'expires_at' IS NULL OR (t->>'expires_at')::timestamptz>clock_timestamp()))
+            AND EXISTS(SELECT 1 FROM allocations a JOIN hosts h ON h.id=a.host_id
+                WHERE a.id=$10 AND a.lease_expires_at>clock_timestamp() AND h.status='ready'
+                AND h.last_seen_at>clock_timestamp()-interval '30 seconds')")
+            .bind(operation.uuid()).bind(r.project_id.uuid()).bind(r.sandbox_id.uuid()).bind(r.key_id.as_str())
+            .bind(r.idempotency_key.as_str()).bind(digest.as_bytes().as_slice()).bind(DIGEST_VERSION)
+            .bind(payload).bind(deadline).bind(allocation).execute(&mut *tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(DispatchError::Conflict);
+        }
+        tx.commit().await?;
+        Ok(ExecuteAdmission::Accepted {
+            operation_id: operation,
+            status: "queued".into(),
+        })
+    }
+
+    /// Commit exactly one dispatch intent. All later calls inspect, including
+    /// unknown outcomes and calls after revocation, expiry, destroy, or host loss.
+    pub async fn prepare_execute(
+        &self,
+        claim: &Claim,
+        host: HostId,
+        epoch: i64,
+    ) -> Result<ExecuteAction, DispatchError> {
+        let mut tx = self.pool().begin().await?;
+        let op = sqlx::query(
+            "SELECT * FROM operations WHERE id=$1 AND claim_revision=$2
+            AND lease_expires_at>clock_timestamp() AND status IN ('running','unknown') FOR UPDATE",
+        )
+        .bind(claim.operation_id.uuid())
+        .bind(claim.revision)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(DispatchError::LostClaim)?;
+        if op.try_get::<String, _>("kind")? != "execute" {
+            return Err(DispatchError::Conflict);
+        }
+        let project: uuid::Uuid = op.try_get("project_id")?;
+        let sandbox_id: uuid::Uuid = op.try_get("sandbox_id")?;
+        let allocation: uuid::Uuid = op
+            .try_get::<Option<uuid::Uuid>, _>("execution_allocation_id")?
+            .ok_or(DispatchError::InvalidData)?;
+        sqlx::query("SELECT id FROM projects WHERE id=$1 FOR UPDATE")
+            .bind(project)
+            .fetch_one(&mut *tx)
+            .await?;
+        let sandbox = sqlx::query("SELECT * FROM sandboxes WHERE id=$1 FOR UPDATE")
+            .bind(sandbox_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        // Read the pinned record even after destroy releases it. Never redirect
+        // an old command onto the sandbox's current allocation or a new epoch.
+        let allocation_row = sqlx::query("SELECT * FROM allocations WHERE id=$1 AND sandbox_id=$2")
+            .bind(allocation)
+            .bind(sandbox_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let allocation_host = allocation_row.try_get::<uuid::Uuid, _>("host_id")?;
+        let host_row = sqlx::query("SELECT * FROM hosts WHERE id=$1 FOR UPDATE")
+            .bind(allocation_host)
+            .fetch_one(&mut *tx)
+            .await?;
+        let command: CommandInput = serde_json::from_value(op.try_get("payload")?)
+            .map_err(|_| DispatchError::InvalidData)?;
+        command.validate().map_err(|_| DispatchError::InvalidData)?;
+        let command = command.for_operation(claim.operation_id);
+        let digest = command.digest().map_err(|_| DispatchError::InvalidData)?;
+        let owner = Ownership {
+            host_id: HostId::from_uuid(allocation_host).to_string(),
+            project_id: ProjectId::from_uuid(project).to_string(),
+            sandbox_id: SandboxId::from_uuid(sandbox_id).to_string(),
+            allocation_id: AllocationId::from_uuid(allocation).to_string(),
+            operation_id: claim.operation_id.to_string(),
+            generation: allocation_row.try_get("generation")?,
+            supervisor_epoch: allocation_row.try_get("supervisor_epoch")?,
+            claim_revision: claim.revision,
+            claim_expires_unix_ms: i64::try_from(
+                op.try_get::<OffsetDateTime, _>("lease_expires_at")?
+                    .unix_timestamp_nanos()
+                    / 1_000_000,
+            )
+            .map_err(|_| DispatchError::InvalidData)?,
+        };
+        let dispatched = op.try_get::<i32, _>("attempt_count")? > 0
+            || op.try_get::<String, _>("status")? == "unknown";
+        if dispatched {
+            // A changed persisted payload is corruption, never permission to inspect
+            // another command under the same public operation ID.
+            let receipts: serde_json::Value = op.try_get("attempt_receipts")?;
+            let recorded = receipts
+                .as_array()
+                .and_then(|items| items.first())
+                .ok_or(DispatchError::InvalidData)?;
+            let expected = dispatch::evidence(&owner, None, "execute_dispatch_intent");
+            if op.try_get::<i32, _>("attempt_count")? != 1
+                || recorded
+                    .get("command_digest")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(hex::encode(digest).as_str())
+                || [
+                    "phase",
+                    "host_id",
+                    "project_id",
+                    "sandbox_id",
+                    "operation_id",
+                    "allocation_id",
+                    "generation",
+                    "supervisor_epoch",
+                ]
+                .iter()
+                .any(|key| recorded.get(*key) != expected.get(*key))
+            {
+                return Err(DispatchError::InvalidData);
+            }
+            dispatch::fence(&mut tx, claim).await?;
+            tx.commit().await?;
+            return Ok(ExecuteAction::Inspect { owner, digest });
+        }
+        if allocation_host != host.uuid() || owner.supervisor_epoch != epoch {
+            return Err(DispatchError::HostUnavailable);
+        }
+        let authorized: (bool,) = sqlx::query_as("SELECT p.status='active' AND o.initiator_kind='project'
+            AND o.deadline>clock_timestamp() AND (s.expires_at IS NULL OR s.expires_at>clock_timestamp())
+            AND EXISTS(SELECT 1 FROM jsonb_array_elements(p.api_tokens) t WHERE t->>'key_id'=o.initiator_key_id
+                AND (t->>'revoked_at' IS NULL OR (t->>'revoked_at')::timestamptz>clock_timestamp())
+                AND (t->>'expires_at' IS NULL OR (t->>'expires_at')::timestamptz>clock_timestamp()))
+            FROM operations o JOIN projects p ON p.id=o.project_id JOIN sandboxes s ON s.id=o.sandbox_id WHERE o.id=$1")
+            .bind(claim.operation_id.uuid()).fetch_one(&mut *tx).await?;
+        let current = sandbox.try_get::<String, _>("desired_state")? == "running"
+            && sandbox.try_get::<String, _>("observed_state")? == "running"
+            && sandbox
+                .try_get::<Option<uuid::Uuid>, _>("active_transition_operation_id")?
+                .is_none()
+            && sandbox.try_get::<Option<uuid::Uuid>, _>("current_allocation_id")?
+                == Some(allocation)
+            && sandbox.try_get::<i64, _>("generation")? == owner.generation
+            && allocation_row.try_get::<String, _>("status")? == "running"
+            && host_row.try_get::<i64, _>("supervisor_epoch")? == owner.supervisor_epoch;
+        if !authorized.0 || !current {
+            let code = if authorized.0 {
+                "execution_target_changed"
+            } else {
+                "execution_authority_expired"
+            };
+            dispatch::fence(&mut tx, claim).await?;
+            let changed = sqlx::query("UPDATE operations SET status='failed',phase='rejected_before_dispatch',completed_at=clock_timestamp(),
+                lease_expires_at=NULL,next_retry_at=NULL,error=$2,updated_at=clock_timestamp()
+                WHERE id=$1 AND claim_revision=$3 AND lease_expires_at>clock_timestamp()")
+                .bind(claim.operation_id.uuid()).bind(json!({"code":code,"dispatch_intent_absent":true})).bind(claim.revision)
+                .execute(&mut *tx).await?.rows_affected();
+            if changed != 1 {
+                return Err(DispatchError::LostClaim);
+            }
+            tx.commit().await?;
+            return Ok(ExecuteAction::Rejected);
+        }
+        let valid: (bool,) = sqlx::query_as("SELECT h.status='ready'
+            AND COALESCE(h.last_seen_at>clock_timestamp()-interval '30 seconds',false)
+            AND COALESCE(a.lease_expires_at>clock_timestamp(),false) FROM hosts h JOIN allocations a ON a.host_id=h.id WHERE a.id=$1")
+            .bind(allocation).fetch_one(&mut *tx).await?;
+        if !valid.0 {
+            return Err(DispatchError::HostUnavailable);
+        }
+        let mut receipt = dispatch::evidence(&owner, None, "execute_dispatch_intent");
+        receipt["command_digest"] = json!(hex::encode(digest));
+        dispatch::fence(&mut tx, claim).await?;
+        let changed = sqlx::query("UPDATE operations SET phase='execute_dispatched',attempt_count=1,
+            attempt_receipts=jsonb_build_array($2::jsonb),updated_at=clock_timestamp()
+            WHERE id=$1 AND claim_revision=$3 AND lease_expires_at>clock_timestamp()
+            AND deadline>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations WHERE id=$4 AND lease_expires_at>clock_timestamp())
+            AND EXISTS(SELECT 1 FROM projects p, LATERAL jsonb_array_elements(p.api_tokens) t
+                WHERE p.id=operations.project_id AND p.status='active' AND t->>'key_id'=operations.initiator_key_id
+                AND (t->>'revoked_at' IS NULL OR (t->>'revoked_at')::timestamptz>clock_timestamp())
+                AND (t->>'expires_at' IS NULL OR (t->>'expires_at')::timestamptz>clock_timestamp()))
+            AND EXISTS(SELECT 1 FROM sandboxes WHERE id=operations.sandbox_id
+                AND (expires_at IS NULL OR expires_at>clock_timestamp()))")
+            .bind(claim.operation_id.uuid()).bind(receipt).bind(claim.revision).bind(allocation)
+            .execute(&mut *tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(DispatchError::Conflict);
+        }
+        tx.commit().await?;
+        Ok(ExecuteAction::Dispatch { owner, command })
+    }
+}

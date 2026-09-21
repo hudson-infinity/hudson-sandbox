@@ -4,6 +4,8 @@ Status: partially implemented; the initial PostgreSQL schema and storage operati
 
 Implementation evidence: [the initial migration](../migrations/0001_initial.sql) creates projects, hosts, sandboxes, operations, and allocations. [Schema tests](../crates/sandbox-store/tests/schema.rs), [claims](../crates/sandbox-store/tests/claims.rs), and [single-host reservation tests](../crates/sandbox-store/tests/placement.rs) exercise PostgreSQL constraints and concurrency. The [source-field upgrade](../migrations/0002_observation_source.sql) and [upgrade test](../crates/sandbox-store/tests/upgrade.rs) preserve observation provenance; [create completion](controller.md) records evidence transactionally. Snapshot and UI security schemas remain planned; database reservations are not proof that a VM exists or is isolated.
 
+[Execution ownership](controller.md#command-admission-and-dispatch-ownership) adds a nullable `operations.execution_allocation_id`, a same-sandbox allocation foreign key, and a unique active pinned command per sandbox. New store admission always pins an allocation; legacy rows retain unknown ownership and cannot dispatch.
+
 There are **six sandbox resource tables** plus **two supporting UI security tables**, not a user/role directory. The schemas below define the target design; the migration implements the current subset.
 
 ## ID format and identity
