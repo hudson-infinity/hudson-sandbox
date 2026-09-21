@@ -1,6 +1,6 @@
 # API contract
 
-Status: partially implemented. Create, destroy, sandbox status, and operation status have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
+Status: partially implemented. Create, destroy, sandbox/operation status, and project-scoped sandbox/operation lists have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
 
 ## API surfaces
 
@@ -103,11 +103,13 @@ Content-Type: application/json
 Wait for create success, then call execute. An execute request returns an operation ID used for results, output, and cancellation. Proposed routes are:
 
 ```text
+GET  /v1/sandboxes
 GET  /v1/sandboxes/{sandbox_id}
 POST /v1/sandboxes/{sandbox_id}/execute
 POST /v1/sandboxes/{sandbox_id}/pause
 POST /v1/sandboxes/{sandbox_id}/resume
 POST /v1/sandboxes/{sandbox_id}/destroy
+GET  /v1/operations
 GET  /v1/operations/{operation_id}
 POST /v1/operations/{operation_id}/cancel
 GET  /v1/snapshots/{snapshot_id}
@@ -195,3 +197,16 @@ Authentication and request validation still apply to every retry. For a valid re
 The controller and supervisor retain independent checks before starting an allocation. Align their configuration with the API; acceptance never promises execution. Allowlist membership is operator authorization, not verification of artifact bytes, required init/agent components, or host compatibility. Image production, byte verification, and compatibility-manifest pinning at admission remain required before the runtime can claim the [supported image contract](compatibility.md#how-a-sandbox-boots).
 
 [HTTP admission tests](../crates/sandbox-api/tests/create.rs) cover policy removal, retry preservation, no-side-effect denial, concurrent admission, authentication, and project isolation.
+
+
+## Implemented collection reads
+
+The [list handlers](../crates/sandbox-api/src/lists.rs) implement authenticated `GET /v1/sandboxes` and `GET /v1/operations`. Both accept optional `limit` (1–100, default 50) and `cursor`. The operations list also accepts an optional canonical `sandbox_id`; a missing or inaccessible sandbox filter returns the same `404`. Other filters are not implemented and unknown/duplicate query fields return `400`.
+
+Each response contains an `items` array and `next_cursor`; the cursor is `null` on the last or empty page. Items use the same fields as individual sandbox/operation reads. Destroyed sandbox tombstones, unknown operation outcomes, and service-owned cleanup remain discoverable. Simulation provenance and observation timestamps keep their existing meaning. Collection reads do not admit work or change lifecycle state, and every response carries `Cache-Control: no-store`.
+
+Pagination orders by immutable `(created_at, id)` descending, retaining microsecond timestamp precision and using ID to break ties. The database fetches at most `limit + 1` rows. A continuation selects strictly older keys; an insertion ahead of the current boundary does not shift older pages. This is a live view across requests, not a transaction snapshot: status fields can change, and newly committed rows behind a boundary can appear. Start a new traversal to see newer resources. Page size may change between requests.
+
+Cursors are opaque, versioned positions scoped to the authenticated project, collection, and operation filter. Pass each `next_cursor` back unchanged with the same filter. Malformed, oversized (over 2,048 bytes), wrong-version, or wrong-scope cursors return `400` with `problem+json`. Their private encoding is not a client contract. A cursor is not a credential: every page authenticates again and [all list queries](../crates/sandbox-store/src/lists.rs) independently bind the owning project in SQL. Editing a cursor may change a position but cannot grant access to another project.
+
+[Migration 0004](../migrations/0004_collection_indexes.sql) adds indexes matching project-scoped ordering and the operations sandbox filter. It changes no resource rows. Ordinary index creation can block writes while the indexes build; apply it through the coordinated migration process and plan a maintenance window for an existing large installation. An [upgrade test](../crates/sandbox-store/tests/collection_upgrade.rs) verifies index definitions and preservation of existing rows, while [HTTP tests](../crates/sandbox-api/tests/lists.rs) cover ties, inserts between pages, bounds, revocation, cursor scope/tampering, project isolation, and unchanged resource state. Large-dataset query latency remains to be measured.

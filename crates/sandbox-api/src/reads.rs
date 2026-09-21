@@ -150,7 +150,7 @@ pub(crate) fn sandbox_body_for(view: SandboxView) -> Result<SandboxBody, Problem
     })
 }
 
-/// Status reflects live state and must not be cached anywhere in between.
+/// Status and list responses must not be cached anywhere in between.
 pub(crate) fn no_store<T: IntoResponse>(body: T) -> Response {
     let mut response = (StatusCode::OK, body).into_response();
     response.headers_mut().insert(

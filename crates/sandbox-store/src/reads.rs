@@ -52,7 +52,7 @@ pub struct SandboxView {
     /// confirmed yet, which a caller must be able to tell apart from "just
     /// observed".
     pub observed_at: Option<OffsetDateTime>,
-    /// The verified image it boots.
+    /// The immutable image digest selected at admission.
     pub image_digest: String,
     /// Requested size.
     pub resources: serde_json::Value,

@@ -264,3 +264,8 @@ The initial schema, admission, claims, and reservation tests linked above cover 
 UI session/credential constraints and audit admission must satisfy [auth acceptance](auth-design.md#acceptance-checks). Use [lifecycle](lifecycle.md) for release evidence and [API contract](api-contract.md) for retry response behavior. The session's stable-ID example lives in [lifecycle](lifecycle.md#identity-through-a-sandbox-session).
 
 Open work: SQLx version/features and query-check setup, fresh and upgrade database tests, executable SQL types/enums, indexes/composite constraints, migration ordering, and storage cleanup tests. Development and CI run PostgreSQL 16 against MinIO for object storage. Link actual migrations and tests here once implemented.
+
+
+## Collection read indexes
+
+[Migration 0004](../migrations/0004_collection_indexes.sql) adds `(project_id, created_at DESC, id DESC)` indexes for sandboxes and operations, plus `(project_id, sandbox_id, created_at DESC, id DESC)` for filtered operation history. [Collection reads](api-contract.md#implemented-collection-reads) use strictly older key boundaries and bounded pages; they never use a cursor as authorization. Resource timestamps, state, and tombstones are unchanged by this migration.
