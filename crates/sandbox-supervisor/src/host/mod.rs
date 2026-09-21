@@ -5,6 +5,7 @@ mod file_downloads;
 mod files;
 mod journal;
 mod live_output;
+mod previous;
 use crate::guardian::{self, Action, Artifact, Manifest, Receipt, State as GuardianState};
 use journal::{Journal, Record};
 use sandbox_protocol::{
@@ -705,6 +706,14 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn reconcile_previous_allocation(
+        &self,
+        r: Request<sandbox_protocol::supervisor::PreviousAllocationRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::PreviousAllocationObservation>, Status> {
+        self.work(move |h| h.previous_allocation(r.into_inner()))
+            .await
+            .map(Response::new)
+    }
     async fn begin_file(
         &self,
         r: Request<sandbox_protocol::supervisor::FileRequest>,

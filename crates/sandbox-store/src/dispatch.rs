@@ -58,6 +58,18 @@ pub(crate) async fn context(
     claim: &Claim,
     kind: &str,
 ) -> Result<Context, DispatchError> {
+    context_at_epoch(db, claim, kind, None).await
+}
+
+pub(crate) async fn context_at_epoch(
+    db: &mut PgConnection,
+    claim: &Claim,
+    kind: &str,
+    reporting_epoch: Option<i64>,
+) -> Result<Context, DispatchError> {
+    sqlx::query("SET LOCAL statement_timeout='2s'")
+        .execute(&mut *db)
+        .await?;
     let op = sqlx::query(
         "SELECT * FROM operations WHERE id=$1 AND claim_revision=$2
         AND lease_expires_at > clock_timestamp() AND status IN ('running','unknown') FOR UPDATE",
@@ -109,8 +121,9 @@ pub(crate) async fn context(
         .await?;
     let generation: i64 = allocation.try_get("generation")?;
     let epoch: i64 = allocation.try_get("supervisor_epoch")?;
+    let current_epoch: i64 = host_row.try_get("supervisor_epoch")?;
     if sandbox.try_get::<i64, _>("generation")? != generation
-        || host_row.try_get::<i64, _>("supervisor_epoch")? != epoch
+        || reporting_epoch.map_or(current_epoch != epoch, |e| current_epoch != e || e <= epoch)
     {
         return Err(DispatchError::Conflict);
     }
@@ -384,6 +397,7 @@ impl Store {
 
 #[derive(Debug, Clone, Copy)]
 pub enum CreateRejection {
+    HostEpochChanged,
     Unauthorized,
     ImageDenied,
     InvalidResources,
@@ -391,6 +405,7 @@ pub enum CreateRejection {
 impl CreateRejection {
     fn code(self) -> &'static str {
         match self {
+            Self::HostEpochChanged => "host_epoch_changed",
             Self::Unauthorized => "authorization_revoked",
             Self::ImageDenied => "image_not_allowed",
             Self::InvalidResources => "invalid_resources",

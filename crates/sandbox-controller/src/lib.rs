@@ -1,6 +1,7 @@
 //! One configured host, durable create/destroy dispatch, and reconciliation over mTLS.
 //! The supervisor is trusted only after its certificate, host ID, and epoch match.
 pub mod archive;
+mod recovery;
 mod uploads;
 
 use sandbox_protocol::{
@@ -165,6 +166,9 @@ impl Controller {
     }
 
     async fn destroy_tick(&mut self, claim: &Claim) -> Result<Tick, ControllerError> {
+        if let Some(tick) = self.previous_tick(claim).await? {
+            return Ok(tick);
+        }
         let action = match self.store.prepare_destroy(claim, false).await {
             Ok(action) => action,
             Err(DispatchError::LostClaim) => return Ok(Tick::LostOwnership),
@@ -361,6 +365,9 @@ impl Controller {
     }
 
     async fn create_tick(&mut self, claim: &Claim) -> Result<Tick, ControllerError> {
+        if let Some(tick) = self.previous_tick(claim).await? {
+            return Ok(tick);
+        }
         let reservation = match self
             .store
             .reserve_create(claim, self.config.host, self.config.epoch)

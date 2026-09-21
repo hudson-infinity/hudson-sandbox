@@ -154,7 +154,7 @@ Persist intent before each external action and confirmed evidence afterward. Eve
 
 ## Host leases and capacity recovery
 
-The service needs focused loops for pending operations, host health/capacity, expired allocations, snapshot progress, and orphan cleanup. [Allocation maintenance](controller.md#allocation-maintenance) now renews confirmed running allocations and admits service-owned destruction after matching same-epoch release evidence or policy expiry; snapshots and general orphan/old-epoch cleanup remain unfinished. It does not need a general workflow framework. PostgreSQL is their durable source of intent; the host supervisor supplies observations and enforces local deadlines.
+The service needs focused loops for pending operations, host health/capacity, expired allocations, snapshot progress, and orphan cleanup. [Allocation maintenance](controller.md#allocation-maintenance) now renews confirmed running allocations and admits service-owned destruction after matching same-epoch release evidence or policy expiry; verified previous-epoch cleanup now reconciles retained ownership; snapshots and general orphan cleanup remain unfinished. It does not need a general workflow framework. PostgreSQL is their durable source of intent; the host supervisor supplies observations and enforces local deadlines.
 
 Allocation generations and expiring leases prevent stale commands and identify current owners. A partitioned host must stop its VMs when its local lease watchdog expires. A generation change in PostgreSQL alone does not stop execution on a disconnected machine. Replacement requires confirmed termination, infrastructure fencing, or a validated lease-expiry mechanism.
 
