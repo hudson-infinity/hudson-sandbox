@@ -1,6 +1,6 @@
 # Documentation guide
 
-The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. A real Linux lifecycle supervisor now connects create, renewal and destroy to Firecracker. The [command admission store](controller.md#command-admission-and-dispatch-ownership) pins durable dispatch ownership; API-to-guest execution, the UI, and an installer remain unfinished; the guest command component has local Linux and microVM evidence. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
+The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. The real Linux supervisor connects create, command execution, renewal and destroy to Firecracker. [Public execute](controller.md#command-admission-and-dispatch-ownership) has durable admission, retry fencing and result handling with local microVM evidence. Output/file/cancel routes, the UI, and an installer remain unfinished. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
 
 ## Reading order and ownership
 

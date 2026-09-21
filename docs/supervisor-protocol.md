@@ -4,7 +4,7 @@ Status: the versioned gRPC transport and an in-memory fake are implemented. The 
 
 ## Contract and identity
 
-[The protobuf source](../proto/supervisor.proto) generates Rust messages, a client, and a server at build time through `tonic-prost-build`. The package is `hudson.supervisor.v1`. Keep wire field numbers stable; do not reuse removed numbers. The protocol currently covers health, create, inspect, stop, allocation lease renewal, and lease inspection. Execute, output, and file transfer still need protocol and implementation work.
+[The protobuf source](../proto/supervisor.proto) generates Rust messages, a client, and a server at build time through `tonic-prost-build`. The package is `hudson.supervisor.v1`. Keep wire field numbers stable; do not reuse removed numbers. The protocol covers health, create, inspect, stop, allocation lease renewal/inspection, and command execution/inspection. Output delivery and file transfer still need supervisor RPCs.
 
 Every request uses gRPC over mutual TLS. [Shared transport](../crates/sandbox-supervisor/src/transport.rs) requires a trusted private CA and client certificate. The server interceptor also compares the connected client's leaf-certificate SHA-256 fingerprint against one or two configured controller certificates. Another CA-valid certificate, even with the same subject name, has no authority. The second pin supports an explicitly configured rotation overlap. No raw Project or Admin token is accepted on this interface.
 
@@ -16,7 +16,7 @@ The implementation uses [tonic's server TLS configuration](https://docs.rs/tonic
 
 ## Ownership and observations
 
-Create, inspect, and stop carry the host, project, sandbox, allocation, operation, allocation generation, supervisor epoch, controller claim revision, and absolute claim deadline. IDs must have their canonical typed UUIDv7 form. Revisions and generations are positive. A request for the wrong host or epoch is rejected.
+Create, inspect, stop, execute-command and inspect-command carry the host, project, sandbox, allocation, operation, allocation generation, supervisor epoch, controller claim revision, and absolute claim deadline. IDs must have their canonical typed UUIDv7 form. Revisions and generations are positive. A request for the wrong host or epoch is rejected.
 
 Claim deadlines must be in the future and at most 300 seconds away when the supervisor handles the request. Allocation lease deadlines have the same bound. Wall clocks must be synchronized; after validation, the fake converts the allocation deadline to a monotonic local timer. Controller claim expiry never extends an allocation lease.
 
@@ -71,3 +71,11 @@ These tests establish the modeled behavior and transport checks only. Further li
 The [Linux development guide](linux-development.md#verified-boot-and-its-limits) records a real Firecracker/jailer boot in a nested aarch64 environment. The [real lifecycle adapter](real-supervisor.md) now uses this shared transport; public command dispatch remains unfinished. The separate [guest protocol](guest-protocol.md) now provides an authenticated host client and guest listener, with real command round-trip evidence; the lifecycle supervisor now requires authenticated boot binding, while public command dispatch remains separate work. The experiment also demonstrates why [tracking the actual Firecracker child](linux-development.md#track-the-firecracker-child-not-just-the-jailer) is necessary: the jailer parent can exit successfully while the microVM is still running.
 
 The [allocation guardian](allocation-guardian.md) now supplies a separate root-only real VM owner with independent expiry and cleanup tests. The [real RPC adapter](real-supervisor.md) connects this owner to the controller, requiring guest boot binding for readiness and completed cleanup for release; process presence alone supplies neither.
+
+## Command RPCs
+
+`ExecuteCommand` reuses the bounded guest `Execute` message inside the full controller ownership tuple. Its Debug output redacts argv and environment. `InspectCommand` identifies the same operation and its SHA-256 command digest. Neither RPC carries output bytes. Responses echo ownership, digest, simulation source, observation time, and either a validated guest receipt, a durable `not_started` fence, or missing evidence (unknown).
+
+The [real command adapter](../crates/sandbox-supervisor/src/host/commands.rs) persists metadata-only dispatch intent with the bound guest boot before sending one Execute. Retries only inspect. Inspection of an undispatched operation first persists a fence against any late Execute; mere absence is not sufficient. Guest errors after intent cannot be interpreted as proof of no execution. Each allocation retains at most 32 commands and reserves at most 64 MiB of output limits; command pressure cannot consume the remaining lifecycle revision slots. A host-to-guest call is limited to three seconds inside a bounded worker; timeout does not cancel admitted guest work. Command completion cannot authorize allocation release.
+
+The [fake command model](../crates/sandbox-fake-host/src/commands.rs) never executes argv. It models held and completed commands, lost replies, no-start fences, expiry, retained capacity and destroy during an unresolved command. Every observation remains simulated. Restart still requires a new epoch and cannot manufacture an old command result.

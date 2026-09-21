@@ -419,8 +419,46 @@ async fn restart_advances_epoch_stops_old_owner_and_preserves_capacity() {
         sandbox_supervisor::host::Host::open(f.config.clone()).is_err(),
         "duplicate service must not own journal"
     );
+    let mut command_owner = o.clone();
+    command_owner.operation_id = OperationId::generate().to_string();
+    let command = sandbox_protocol::guest_model::Execute {
+        operation_id: command_owner.operation_id.parse().unwrap(),
+        argv: vec!["/bin/busybox".into(), "sleep".into(), "20".into()],
+        env: BTreeMap::new(),
+        cwd: "/".into(),
+        deadline_unix_ms: guardian::wall_ms() + 25000,
+        output_limit: 1024,
+    };
+    let command_request = sandbox_protocol::supervisor::CommandRequest {
+        ownership: Some(command_owner.clone()),
+        command: Some((&command).into()),
+    };
+    let command_reply = c
+        .execute_command(command_request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!command_reply.not_started);
+    assert_eq!(
+        command_reply.receipt.unwrap().state,
+        sandbox_protocol::guest::State::LaunchIntent as i32
+    );
     f.restart().await;
     let mut c = f.client().await;
+    assert_eq!(
+        c.execute_command(command_request).await.unwrap_err().code(),
+        Code::FailedPrecondition
+    );
+    let retained: serde_json::Value =
+        guardian::read_json(&f.config.state_root.join("host.json")).unwrap();
+    let command_record =
+        &retained["records"][&o.allocation_id]["commands"][&command_owner.operation_id];
+    assert_eq!(
+        command_record["digest"],
+        serde_json::json!(command.digest().unwrap())
+    );
+    assert_eq!(command_record["not_started"], false);
+    assert_eq!(command_record["receipt"]["state"], "launch_intent");
     assert_eq!(
         c.create(req.clone()).await.unwrap_err().code(),
         Code::FailedPrecondition
@@ -681,6 +719,75 @@ async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: 
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    // Authenticated public execute is owned by the runtime after admission.
+    for (argv, expected_status, expected_exit) in [
+        (
+            vec![
+                "/bin/busybox",
+                "sh",
+                "-c",
+                "echo public-result; /bin/busybox sleep 1; exit 0",
+            ],
+            "succeeded",
+            Some(0),
+        ),
+        (
+            vec!["/bin/busybox", "sh", "-c", "exit 7"],
+            "failed",
+            Some(7),
+        ),
+        (vec!["/bin/busybox", "sleep", "10"], "failed", None),
+    ] {
+        let execute_key = OperationId::generate().to_string();
+        let command = json!({"argv":argv,"deadline_unix_ms":guardian::wall_ms()+if expected_exit.is_none(){1500}else{10000},"output_limit":1024});
+        let (status, admitted) = http(
+            &app,
+            &token,
+            "POST",
+            &format!("/v1/sandboxes/{sandbox}/execute"),
+            &execute_key,
+            command.clone(),
+        )
+        .await;
+        assert_eq!(status, http::StatusCode::ACCEPTED, "{admitted}");
+        let (_, retry) = http(
+            &app,
+            &token,
+            "POST",
+            &format!("/v1/sandboxes/{sandbox}/execute"),
+            &execute_key,
+            command,
+        )
+        .await;
+        assert_eq!(admitted, retry);
+        let id = admitted["operation_id"].as_str().unwrap();
+        let until = Instant::now() + Duration::from_secs(15);
+        loop {
+            controller.tick().await.unwrap();
+            let (_, result) = http(
+                &app,
+                &token,
+                "GET",
+                &format!("/v1/operations/{id}"),
+                &execute_key,
+                Value::Null,
+            )
+            .await;
+            if result["status"] == expected_status {
+                assert_eq!(result["result"]["simulated"], false);
+                assert_eq!(result["result"]["exit_code"], json!(expected_exit));
+                if expected_exit.is_none() {
+                    assert_eq!(result["phase"], "timed_out");
+                }
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "execute failed to converge: {result}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
     let (status, destroy) = http(
         &app,
         &token,
@@ -733,4 +840,187 @@ async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: 
         "real_api_lifecycle_observation {}",
         json!({"create_succeeded":true,"duplicate_handles_match":true,"simulated":false,"guest_boot_bound":true,"lease_renewed":true,"destroy_succeeded":true,"database_release_confirmed":true,"cgroup_removed":true,"runtime_files_removed":true})
     );
+}
+
+#[tokio::test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and aarch64 KVM artifacts"]
+async fn real_command_rpc_retains_results_fences_absence_and_survives_request_end() {
+    use sandbox_protocol::{
+        guest_model as m,
+        supervisor::{CommandInspection, CommandRequest},
+    };
+    let f = Fixture::new().await;
+    let mut c = f.client().await;
+    let request = f.request();
+    let allocation = request.ownership.as_ref().unwrap().clone();
+    let _ = c.create(request).await;
+    f.ready(&mut c, &allocation).await;
+    let mut owner = allocation.clone();
+    owner.operation_id = OperationId::generate().to_string();
+    let command = m::Execute {
+        operation_id: owner.operation_id.parse().unwrap(),
+        argv: vec![
+            "/bin/busybox".into(),
+            "sh".into(),
+            "-c".into(),
+            "echo once >> /execution-marker; /bin/busybox sleep 1; exit 7".into(),
+        ],
+        env: BTreeMap::new(),
+        cwd: "/".into(),
+        deadline_unix_ms: guardian::wall_ms() + 15000,
+        output_limit: 1024,
+    };
+    let request = CommandRequest {
+        ownership: Some(owner.clone()),
+        command: Some((&command).into()),
+    };
+    let reply = c
+        .execute_command(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!reply.simulated);
+    assert!(!reply.not_started);
+    // The command continues after this RPC response. Retry observes the same intent.
+    let _ = c.execute_command(request.clone()).await.unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let r = c
+            .inspect_command(CommandInspection {
+                ownership: Some(owner.clone()),
+                command_digest: command.digest().unwrap().to_vec(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        if let Some(receipt) = r.receipt {
+            let receipt: m::Receipt = receipt.try_into().unwrap();
+            if receipt.state == m::State::Exited {
+                assert_eq!(receipt.exit_code, Some(7));
+                assert!(receipt.cleanup_confirmed);
+                break;
+            }
+        }
+        assert!(Instant::now() < until, "command did not finish");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let replay = c
+        .execute_command(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(replay.receipt.unwrap().exit_code, Some(7));
+    let mut changed = request;
+    changed
+        .command
+        .as_mut()
+        .unwrap()
+        .argv
+        .push("changed".into());
+    assert_eq!(
+        c.execute_command(changed).await.unwrap_err().code(),
+        Code::AlreadyExists
+    );
+    // Private output read verifies the side effect occurred once; public output is separate work.
+    let client = f.manifest(&allocation).guest_client().unwrap();
+    let verify = m::Execute {
+        operation_id: OperationId::generate(),
+        argv: vec![
+            "/bin/busybox".into(),
+            "cat".into(),
+            "/execution-marker".into(),
+        ],
+        env: BTreeMap::new(),
+        cwd: "/".into(),
+        deadline_unix_ms: guardian::wall_ms() + 5000,
+        output_limit: 1024,
+    };
+    client.execute(&verify).await.unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while !client
+        .inspect(verify.operation_id)
+        .await
+        .unwrap()
+        .cleanup_confirmed
+    {
+        assert!(Instant::now() < until);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let output = client
+        .output(sandbox_protocol::guest::ReadOutput {
+            operation_id: verify.operation_id.to_string(),
+            stream: sandbox_protocol::guest::Stream::Stdout as i32,
+            offset: 0,
+            limit: 1024,
+        })
+        .await
+        .unwrap();
+    assert_eq!(output.data, b"once\n");
+    let mut absent_owner = owner.clone();
+    absent_owner.operation_id = OperationId::generate().to_string();
+    let mut absent = command.clone();
+    absent.operation_id = absent_owner.operation_id.parse().unwrap();
+    assert!(
+        c.inspect_command(CommandInspection {
+            ownership: Some(absent_owner.clone()),
+            command_digest: absent.digest().unwrap().to_vec()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .not_started
+    );
+    assert!(
+        c.execute_command(CommandRequest {
+            ownership: Some(absent_owner),
+            command: Some((&absent).into())
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .not_started
+    );
+    let mut active_owner = owner.clone();
+    active_owner.operation_id = OperationId::generate().to_string();
+    let mut active = command.clone();
+    active.operation_id = active_owner.operation_id.parse().unwrap();
+    active.argv = vec!["/bin/busybox".into(), "sleep".into(), "20".into()];
+    active.deadline_unix_ms = guardian::wall_ms() + 25000;
+    let response = c
+        .execute_command(CommandRequest {
+            ownership: Some(active_owner.clone()),
+            command: Some((&active).into()),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!response.not_started);
+    let mut stop = allocation.clone();
+    stop.operation_id = OperationId::generate().to_string();
+    let _ = c
+        .stop(StopRequest {
+            ownership: Some(stop.clone()),
+        })
+        .await;
+    f.released(&mut c, &stop).await;
+    let uncertain = c
+        .inspect_command(CommandInspection {
+            ownership: Some(active_owner),
+            command_digest: active.digest().unwrap().to_vec(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!uncertain.not_started);
+    assert!(uncertain.receipt.is_none());
+    // A previously retained exit survives cleanup; the active command's result does not get invented.
+    let completed = c
+        .inspect_command(CommandInspection {
+            ownership: Some(owner),
+            command_digest: command.digest().unwrap().to_vec(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(completed.receipt.unwrap().exit_code, Some(7));
 }

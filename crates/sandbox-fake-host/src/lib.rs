@@ -2,6 +2,7 @@
 //! Every observation is explicitly simulated. Restart loses evidence and requires
 //! a new externally issued supervisor epoch; absence never proves old VM release.
 
+mod commands;
 use sandbox_protocol::{
     AllocationId, HostId, OperationId, ProjectId, SandboxId,
     supervisor::{
@@ -47,6 +48,9 @@ struct State {
     lose_next_renew_reply: bool,
     fail_next_health: bool,
     total_starts: u64,
+    total_commands: u64,
+    hold_next_command: bool,
+    lose_next_command_reply: bool,
 }
 
 #[derive(Debug)]
@@ -65,6 +69,7 @@ struct Fence {
     stopped: bool,
     lease_revision: i64,
     lease_request: Option<(i64, i64)>,
+    commands: HashMap<String, sandbox_protocol::command::CommandRecord>,
 }
 
 /// Database/controller deadlines and the supervisor wall clock must be synchronized.
@@ -191,6 +196,7 @@ impl FakeHost {
                 stopped: false,
                 lease_revision: 0,
                 lease_request: None,
+                commands: HashMap::new(),
             });
         if fence.owner.project_id != owner.project_id
             || fence.owner.sandbox_id != owner.sandbox_id
@@ -384,6 +390,23 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn execute_command(
+        &self,
+        r: Request<sandbox_protocol::supervisor::CommandRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::CommandObservation>, Status> {
+        self.execute_command_inner(r.into_inner())
+            .await
+            .map(Response::new)
+    }
+    async fn inspect_command(
+        &self,
+        r: Request<sandbox_protocol::supervisor::CommandInspection>,
+    ) -> Result<Response<sandbox_protocol::supervisor::CommandObservation>, Status> {
+        self.inspect_command_inner(r.into_inner())
+            .await
+            .map(Response::new)
+    }
+
     async fn health(&self, _: Request<HealthRequest>) -> Result<Response<HostInfo>, Status> {
         if std::mem::take(&mut self.state.lock().await.fail_next_health) {
             return Err(Status::unavailable("injected health failure"));

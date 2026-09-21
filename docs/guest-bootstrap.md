@@ -1,6 +1,6 @@
 # Allocation bootstrap and guest boot binding
 
-Status: implemented under the real [allocation guardian](allocation-guardian.md), with controlled aarch64 microVM tests. A reusable rootfs containing our init now boots an allocation-specific authenticated guest agent. The guardian can bind its boot ID and supply a host command client. The [real lifecycle controller/RPC driver](real-supervisor.md) now uses this binding. Public execute and files/output routes, production Debian images, networking and supported x86_64 release gates remain unfinished.
+Status: implemented under the real [allocation guardian](allocation-guardian.md), with controlled aarch64 microVM tests. A reusable rootfs containing our init now boots an allocation-specific authenticated guest agent. The guardian can bind its boot ID and supply a host command client. The [real lifecycle controller/RPC driver](real-supervisor.md) now uses this binding. Public execute now uses this binding; files/output/cancel routes, production Debian images, networking and supported x86_64 release gates remain unfinished.
 
 ## Reusable image, separate identity
 

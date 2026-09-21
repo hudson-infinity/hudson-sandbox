@@ -12,7 +12,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Pin the Rust toolchain. `rustfmt` and `clippy` configured, clippy warnings denied in CI.
 - [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
 - [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
-- [ ] Extend the integrated [create controller and fake](../controller.md) for execute, files, and outputs.
+- [ ] Extend the integrated [create controller and fake](../controller.md) for execute (done), files, and outputs.
 - [x] Dedicated nested aarch64 Linux/KVM development host and real boot evidence; [development guide](../linux-development.md). This does not pass the release gates.
 - [ ] Self-hosted x86_64 runner for VM tests, once a supported host exists. Fork pull requests never run on it.
 
@@ -34,7 +34,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
 - [x] Project-scoped sandbox/operation lists with bounded cursor pagination; [collection read contract](../api-contract.md#implemented-collection-reads).
 - [x] `problem+json` errors with the machine-readable code list. Codes are added as routes need them.
-- [ ] Create, destroy, get sandbox, get operation (done); execute, outputs, file PUT.
+- [ ] Create, execute, destroy, get sandbox, get operation (done); outputs, file PUT remain.
 - [ ] SSE output stream with sequence cursors and resume.
 
 ## Controller
@@ -61,8 +61,8 @@ The separate [allocation guardian](../allocation-guardian.md) implements verifie
 - [x] Allocation-scoped credentials, read-only bootstrap device, guest init and durable boot binding; [component evidence](../guest-bootstrap.md).
 - [ ] Guest image: Debian slim, our init, our guest agent, `system` and `workload` cgroups, agent in its own PID namespace.
 - [ ] Guest kernel build: modules off, lockdown on, pinned and digest-published.
-- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). Lifecycle boot binding is integrated; public command dispatch and file transfer remain open.
-- [x] Guest-local spawn, process-tree cleanup, bounded output and exit/restart receipts; [component contract and evidence](../guest-runner.md). The command wire, lifecycle boot binding and local guardian watchdog are implemented; public command dispatch and the full host-fault gates remain open above.
+- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). Lifecycle boot binding is integrated; public command dispatch is integrated; file transfer remains open.
+- [x] Guest-local spawn, process-tree cleanup, bounded output and exit/restart receipts; [component contract and evidence](../guest-runner.md). The command wire, lifecycle boot binding and local guardian watchdog are implemented; public command dispatch is integrated; the full host-fault gates remain open above.
 - [ ] File write into the workspace with path and size validation.
 
 ## Passing 1a

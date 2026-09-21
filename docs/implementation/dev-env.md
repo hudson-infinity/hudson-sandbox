@@ -26,7 +26,7 @@ make down    # stop, keeping data
 
 The stack binds PostgreSQL on 55432 and MinIO on 59000, not their defaults. If you already run PostgreSQL natively, the container binds `::` while `127.0.0.1` stays with your own server, and every connection from the host quietly reaches the wrong database — which surfaces as a missing role rather than a port conflict. Non-default ports remove the ambiguity. `make reset-db` drops the development schema when a migration changes underneath you.
 
-Authentication, admission, claims, reservations, and read handlers have executable tests. The fake provides the shared gRPC create/inspect/stop service over mTLS and always reports simulated evidence. It starts no VM or process. Create and destroy are integrated through the controller; other operation kinds, streaming, the CLI, and real execution remain unfinished.
+Authentication, admission, claims, reservations, and read handlers have executable tests. The fake provides the shared gRPC create/inspect/stop service over mTLS and always reports simulated evidence. It starts no VM or process. Create, execute and destroy are integrated through the controller, with real execution evidence from the [Linux supervisor](../real-supervisor.md). Public cancellation, files/output, streaming and the CLI remain unfinished.
 
 The fake models bounded resource accounting, stale ownership, lease expiry, duplicate requests, and lost acknowledgements for control-plane tests. Those models do not test host resource enforcement or hardware isolation; those require stage 1 and supported hardware.
 

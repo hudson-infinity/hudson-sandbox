@@ -1,6 +1,6 @@
 # API contract
 
-Status: partially implemented. Create, destroy, sandbox/operation status, and project-scoped sandbox/operation lists have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
+Status: partially implemented. Create, execute, destroy, sandbox/operation status, and project-scoped sandbox/operation lists have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
 
 ## API surfaces
 
@@ -102,7 +102,7 @@ Content-Type: application/json
 
 New create requests must fit the shared [guest resource envelope](compatibility.md#sandbox): 1–4 vCPU, 128–8192 MiB memory, and 64–65536 MiB writable disk. Unsupported sizes return `400 bad_request` without creating a sandbox or operation or consuming the idempotency key. Tightening a minimum does not erase an already admitted identical retry handle; changed input under that key still conflicts. These size bounds are separate from project quotas, host overhead, and image compatibility.
 
-Wait for create success, then call execute. An execute request returns an operation ID used for results, output, and cancellation. Proposed routes are:
+Wait for create success, then call execute. An execute request returns an operation ID for polling results. Output and cancellation routes are still planned. The combined implemented and proposed route list is:
 
 ```text
 GET  /v1/sandboxes
@@ -130,6 +130,28 @@ The example image digest is illustrative, not an available image. List endpoints
 File import is a single `PUT` carrying the whole body, bounded by a published size cap and requiring an idempotency key. Resumable multipart staging is deferred to a separate route so adding it later is additive rather than a breaking change to this one.
 
 Session/admin wire schemas and exact response objects remain OpenAPI design work; this route list is not a working endpoint inventory.
+
+## Implemented execute admission and results
+
+`POST /v1/sandboxes/{sandbox_id}/execute` requires the project bearer token and `Idempotency-Key`. The JSON shape is:
+
+```json
+{
+  "argv": ["/bin/busybox", "sh", "-c", "echo hello"],
+  "env": {},
+  "cwd": "/",
+  "deadline_unix_ms": 1790000000000,
+  "output_limit": 1048576
+}
+```
+
+The timestamp is illustrative: supply a future absolute Unix-millisecond deadline, at most six hours away and no later than sandbox expiry. `argv[0]` is the executable; a shell is used only when explicitly supplied as in this example. The sandbox image determines which executables exist. Environment defaults to empty, cwd to `/`, and combined captured stdout/stderr to 1 MiB (maximum 10 MiB). Argument, environment and encoded request bounds follow the [guest runner](guest-runner.md). Unknown fields or invalid bounds are `400`; oversized JSON bodies are `413`. Environment is persisted configuration and must not carry secrets.
+
+Admission returns `202` with the same operation/status-handle shape as create. Identical normalized retries retain that handle after deadlines or destruction; changed input returns `409`. Inaccessible sandboxes return `404`, destroyed targets return `410`, and a sandbox without a current running lease returns `409`. One active or unknown command is allowed per sandbox. Conflicts return the owning operation ID; destroy remains available while a command runs or is unresolved.
+
+Poll `GET /v1/operations/{operation_id}`. Confirmed exits provide `result.exit_code` or `result.signal`, `result.stdout` and `result.stderr` statistics (`seen`, `stored`, `truncated`), `result.simulated`, and `result.guest_reported=true`. Exit zero is `succeeded`; nonzero or signal is `failed` with `command_failed`; a deadline termination is `failed` with `deadline_exceeded`. Missing execution evidence is `unknown`, never a guessed exit. A durable host fence proving the command never started fails with `command_not_started`. HTTP request completion, disconnection or client timeout does not cancel admitted work.
+
+Output bytes are not returned by these routes. Public output retrieval/streaming, file transfer, and cancellation remain unfinished. The host retains at most 32 command records and reserves at most 64 MiB of combined output limits per allocation without eviction; repeated work eventually requires a new sandbox. Exceeding journal capacity after dispatch intent can leave the command unknown; destroy remains available. This is a development limit, not a complete retention service. See [command ownership](controller.md#command-admission-and-dispatch-ownership) for recovery details.
 
 ## Output, files, and reconnects
 
@@ -215,4 +237,4 @@ Cursors are opaque, versioned positions scoped to the authenticated project, col
 
 ## Implemented HTTPS transport
 
-The [API server guide](api-server.md#transport-contract) owns TLS configuration, listener limits, startup/shutdown, and runnable local setup. The existing create/destroy JSON routes normalize malformed JSON to `400 bad_request` and oversized bodies to `413 payload_too_large`, both as uncached problems. These replace Axum's raw JSON extractor errors; this transport change does not add execute or streaming routes.
+The [API server guide](api-server.md#transport-contract) owns TLS configuration, listener limits, startup/shutdown, and runnable local setup. The existing create/execute/destroy JSON routes normalize malformed JSON to `400 bad_request` and oversized bodies to `413 payload_too_large`, both as uncached problems. These replace Axum's raw JSON extractor errors; streaming routes remain unfinished.

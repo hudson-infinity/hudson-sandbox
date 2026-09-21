@@ -63,7 +63,7 @@ pub struct Controller {
     store: Store,
     config: ControllerConfig,
     client: SupervisorClient<Channel>,
-    prefer_destroy: bool,
+    operation_cursor: usize,
 }
 
 impl Controller {
@@ -88,7 +88,7 @@ impl Controller {
             store,
             config,
             client,
-            prefer_destroy: true,
+            operation_cursor: 0,
         };
         controller.check_host().await?;
         Ok(controller)
@@ -297,7 +297,7 @@ impl Controller {
     }
 
     /// Maintain at most one due allocation and process at most one operation.
-    /// Alternating preference prevents create/destroy queues starving each other.
+    /// Rotating preference prevents create/destroy/execute queues starving each other.
     pub async fn tick(&mut self) -> Result<Tick, ControllerError> {
         if let Err(error) = self.check_host().await {
             self.store
@@ -306,16 +306,19 @@ impl Controller {
             return Err(error);
         }
         let maintenance = self.maintenance_tick().await?;
-        let kinds = if self.prefer_destroy {
-            [OperationKind::Destroy, OperationKind::Create]
-        } else {
-            [OperationKind::Create, OperationKind::Destroy]
-        };
-        self.prefer_destroy = !self.prefer_destroy;
-        for kind in kinds {
+        let kinds = [
+            OperationKind::Destroy,
+            OperationKind::Create,
+            OperationKind::Execute,
+        ];
+        let first = self.operation_cursor;
+        self.operation_cursor = (first + 1) % kinds.len();
+        for offset in 0..kinds.len() {
+            let kind = kinds[(first + offset) % kinds.len()];
             if let Some(claim) = self.store.claim_next(kind, 30).await? {
                 return match kind {
                     OperationKind::Destroy => self.destroy_tick(&claim).await,
+                    OperationKind::Execute => self.execute_tick(&claim).await,
                     _ => self.create_tick(&claim).await,
                 };
             }
@@ -400,6 +403,77 @@ impl Controller {
             Err(DispatchError::LostClaim) => Ok(Tick::LostOwnership),
             Err(DispatchError::Conflict) => self.defer(claim).await,
             Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Controller {
+    async fn execute_unknown(&self, claim: &Claim) -> Result<Tick, ControllerError> {
+        match self.store.record_execute_unknown(claim).await {
+            Ok(()) => Ok(Tick::Unknown),
+            Err(DispatchError::LostClaim) => Ok(Tick::LostOwnership),
+            Err(DispatchError::Conflict) => self.defer(claim).await,
+            Err(e) => Err(e.into()),
+        }
+    }
+    async fn execute_tick(&mut self, claim: &Claim) -> Result<Tick, ControllerError> {
+        use sandbox_protocol::supervisor::{CommandInspection, CommandRequest};
+        use sandbox_store::execute::ExecuteAction;
+        let action = match self
+            .store
+            .prepare_execute(claim, self.config.host, self.config.epoch)
+            .await
+        {
+            Ok(a) => a,
+            Err(DispatchError::LostClaim) => return Ok(Tick::LostOwnership),
+            Err(DispatchError::Conflict | DispatchError::HostUnavailable) => {
+                return self.defer(claim).await;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let owner = match &action {
+            ExecuteAction::Rejected => return Ok(Tick::Rejected),
+            ExecuteAction::Dispatch { owner, .. } | ExecuteAction::Inspect { owner, .. } => owner,
+        };
+        if owner.host_id != self.config.host.to_string()
+            || owner.supervisor_epoch != self.config.epoch
+        {
+            return self.execute_unknown(claim).await;
+        }
+        let response = match action {
+            ExecuteAction::Dispatch { owner, command } => {
+                self.client
+                    .execute_command(CommandRequest {
+                        ownership: Some(owner),
+                        command: Some((&command).into()),
+                    })
+                    .await
+            }
+            ExecuteAction::Inspect { owner, digest } => {
+                self.client
+                    .inspect_command(CommandInspection {
+                        ownership: Some(owner),
+                        command_digest: digest.to_vec(),
+                    })
+                    .await
+            }
+            ExecuteAction::Rejected => return Ok(Tick::Rejected),
+        };
+        let observation = match response {
+            Ok(r) => r.into_inner(),
+            Err(_) => return self.execute_unknown(claim).await,
+        };
+        match self
+            .store
+            .record_execute_observation(claim, &observation, self.config.allow_simulated)
+            .await
+        {
+            Ok(()) => Ok(Tick::Confirmed),
+            Err(DispatchError::LostClaim) => Ok(Tick::LostOwnership),
+            Err(DispatchError::BadEvidence | DispatchError::SimulationDenied) => {
+                self.execute_unknown(claim).await
+            }
+            Err(e) => Err(e.into()),
         }
     }
 }
