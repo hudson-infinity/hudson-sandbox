@@ -1,5 +1,5 @@
 {
-  "recorded_at_utc": "2026-09-21T21:35:02.853949+00:00",
+  "recorded_at_utc": "2026-09-21T21:45:58.487665+00:00",
   "source_base_commit": "bfabdf2bc7cd92ad3be41c24ec94e7d824172f12",
   "scope": "Independent expired file source cleanup, verified storage retirement and global/project source byte reclamation, plus existing public file lifecycle regressions on a nested aarch64 development host.",
   "source_hashes_match_mac_and_linux": true,
@@ -150,15 +150,15 @@
       "crates/sandbox-store/tests/admission.rs": "0e17da7e1730428ac7a798a5ff78cce58f0e0f0887a5a179269e872d4f101cda",
       "crates/sandbox-store/tests/claims.rs": "4a61ef947e557a50e96023f1cfa5c7358a7e31b4cbd6eba0c54a551ae591367e",
       "crates/sandbox-store/tests/collection_upgrade.rs": "941c714dd12699e0b97d39406fbbc1d0f19c2caa44f872fd7eaf4ee5a3b600da",
-      "crates/sandbox-store/tests/execute.rs": "43526bb7d9328e8c98723dc589468d53d1775075423b343b240d8ff4580b7431",
+      "crates/sandbox-store/tests/execute.rs": "0e08e49dd3053b93c103811a8cc6a6dd0095b5f596f4de56d7b425924b930992",
       "crates/sandbox-store/tests/output.rs": "7d28f19ade199a4548789fa1be201689bb4f90957064080b99dbf4f3778459bc",
       "crates/sandbox-store/tests/placement.rs": "5fbfc653c2cdb7d69d6d3f45b699ead33b67f4953dc631207d8c29dd9473023d",
       "crates/sandbox-store/tests/retention.rs": "4b9822e473dc4ed5e08e5ce6915e45652b51052275c54f605c4026b1ebd2ded0",
       "crates/sandbox-store/tests/schema.rs": "17160b48b67597be436d9f92fa054c5dc921d6c644026ce03ef039a7edbebe81",
-      "crates/sandbox-store/tests/support/cancel.rs": "d144539e35d75ab6b6654c4b15b5d103a1968a975057b05d999989b5cc0a4fed",
+      "crates/sandbox-store/tests/support/cancel.rs": "37bc511211a7d7291aecbaca5d65a560a3e67515382ed0ee6430036afb15cd9d",
       "crates/sandbox-store/tests/support/cleanup_completion.rs": "c7d09d03bf7c2d379ec43561022ddfa7ec6a714b844db795a82c41a6080c654b",
       "crates/sandbox-store/tests/support/compaction.rs": "583ec626263b94af282b3268db43df14d85e9ca9af4145e933b7ec91ec63ff4d",
-      "crates/sandbox-store/tests/support/execution_capacity.rs": "5a4a5bc7586795f3aa4e134bf4c5a00b885af4354d7d8b9d94a686651d8f10a6",
+      "crates/sandbox-store/tests/support/execution_capacity.rs": "57abb860a0ee8d335fc8e5a8b056659d08d39cbb5bcd6cd380fc2d8cc9bc7d6d",
       "crates/sandbox-store/tests/support/output_cleanup.rs": "5e5520d236deeb65b4bbf9958956f1200b4ad56596122d84314966b8efffbe4f",
       "crates/sandbox-store/tests/tokens.rs": "6892b48c8708ebaa8b0d8e73ebac115edc150a23eae6049dd22e83902c57f30b",
       "crates/sandbox-store/tests/upgrade.rs": "c3695ae5618bc4885c1b32fcb1df90d05428dedf5904dd816329558b7d166233",
@@ -233,6 +233,11 @@
     "existing_development_volumes_preserved": true
   },
   "validation": {
+    "run_history": [
+      "The initial hosted run failed two legacy upgrade fixtures because pooled SELECT * plans crossed schema versions. Those tests now reopen connections after migration, matching service startup. Both affected upgrade tests passed again on Mac and Linux; the full Mac suite and both strict lint checks were repeated.",
+      "Only three test source files changed after the recorded microVM and MinIO runs. Runtime sources and their recorded artifacts remain identical; no privileged rerun was needed for the test fixture correction."
+    ],
+    "additional_linux_upgrade_tests_passed": 2,
     "local_workspace_tests_passed": 437,
     "new_cleanup_tests_in_local_total": 7,
     "additional_versioned_minio_cleanup_tests_passed": 1,
@@ -240,10 +245,11 @@
     "strict_mac_and_linux_workspace_clippy": "passed",
     "guest_release_build": "built from the matching source tree before host regressions",
     "log_sha256": {
-      "local": "5d6d8072c51161928e1127a4eea89dbf785b0a5bb7003fb029da4dda6d717a5d",
+      "local": "a64813de8aac5718c258e4c26c044693fad18e275796ebdb7fbe763c298b157a",
       "host": "4530979268212b716ea6eeffd1ef5776da4f9ff72177525bd4f51950ecee901b",
       "minio": "4a436ae62b3d17149a50c572ee5d07d5e0781e6151989233171800a65735200a",
-      "linux_clippy": "a6df44aeb6e03077837924443f34ab76ac842565ef39d8f567a175896573ba5f",
+      "linux_clippy": "8948bcf7a644193cc38a6ee6ce07ba45e8183ff3cf89e682a52891704a7f0788",
+      "linux_upgrade": "c010f950c63d3b84aeb083e2b4d1b5e6e6f8e1e3935317c3718daf9abcb03852",
       "guest_build": "3ca8fcda053f027e1874549d3c67b8d5af55ddd0cbbf24d0750cbb54ae966e20"
     },
     "file_source_cleanup_observation": {

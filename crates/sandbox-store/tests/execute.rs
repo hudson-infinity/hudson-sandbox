@@ -26,6 +26,17 @@ fn now_ms() -> i64 {
 fn key() -> IdempotencyKey {
     IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string()).unwrap()
 }
+async fn reconnect_after_upgrade(pool: &PgPool) -> PgPool {
+    // Services migrate at startup, before preparing application queries. Reopen
+    // the old fixture's connections so SELECT * plans cannot cross schema versions.
+    let options = pool.connect_options();
+    pool.close().await;
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect_with((*options).clone())
+        .await
+        .unwrap()
+}
 struct Fixture {
     store: Store,
     request: ExecuteCommand,

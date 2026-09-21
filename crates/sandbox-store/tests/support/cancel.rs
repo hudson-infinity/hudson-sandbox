@@ -318,7 +318,7 @@ async fn cancellation_upgrade_preserves_generic_rows_without_activating_them(poo
         ..sqlx::migrate::Migrator::DEFAULT
     };
     old.run(&pool).await.unwrap();
-    let f = Fixture::new(&pool).await;
+    let mut f = Fixture::new(&pool).await;
     let target = f.admit().await;
     let legacy = OperationId::generate();
     sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,idempotency_key,request_digest,digest_version,payload,target_operation_id,status)
@@ -326,6 +326,8 @@ async fn cancellation_upgrade_preserves_generic_rows_without_activating_them(poo
         .bind(legacy.uuid()).bind(key().as_str()).bind(target.uuid()).execute(&pool).await.unwrap();
     let before = read(&f, legacy).await;
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
+    let pool = reconnect_after_upgrade(&pool).await;
+    f.store = Store::from_pool(pool);
     let mut after = read(&f, legacy).await;
     assert_eq!(
         after.as_object_mut().unwrap().remove("file_allocation_id"),
