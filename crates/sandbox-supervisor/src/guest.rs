@@ -17,6 +17,7 @@ pub struct GuestClient {
     port: u32,
     tls: ClientTls,
     context: m::Context,
+    _socket_directory: Option<std::sync::Arc<std::fs::File>>,
 }
 impl GuestClient {
     pub fn new(socket: PathBuf, port: u32, tls: ClientTls, context: m::Context) -> Result<Self> {
@@ -29,7 +30,30 @@ impl GuestClient {
             port,
             tls,
             context,
+            _socket_directory: None,
         })
+    }
+    /// Pin the operator-owned jail directory and keep a short Unix socket path.
+    /// Allocation paths can exceed sockaddr_un even when the control path fits.
+    #[cfg(target_os = "linux")]
+    pub fn from_firecracker_directory(
+        directory: PathBuf,
+        port: u32,
+        tls: ClientTls,
+        context: m::Context,
+    ) -> Result<Self> {
+        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+        ensure!(directory.is_absolute(), "absolute guest directory required");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                (rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW).bits() as i32,
+            )
+            .open(directory)?;
+        let path = PathBuf::from(format!("/proc/self/fd/{}/vsock.sock", file.as_raw_fd()));
+        let mut client = Self::new(path, port, tls, context)?;
+        client._socket_directory = Some(std::sync::Arc::new(file));
+        Ok(client)
     }
     async fn call(&self, action: w::request::Action) -> Result<(m::Context, w::response::Result)> {
         use w::response::Result as R;

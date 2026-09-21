@@ -164,6 +164,7 @@ pub fn namespace_init(manifest: Manifest) -> Result<()> {
         receipt.state == State::Prepared && receipt.host_boot_id == boot_id()?,
         "allocation is not eligible for launch"
     );
+    manifest.verify_bootstrap(&receipt)?;
     let (host_pid, start_ticks) = process_identity()?;
     rustix::mount::mount(
         "proc",
@@ -356,10 +357,14 @@ fn handle(
         request.owner == manifest.start.owner,
         "wrong guardian ownership"
     );
+    if matches!(request.action, Action::BindGuest) {
+        return bind_guest(manifest, shared, deadline);
+    }
     let mut record = shared
         .lock()
         .map_err(|_| anyhow::anyhow!("guardian registry poisoned"))?;
     match request.action {
+        Action::BindGuest => unreachable!("bind is handled before the mutation lock"),
         Action::Inspect => {}
         Action::Stop => {
             record.state = State::Stopping;
@@ -372,6 +377,12 @@ fn handle(
             revision,
             expires_unix_ms,
         } => {
+            ensure!(
+                record
+                    .identity_expires_unix_ms
+                    .is_some_and(|until| expires_unix_ms < until),
+                "renewal exceeds channel validity"
+            );
             let prior = deadline.value();
             ensure!(
                 prior > boot_ms() && record.state == State::Running,
@@ -404,6 +415,62 @@ fn handle(
             }
         }
     }
+    Ok(Response {
+        receipt: Some(record.clone()),
+        error: None,
+    })
+}
+fn bind_guest(
+    manifest: &Manifest,
+    shared: &Mutex<Receipt>,
+    deadline: &Deadline,
+) -> Result<Response> {
+    let before = shared
+        .lock()
+        .map_err(|_| anyhow::anyhow!("guardian registry poisoned"))?
+        .clone();
+    ensure!(
+        before.state == State::Running && deadline.value() > boot_ms(),
+        "allocation is not live"
+    );
+    let identity = manifest.identity(&before)?;
+    let client = crate::guest::GuestClient::from_firecracker_directory(
+        manifest.jail_root(),
+        52,
+        identity.client_tls(wall_ms())?,
+        sandbox_protocol::guest_model::Context {
+            allocation_id: manifest.start.owner.allocation,
+            generation: manifest.start.owner.generation,
+            boot_id: before.guest_boot_id.unwrap_or_default(),
+        },
+    )?;
+    let context = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(client.hello())?;
+    let mut record = shared
+        .lock()
+        .map_err(|_| anyhow::anyhow!("guardian registry poisoned"))?;
+    ensure!(
+        record.state == State::Running
+            && deadline.value() > boot_ms()
+            && wall_ms() < identity.guest.valid_until_unix_ms,
+        "allocation stopped during guest handshake"
+    );
+    ensure!(
+        record
+            .guest_boot_id
+            .as_ref()
+            .is_none_or(|id| *id == context.boot_id),
+        "guest boot changed after binding"
+    );
+    let mut bound = record.clone();
+    bound.guest_boot_id = Some(context.boot_id);
+    if write_json(&manifest.record_path(), &bound).is_err() {
+        deadline.stop();
+        anyhow::bail!("guest binding persistence unconfirmed");
+    }
+    *record = bound;
     Ok(Response {
         receipt: Some(record.clone()),
         error: None,

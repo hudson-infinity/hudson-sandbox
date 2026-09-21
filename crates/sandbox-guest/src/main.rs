@@ -1,4 +1,4 @@
-//! Diagnostic runner entry point. The supervisor/guest wire server is not implemented here.
+//! Guest init, authenticated bootstrap listener, and diagnostic runner entry points.
 #[cfg(target_os = "linux")]
 fn main() {
     let mode = std::env::args().nth(1);
@@ -9,10 +9,13 @@ fn main() {
         }
         return;
     }
-    let result = if mode.as_deref() == Some("serve") {
-        serve_cli()
-    } else {
-        cli()
+    let result = match mode.as_deref() {
+        Some("__boot-namespace") => sandbox_guest::boot::namespace(),
+        Some("__serve-bootstrap") => sandbox_guest::boot::serve(),
+        Some("boot") => sandbox_guest::boot::init(),
+        None if std::process::id() == 1 => sandbox_guest::boot::init(),
+        Some("serve") => serve_cli(),
+        _ => cli(),
     };
     if result.is_err() {
         eprintln!("guest runner failed; retained state requires inspection");
