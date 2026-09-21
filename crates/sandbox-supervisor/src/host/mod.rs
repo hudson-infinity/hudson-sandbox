@@ -729,6 +729,14 @@ impl Supervisor for Host {
             .await
             .map(Response::new)
     }
+    async fn cancel_command(
+        &self,
+        r: Request<sandbox_protocol::supervisor::CommandInspection>,
+    ) -> Result<Response<sandbox_protocol::supervisor::CommandObservation>, Status> {
+        self.work(move |h| h.cancel_command_sync(r.into_inner()))
+            .await
+            .map(Response::new)
+    }
 
     async fn health(&self, _: Request<HealthRequest>) -> Result<Response<HostInfo>, Status> {
         self.work(|h| {

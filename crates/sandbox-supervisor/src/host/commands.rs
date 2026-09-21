@@ -49,6 +49,7 @@ impl Host {
         owner: Ownership,
         record: &Record,
         mut command: CommandRecord,
+        cancel: bool,
     ) -> Result<CommandObservation, Status> {
         let mut current = command.finished();
         if !command.finished()
@@ -61,7 +62,12 @@ impl Host {
                     .operation_id
                     .parse::<OperationId>()
                     .map_err(uncertain)?;
-                if let Ok(receipt) = guest_call(client.inspect(id)) {
+                let response = if cancel {
+                    guest_call(client.cancel(id))
+                } else {
+                    guest_call(client.inspect(id))
+                };
+                if let Ok(receipt) = response {
                     command.validate_receipt(id, &receipt).map_err(uncertain)?;
                     command.receipt = Some(receipt);
                     current = true;
@@ -78,6 +84,19 @@ impl Host {
     pub(super) fn inspect_command_sync(
         &self,
         request: CommandInspection,
+    ) -> Result<CommandObservation, Status> {
+        self.inspect_or_cancel(request, false)
+    }
+    pub(super) fn cancel_command_sync(
+        &self,
+        request: CommandInspection,
+    ) -> Result<CommandObservation, Status> {
+        self.inspect_or_cancel(request, true)
+    }
+    fn inspect_or_cancel(
+        &self,
+        request: CommandInspection,
+        cancel: bool,
     ) -> Result<CommandObservation, Status> {
         let owner = self.owner(request.ownership)?;
         let digest: [u8; 32] = request
@@ -101,7 +120,7 @@ impl Host {
                 command
             }
         };
-        self.observe_command(owner, &record, command)
+        self.observe_command(owner, &record, command, cancel)
     }
     pub(super) fn execute_command_sync(
         &self,
@@ -128,7 +147,7 @@ impl Host {
             if previous.digest != digest {
                 return Err(Status::already_exists("command retry changed payload"));
             }
-            return self.observe_command(owner, &record, previous.clone());
+            return self.observe_command(owner, &record, previous.clone(), false);
         }
         if record.commands.len() >= MAX_COMMANDS {
             return Err(Status::resource_exhausted("command journal full"));

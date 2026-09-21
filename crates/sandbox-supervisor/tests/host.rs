@@ -993,6 +993,7 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
             archived.push((refs, owner, ticket, plans, revision));
         }
     }
+    public_cancel_case(&pool, &app, &token, &mut controller, sandbox, &m).await;
     if output {
         // Archive retries may not replay a command with side effects.
         let guest = m.guest_client().unwrap();
@@ -1145,6 +1146,158 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     );
 }
 
+async fn public_cancel_case(
+    pool: &sqlx::PgPool,
+    app: &axum::Router,
+    token: &str,
+    controller: &mut sandbox_controller::Controller,
+    sandbox: &str,
+    manifest: &Manifest,
+) {
+    use sandbox_protocol::guest_model as m;
+    use serde_json::{Value, json};
+    let execution_key = OperationId::generate().to_string();
+    let body = json!({"argv":["/bin/busybox","sh","-c","echo once >> /cancel-marker; /bin/busybox printf 'started\\n'; /bin/busybox sleep 30; echo too-late >> /cancel-marker"],"deadline_unix_ms":guardian::wall_ms()+45000,"output_limit":1024});
+    let (status, admission) = http(
+        app,
+        token,
+        "POST",
+        &format!("/v1/sandboxes/{sandbox}/execute"),
+        &execution_key,
+        body.clone(),
+    )
+    .await;
+    assert_eq!(status, http::StatusCode::ACCEPTED, "{admission}");
+    let target = admission["operation_id"].as_str().unwrap();
+    let target_id: OperationId = target.parse().unwrap();
+    let guest = manifest.guest_client().unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        controller.tick().await.unwrap();
+        if let Ok(receipt) = guest.inspect(target_id).await
+            && receipt.stdout.stored == 8
+        {
+            assert_eq!(receipt.state, m::State::LaunchIntent);
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "real cancellation target did not start"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let cancel_key = OperationId::generate().to_string();
+    let (status, cancellation) = http(
+        app,
+        token,
+        "POST",
+        &format!("/v1/operations/{target}/cancel"),
+        &cancel_key,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, http::StatusCode::ACCEPTED);
+    let (_, retry) = http(
+        app,
+        token,
+        "POST",
+        &format!("/v1/operations/{target}/cancel"),
+        &cancel_key,
+        json!({}),
+    )
+    .await;
+    assert_eq!(retry, cancellation);
+    let id = cancellation["operation_id"].as_str().unwrap();
+    let until = Instant::now() + Duration::from_secs(12);
+    loop {
+        controller.tick().await.unwrap();
+        let (_, state) = http(
+            app,
+            token,
+            "GET",
+            &format!("/v1/operations/{id}"),
+            &cancel_key,
+            Value::Null,
+        )
+        .await;
+        if state["status"] == "succeeded" {
+            assert_eq!(state["result"]["cancelled"], true);
+            assert_eq!(state["result"]["target_status"], "cancelled");
+            assert_eq!(state["target_operation_id"], target);
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "real cancellation did not settle: {state}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let final_receipt = guest.inspect(target_id).await.unwrap();
+    assert_eq!(final_receipt.state, m::State::Cancelled);
+    assert!(final_receipt.cancel_requested && final_receipt.cleanup_confirmed);
+    let (_, state) = http(
+        app,
+        token,
+        "GET",
+        &format!("/v1/operations/{target}"),
+        &execution_key,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(state["status"], "cancelled");
+    assert_eq!(state["result"]["simulated"], false);
+    assert_eq!(state["output_status"], "pending");
+    let (_, retry) = http(
+        app,
+        token,
+        "POST",
+        &format!("/v1/sandboxes/{sandbox}/execute"),
+        &execution_key,
+        body,
+    )
+    .await;
+    assert_eq!(retry["operation_id"], target);
+    let attempts: i32 = sqlx::query_scalar("SELECT attempt_count FROM operations WHERE id=$1")
+        .bind(target_id.uuid())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 1);
+    let verify = m::Execute {
+        operation_id: OperationId::generate(),
+        argv: vec!["/bin/busybox".into(), "cat".into(), "/cancel-marker".into()],
+        env: BTreeMap::new(),
+        cwd: "/".into(),
+        deadline_unix_ms: guardian::wall_ms() + 5000,
+        output_limit: 1024,
+    };
+    guest.execute(&verify).await.unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while !guest
+        .inspect(verify.operation_id)
+        .await
+        .unwrap()
+        .cleanup_confirmed
+    {
+        assert!(Instant::now() < until);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let output = guest
+        .output(sandbox_protocol::guest::ReadOutput {
+            operation_id: verify.operation_id.to_string(),
+            stream: sandbox_protocol::guest::Stream::Stdout as i32,
+            offset: 0,
+            limit: 1024,
+        })
+        .await
+        .unwrap();
+    assert_eq!(output.data, b"once\n");
+    println!(
+        "real_cancel_observation {}",
+        json!({"public_request_durable":true,"target_cancelled":true,"guest_cleanup_confirmed":true,"one_execution_marker":true,"execution_attempts":1,"retained_output_pending":true,"simulated":false})
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and aarch64 KVM artifacts"]
 async fn real_command_rpc_retains_results_fences_absence_and_survives_request_end() {
@@ -1213,6 +1366,15 @@ async fn real_command_rpc_retains_results_fences_absence_and_survives_request_en
         .unwrap()
         .into_inner();
     assert_eq!(replay.receipt.unwrap().exit_code, Some(7));
+    let cancelled_after_exit = c
+        .cancel_command(CommandInspection {
+            ownership: Some(owner.clone()),
+            command_digest: command.digest().unwrap().to_vec(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(cancelled_after_exit.receipt.unwrap().exit_code, Some(7));
     let mut changed = request;
     changed
         .command
@@ -1263,6 +1425,16 @@ async fn real_command_rpc_retains_results_fences_absence_and_survives_request_en
     absent_owner.operation_id = OperationId::generate().to_string();
     let mut absent = command.clone();
     absent.operation_id = absent_owner.operation_id.parse().unwrap();
+    assert!(
+        c.cancel_command(CommandInspection {
+            ownership: Some(absent_owner.clone()),
+            command_digest: absent.digest().unwrap().to_vec()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .not_started
+    );
     assert!(
         c.inspect_command(CommandInspection {
             ownership: Some(absent_owner.clone()),

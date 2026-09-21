@@ -1,6 +1,6 @@
 # API contract
 
-Status: partially implemented. Create, execute, destroy, sandbox/operation status, project-scoped sandbox/operation lists, retained-output reads, and bearer-authenticated SSE have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
+Status: partially implemented. Create, execute, destroy, sandbox/operation status, project-scoped sandbox/operation lists, retained-output reads, command cancellation, and bearer-authenticated SSE have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
 
 ## API surfaces
 
@@ -102,7 +102,7 @@ Content-Type: application/json
 
 New create requests must fit the shared [guest resource envelope](compatibility.md#sandbox): 1–4 vCPU, 128–8192 MiB memory, and 64–65536 MiB writable disk. Unsupported sizes return `400 bad_request` without creating a sandbox or operation or consuming the idempotency key. Tightening a minimum does not erase an already admitted identical retry handle; changed input under that key still conflicts. These size bounds are separate from project quotas, host overhead, and image compatibility.
 
-Wait for create success, then call execute. An execute request returns an operation ID for polling results. Output and cancellation routes are still planned. The combined implemented and proposed route list is:
+Wait for create success, then call execute. An execute request returns an operation ID for polling results. Output and command cancellation routes are implemented; cancellation of other operation kinds remains unsupported. The combined implemented and proposed route list is:
 
 ```text
 GET  /v1/sandboxes
@@ -123,7 +123,7 @@ Live output is delivered as server-sent events. Each event carries a monotonic s
 
 The read-only stream authenticates with the same project token from a backend client. It checks current ownership/allocation and forwards output through the API streaming endpoint, bypassing the controller for bytes. Reconnect uses a cursor on the original operation; it does not create an operation or dispatch another command. Apply the connection/expiry/revocation checks from [auth design](auth-design.md#live-output-and-revocation). The same-origin management UI uses a validated Project/Admin session with Origin, ownership, and expiry checks. Dedicated tokens for third-party browser streams remain deferred.
 
-Cancellation is itself an idempotent operation referencing the target operation; a requested cancel does not change the target to cancelled until confirmed. Pause's completed result includes the published snapshot ID. Ordinary resume resolves the sandbox's current pause snapshot on admission and pins that reference in the operation. It does not accept an arbitrary old snapshot to silently rewind history. A future explicit recovery/fork API must address repeated external effects separately.
+[Command cancellation](command-cancellation.md) is an idempotent operation referencing the target execute operation; a requested cancel does not change the target to cancelled until confirmed. Cancellation of other operation kinds remains unsupported. Pause's completed result includes the published snapshot ID. Ordinary resume resolves the sandbox's current pause snapshot on admission and pins that reference in the operation. It does not accept an arbitrary old snapshot to silently rewind history. A future explicit recovery/fork API must address repeated external effects separately.
 
 The example image digest is illustrative, not an available image. List endpoints paginate with an opaque cursor: a response carries `next_cursor`, and the client passes it back unchanged. The cursor's contents are not part of the contract, which keeps sort order and index strategy changeable without a version bump. Offset-and-page pagination is deliberately not offered, because concurrent creates make it skip and duplicate rows.
 
@@ -153,7 +153,7 @@ Poll `GET /v1/operations/{operation_id}`. Confirmed exits provide `result.exit_c
 
 Execute operation status and list responses also include `output_status`: `none`, `pending`, `uploading`, `published`, or `expired`. This is independent of the process outcome. A confirmed exit initially reports `pending`; the opt-in independent archival worker can subsequently publish verified private references. Private object references are never returned in these status bodies. [Output storage](output-storage.md#database-publication) defines publication and expiry.
 
-Output bytes are not returned by these routes. Retained output is available through the separate endpoint below; file transfer and cancellation remain unfinished; live output uses the SSE endpoint below.
+Output bytes are not returned by these routes. Retained output is available through the separate endpoint below; file transfer remains unfinished; live output uses the SSE endpoint below and command interruption uses the [cancellation route](command-cancellation.md).
 
 New execute admission reserves one of 32 command slots and its full `output_limit` within a 64 MiB budget per allocation. A request exceeding either bound returns `409 execution_capacity_exhausted`, with no operation ID, operation insertion or retry-key consumption. A smaller output limit can fit remaining bytes; exhausted command slots require a new sandbox. Existing identical retries still resolve to their original handle (or `410 response_expired`); changed retries still conflict. Destroy remains available.
 
@@ -306,4 +306,4 @@ An independent authorization watchdog waits five seconds between checks and give
 
 [Stream tests](../crates/sandbox-api/tests/streams.rs) exercise binary reconnects, cross-tenant and cursor boundaries, forged replies, bounded readers/queues, publication races, and revocation during slow reads and final metadata lock waits. A regression first demonstrated queued bytes reaching a consumer after retention expired; the consumption-time check prevents it. [HTTPS/MinIO tests](../crates/sandbox-api/tests/server.rs) verify real SSE framing and explicit missing-object gaps. [Controlled microVM evidence](evidence/2026-09-21-aarch64-sse.json) covers live binary bytes before completion, reconnects without repeated execution, archival delivery after destruction and epoch advancement, and the limits of that evidence.
 
-The current CLI configures one live host endpoint; fleet registration/routing and automatic certificate rotation are not implemented. Archived streaming repeats full-object verification per bounded chunk, as the retained-range endpoint does; this has a bounded memory footprint but can amplify storage reads for large outputs. No throughput/fleet-load claim is made. Safe retention/orphan cleanup, cross-allocation pause/resume history, browser sessions, file transfer, public cancellation and supported-host security release gates remain unfinished.
+The current CLI configures one live host endpoint; fleet registration/routing and automatic certificate rotation are not implemented. Archived streaming repeats full-object verification per bounded chunk, as the retained-range endpoint does; this has a bounded memory footprint but can amplify storage reads for large outputs. No throughput/fleet-load claim is made. Cross-allocation pause/resume history, browser sessions, file transfer and supported-host security release gates remain unfinished. [Output cleanup](output-storage.md#storage-retirement) and [command cancellation](command-cancellation.md) are implemented.

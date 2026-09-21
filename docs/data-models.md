@@ -148,6 +148,8 @@ Internal ID: `hst_<uuidv7>`.
 
 Hosts are infrastructure records shared across projects. Calculate reservations from unreleased allocations under transactional capacity checks. A heartbeat timeout makes a host uncertain; it does not prove its VMs stopped. The database issues a new monotonically increasing supervisor epoch on registration after restart. It is separate from an OS boot ID and requires reconciliation before existing ownership is renewed.
 
+[Command cancellation](command-cancellation.md) uses the existing cancel kind and target foreign key. [Migration 0012](../migrations/0012_command_cancellation.sql) permits one unfinished `cancel_requested` operation per target without activating legacy generic rows. Status/list views expose `target_operation_id`; response expiry and compaction preserve it. Cancellation owns interruption requests and completion reporting, while the original execute claim owns any supervisor call.
+
 ### 5. allocations — compute reservations
 
 Internal ID: `alc_<uuidv7>`.

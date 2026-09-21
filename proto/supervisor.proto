@@ -8,6 +8,8 @@ service Supervisor {
   rpc ArchiveOutput(OutputRequest) returns (OutputObservation);
   rpc ExecuteCommand(CommandRequest) returns (CommandObservation);
   rpc InspectCommand(CommandInspection) returns (CommandObservation);
+  // Idempotent interruption of the original execution identity, never Execute.
+  rpc CancelCommand(CommandInspection) returns (CommandObservation);
   rpc Health(HealthRequest) returns (HostInfo);
   rpc Create(CreateRequest) returns (Observation);
   rpc Inspect(InspectRequest) returns (Observation);

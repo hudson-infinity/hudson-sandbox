@@ -301,14 +301,33 @@ impl Controller {
         }
     }
 
-    /// Maintain at most one due allocation and process at most one operation.
+    /// Reconcile one cancellation with a two-second database bound, then
+    /// maintain at most one due allocation and process at most one operation.
     /// Rotating preference prevents create/destroy/execute queues starving each other.
     pub async fn tick(&mut self) -> Result<Tick, ControllerError> {
+        let cancellation = match tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let Some(claim) = self.store.claim_next(OperationKind::Cancel, 30).await? else {
+                return Ok(None);
+            };
+            match self.store.reconcile_cancel(&claim).await {
+                Ok(sandbox_store::cancel::CancelProgress::Completed) => Ok(Some(Tick::Confirmed)),
+                Ok(sandbox_store::cancel::CancelProgress::Pending) => Ok(Some(Tick::Deferred)),
+                Err(DispatchError::LostClaim) => Ok(Some(Tick::LostOwnership)),
+                Err(error) => Err(ControllerError::from(error)),
+            }
+        })
+        .await
+        {
+            Ok(result) => result?,
+            // Cancelling the future rolls back any uncommitted target changes.
+            // A previously committed claim expires normally; lifecycle continues.
+            Err(_) => Some(Tick::Deferred),
+        };
         if let Err(error) = self.check_host().await {
             self.store
                 .mark_host_runtime_unknown(self.config.host, self.config.epoch)
                 .await?;
-            return Err(error);
+            return cancellation.map(Ok).unwrap_or(Err(error));
         }
         let maintenance = self.maintenance_tick().await?;
         let kinds = [
@@ -328,7 +347,7 @@ impl Controller {
                 };
             }
         }
-        Ok(maintenance)
+        Ok(cancellation.unwrap_or(maintenance))
     }
 
     async fn create_tick(&mut self, claim: &Claim) -> Result<Tick, ControllerError> {
@@ -438,7 +457,9 @@ impl Controller {
         };
         let owner = match &action {
             ExecuteAction::Rejected => return Ok(Tick::Rejected),
-            ExecuteAction::Dispatch { owner, .. } | ExecuteAction::Inspect { owner, .. } => owner,
+            ExecuteAction::Dispatch { owner, .. }
+            | ExecuteAction::Inspect { owner, .. }
+            | ExecuteAction::Cancel { owner, .. } => owner,
         };
         if owner.host_id != self.config.host.to_string()
             || owner.supervisor_epoch != self.config.epoch
@@ -457,6 +478,14 @@ impl Controller {
             ExecuteAction::Inspect { owner, digest } => {
                 self.client
                     .inspect_command(CommandInspection {
+                        ownership: Some(owner),
+                        command_digest: digest.to_vec(),
+                    })
+                    .await
+            }
+            ExecuteAction::Cancel { owner, digest } => {
+                self.client
+                    .cancel_command(CommandInspection {
                         ownership: Some(owner),
                         command_digest: digest.to_vec(),
                     })

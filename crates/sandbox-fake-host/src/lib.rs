@@ -56,6 +56,7 @@ struct State {
     total_commands: u64,
     hold_next_command: bool,
     lose_next_command_reply: bool,
+    lose_next_cancel_reply: bool,
     lose_next_archive_reply: bool,
     archive_delay: Duration,
     archives_started: u64,
@@ -432,6 +433,14 @@ impl Supervisor for FakeHost {
         r: Request<sandbox_protocol::supervisor::CommandInspection>,
     ) -> Result<Response<sandbox_protocol::supervisor::CommandObservation>, Status> {
         self.inspect_command_inner(r.into_inner())
+            .await
+            .map(Response::new)
+    }
+    async fn cancel_command(
+        &self,
+        r: Request<sandbox_protocol::supervisor::CommandInspection>,
+    ) -> Result<Response<sandbox_protocol::supervisor::CommandObservation>, Status> {
+        self.cancel_command_inner(r.into_inner())
             .await
             .map(Response::new)
     }

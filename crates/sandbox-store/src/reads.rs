@@ -14,7 +14,7 @@ use crate::{Store, StoreError};
 
 // Shared by individual and collection reads. Do not fetch expired result/error
 // bodies into API memory. The wire layer also rechecks time before serialization.
-pub(crate) const OPERATION_COLUMNS: &str = "id,sandbox_id,kind,status,phase,created_at,completed_at,
+pub(crate) const OPERATION_COLUMNS: &str = "id,sandbox_id,target_operation_id,kind,status,phase,created_at,completed_at,
     CASE WHEN status IN ('succeeded','failed','cancelled') THEN response_expires_at END AS response_expires_at,
     COALESCE(status IN ('succeeded','failed','cancelled') AND response_expires_at<=clock_timestamp(),false) AS response_expired,
     CASE WHEN status IN ('succeeded','failed','cancelled') AND response_expires_at<=clock_timestamp() THEN NULL ELSE result END AS result,
@@ -33,6 +33,8 @@ pub struct OperationView {
     pub id: OperationId,
     /// The sandbox it acts on.
     pub sandbox_id: SandboxId,
+    /// The original command for a cancellation operation.
+    pub target_operation_id: Option<OperationId>,
     /// What was requested.
     pub kind: String,
     /// Progress: queued, running, succeeded, failed, cancelled, unknown.
@@ -160,6 +162,10 @@ pub(crate) fn operation_view(row: &sqlx::postgres::PgRow) -> Result<OperationVie
             row.try_get::<Uuid, _>("sandbox_id")
                 .map_err(StoreError::Query)?,
         ),
+        target_operation_id: row
+            .try_get::<Option<Uuid>, _>("target_operation_id")
+            .map_err(StoreError::Query)?
+            .map(OperationId::from_uuid),
         kind: row.try_get("kind").map_err(StoreError::Query)?,
         status: row.try_get("status").map_err(StoreError::Query)?,
         phase: row.try_get("phase").map_err(StoreError::Query)?,
