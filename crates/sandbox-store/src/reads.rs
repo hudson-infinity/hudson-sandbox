@@ -25,6 +25,8 @@ pub struct OperationView {
     pub status: String,
     /// Finer-grained progress within a status, when there is any.
     pub phase: Option<String>,
+    /// Separate from process outcome; populated only for execute operations.
+    pub output_status: Option<String>,
     /// Bounded result metadata, once there is a result.
     pub result: Option<serde_json::Value>,
     /// Why it failed, when it did.
@@ -80,7 +82,9 @@ impl Store {
     ) -> Result<Option<OperationView>, StoreError> {
         let row = sqlx::query(
             r"
-            SELECT id, sandbox_id, kind, status, phase, result, error, created_at, completed_at
+            SELECT id, sandbox_id, kind, status, phase, result, error, created_at, completed_at,
+                CASE WHEN output_status<>'none' AND (output_expires_at<=clock_timestamp() OR response_expires_at<=clock_timestamp())
+                    THEN 'expired' ELSE output_status END AS output_status
               FROM operations
              WHERE id = $1 AND project_id = $2
             ",
@@ -138,6 +142,15 @@ pub(crate) fn operation_view(row: &sqlx::postgres::PgRow) -> Result<OperationVie
         kind: row.try_get("kind").map_err(StoreError::Query)?,
         status: row.try_get("status").map_err(StoreError::Query)?,
         phase: row.try_get("phase").map_err(StoreError::Query)?,
+        output_status: if row
+            .try_get::<String, _>("kind")
+            .map_err(StoreError::Query)?
+            == "execute"
+        {
+            Some(row.try_get("output_status").map_err(StoreError::Query)?)
+        } else {
+            None
+        },
         result: row.try_get("result").map_err(StoreError::Query)?,
         error: row.try_get("error").map_err(StoreError::Query)?,
         created_at: row.try_get("created_at").map_err(StoreError::Query)?,

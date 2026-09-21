@@ -30,6 +30,8 @@ pub struct OperationBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     phase: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    output_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<serde_json::Value>,
@@ -104,6 +106,7 @@ pub(crate) fn body_for(view: OperationView) -> Result<OperationBody, Problem> {
         kind: view.kind,
         status: view.status,
         phase: view.phase,
+        output_status: view.output_status,
         result: view.result,
         error: view.error,
         created_at: stamp(view.created_at)?,

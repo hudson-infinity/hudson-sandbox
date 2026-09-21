@@ -64,6 +64,7 @@ async fn public_execute_succeeds_and_retries_never_dispatch_twice(pool: PgPool) 
     assert_eq!(c.tick().await.unwrap(), Tick::Confirmed);
     let result = state(&f, admission["operation_id"].as_str().unwrap()).await;
     assert_eq!(result["status"], "succeeded");
+    assert_eq!(result["output_status"], "pending");
     assert_eq!(result["result"]["exit_code"], 0);
     assert_eq!(result["result"]["simulated"], true);
     assert!(!result.to_string().contains("private-command"));

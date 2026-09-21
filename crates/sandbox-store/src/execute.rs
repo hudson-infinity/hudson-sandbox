@@ -406,7 +406,7 @@ async fn context(db: &mut PgConnection, claim: &Claim) -> Result<Context, Dispat
     })
 }
 
-fn validate_intent(
+pub(crate) fn validate_intent(
     op: &sqlx::postgres::PgRow,
     owner: &Ownership,
     digest: &[u8; 32],
@@ -537,6 +537,7 @@ impl Store {
             _ => ("unknown", "reconciling", Some("outcome_unknown")),
         };
         let terminal = matches!(status, "succeeded" | "failed" | "cancelled");
+        let archive = terminal && receipt.is_some();
         // Only bounded statistics/results cross the controller, never output bytes
         // or guest-controlled reason text. The receipt cannot release VM resources.
         let result = receipt.as_ref().map(|r| {
@@ -564,11 +565,12 @@ impl Store {
         dispatch::fence(&mut tx, claim).await?;
         let changed = sqlx::query("UPDATE operations SET status=$3,phase=$4,result=$5,error=$6,attempt_receipts=$7,
             completed_at=CASE WHEN $8 THEN clock_timestamp() ELSE NULL END,lease_expires_at=NULL,
-            next_retry_at=CASE WHEN $8 THEN NULL ELSE clock_timestamp()+interval '1 second' END,updated_at=clock_timestamp()
+            next_retry_at=CASE WHEN $8 THEN NULL ELSE clock_timestamp()+interval '1 second' END,updated_at=clock_timestamp(),
+            output_status=CASE WHEN $10 THEN 'pending' ELSE output_status END
             WHERE id=$1 AND claim_revision=$2 AND lease_expires_at>clock_timestamp()
             AND ($9::bigint IS NULL OR abs(extract(epoch FROM clock_timestamp())*1000-$9::bigint)<=10000)")
             .bind(claim.operation_id.uuid()).bind(claim.revision).bind(status).bind(phase).bind(result).bind(error)
-            .bind(json!(history)).bind(terminal).bind(observation.map(|o| o.observed_unix_ms))
+            .bind(json!(history)).bind(terminal).bind(observation.map(|o| o.observed_unix_ms)).bind(archive)
             .execute(&mut *tx).await?.rows_affected();
         if changed != 1 {
             return Err(DispatchError::LostClaim);
