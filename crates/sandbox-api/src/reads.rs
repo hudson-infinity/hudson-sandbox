@@ -23,6 +23,8 @@ use crate::problem::Problem;
 /// An operation, as returned.
 #[derive(Debug, Serialize)]
 pub struct OperationBody {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    response_expired: bool,
     operation_id: String,
     sandbox_id: String,
     kind: String,
@@ -96,19 +98,26 @@ pub async fn operation(
         })?;
 
     let view = found.ok_or(Problem::NotFound)?;
-    Ok(no_store(Json(body_for(view)?)))
+    let id = view.id;
+    let body = body_for(view)?;
+    if body.response_expired {
+        return Err(Problem::ResponseExpired(id));
+    }
+    Ok(no_store(Json(body)))
 }
 
 pub(crate) fn body_for(view: OperationView) -> Result<OperationBody, Problem> {
+    let expired = view.response_expired();
     Ok(OperationBody {
+        response_expired: expired,
         operation_id: view.id.to_string(),
         sandbox_id: view.sandbox_id.to_string(),
         kind: view.kind,
         status: view.status,
         phase: view.phase,
         output_status: view.output_status,
-        result: view.result,
-        error: view.error,
+        result: if expired { None } else { view.result },
+        error: if expired { None } else { view.error },
         created_at: stamp(view.created_at)?,
         completed_at: view.completed_at.map(stamp).transpose()?,
     })

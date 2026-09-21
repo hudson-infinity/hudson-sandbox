@@ -132,6 +132,8 @@ Private `output_cleanup` rows are an auxiliary inventory for expired operation o
 
 Keep compact operation tombstones with identity, ownership, retry key, request digest/version, and outcome for the project's lifetime; detailed payload/output retention may be shorter. Active/unknown operations retain reconciliation evidence. See [API retention behavior](api-contract.md#errors-and-retention) for how clients observe expiry.
 
+[Operation response retention](operation-retention.md) implements opt-in assignment of `response_expires_at` for terminal operations and expiry enforcement on reads and retries. Deadlines are measured from `completed_at`, assigned once, and never changed by later worker policy. [Migration 0009](../migrations/0009_response_retention.sql) indexes terminal rows awaiting assignment without assigning policy during upgrade. This hides expired response bodies; physical compaction of payload/results/receipts remains unfinished, so existing reconciliation evidence is preserved.
+
 ### 4. hosts — Linux compute machines
 
 Internal ID: `hst_<uuidv7>`.

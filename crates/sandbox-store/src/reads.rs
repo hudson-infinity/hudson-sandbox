@@ -12,9 +12,23 @@ use uuid::Uuid;
 
 use crate::{Store, StoreError};
 
+// Shared by individual and collection reads. Do not fetch expired result/error
+// bodies into API memory. The wire layer also rechecks time before serialization.
+pub(crate) const OPERATION_COLUMNS: &str = "id,sandbox_id,kind,status,phase,created_at,completed_at,
+    CASE WHEN status IN ('succeeded','failed','cancelled') THEN response_expires_at END AS response_expires_at,
+    COALESCE(status IN ('succeeded','failed','cancelled') AND response_expires_at<=clock_timestamp(),false) AS response_expired,
+    CASE WHEN status IN ('succeeded','failed','cancelled') AND response_expires_at<=clock_timestamp() THEN NULL ELSE result END AS result,
+    CASE WHEN status IN ('succeeded','failed','cancelled') AND response_expires_at<=clock_timestamp() THEN NULL ELSE error END AS error,
+    CASE WHEN output_status<>'none' AND (output_expires_at<=clock_timestamp() OR response_expires_at<=clock_timestamp())
+        THEN 'expired' ELSE output_status END AS output_status";
+
 /// An operation as a caller sees it.
 #[derive(Debug, Clone)]
 pub struct OperationView {
+    /// Public response retention only; unresolved execution remains inspectable.
+    pub response_expires_at: Option<OffsetDateTime>,
+    /// Database-time decision, preserved even if the API clock is behind.
+    pub response_expired: bool,
     /// The operation.
     pub id: OperationId,
     /// The sandbox it acts on.
@@ -35,6 +49,15 @@ pub struct OperationView {
     pub created_at: OffsetDateTime,
     /// When it reached a terminal status.
     pub completed_at: Option<OffsetDateTime>,
+}
+
+impl OperationView {
+    pub fn response_expired(&self) -> bool {
+        self.response_expired
+            || self
+                .response_expires_at
+                .is_some_and(|at| at <= OffsetDateTime::now_utc())
+    }
 }
 
 /// A sandbox as a caller sees it.
@@ -80,15 +103,9 @@ impl Store {
         project_id: ProjectId,
         operation_id: OperationId,
     ) -> Result<Option<OperationView>, StoreError> {
-        let row = sqlx::query(
-            r"
-            SELECT id, sandbox_id, kind, status, phase, result, error, created_at, completed_at,
-                CASE WHEN output_status<>'none' AND (output_expires_at<=clock_timestamp() OR response_expires_at<=clock_timestamp())
-                    THEN 'expired' ELSE output_status END AS output_status
-              FROM operations
-             WHERE id = $1 AND project_id = $2
-            ",
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {OPERATION_COLUMNS} FROM operations WHERE id=$1 AND project_id=$2"
+        ))
         .bind(operation_id.uuid())
         .bind(project_id.uuid())
         .fetch_optional(self.pool())
@@ -134,6 +151,10 @@ impl Store {
 
 pub(crate) fn operation_view(row: &sqlx::postgres::PgRow) -> Result<OperationView, StoreError> {
     Ok(OperationView {
+        response_expires_at: row
+            .try_get("response_expires_at")
+            .map_err(StoreError::Query)?,
+        response_expired: row.try_get("response_expired").map_err(StoreError::Query)?,
         id: OperationId::from_uuid(row.try_get::<Uuid, _>("id").map_err(StoreError::Query)?),
         sandbox_id: SandboxId::from_uuid(
             row.try_get::<Uuid, _>("sandbox_id")

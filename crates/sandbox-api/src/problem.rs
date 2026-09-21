@@ -29,6 +29,7 @@ pub enum Problem {
     /// Missing, or belonging to another project. Indistinguishable on purpose.
     NotFound,
     Gone,
+    ResponseExpired(sandbox_protocol::OperationId),
     OutputNotReady,
     OutputExpired,
     OutputMissing,
@@ -63,7 +64,9 @@ impl Problem {
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::ImageDenied => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::Gone | Self::OutputExpired | Self::OutputMissing => StatusCode::GONE,
+            Self::Gone | Self::ResponseExpired(_) | Self::OutputExpired | Self::OutputMissing => {
+                StatusCode::GONE
+            }
             Self::OutputNotReady => StatusCode::CONFLICT,
             Self::OutputCorrupt => StatusCode::BAD_GATEWAY,
             Self::OutputRange => StatusCode::RANGE_NOT_SATISFIABLE,
@@ -85,6 +88,7 @@ impl Problem {
             Self::ImageDenied => "image_not_allowed",
             Self::NotFound => "not_found",
             Self::Gone => "gone",
+            Self::ResponseExpired(_) => "response_expired",
             Self::OutputNotReady => "output_not_ready",
             Self::OutputExpired => "output_expired",
             Self::OutputMissing => "output_missing",
@@ -108,6 +112,7 @@ impl Problem {
             Self::ImageDenied => "The requested image is not allowed",
             Self::NotFound => "No such resource",
             Self::Gone => "This sandbox has been destroyed",
+            Self::ResponseExpired(_) => "Operation response retention has expired",
             Self::OutputNotReady => "Output is not ready yet",
             Self::OutputExpired => "Output retention has expired",
             Self::OutputMissing => "The requested output history is unavailable",
@@ -138,9 +143,9 @@ impl IntoResponse for Problem {
         let status = self.status();
         let body = Json(Body {
             operation_id: match self {
-                Self::TransitionInProgress(id) | Self::CommandInProgress(id) => {
-                    Some(id.to_string())
-                }
+                Self::TransitionInProgress(id)
+                | Self::CommandInProgress(id)
+                | Self::ResponseExpired(id) => Some(id.to_string()),
                 _ => None,
             },
             title: self.title(),

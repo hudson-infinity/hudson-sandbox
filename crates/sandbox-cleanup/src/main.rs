@@ -3,6 +3,7 @@ use clap::Parser;
 use sandbox_artifacts::S3Config;
 use sandbox_cleanup::{Cleaner, CleanupTick};
 use sandbox_store::Store;
+use sandbox_store::retention::ResponseRetention;
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Parser)]
@@ -18,6 +19,10 @@ struct Args {
     /// Development only: permit retirement of explicitly simulated output.
     #[arg(long, default_value_t = false)]
     allow_simulated: bool,
+    /// Opt in to terminal response expiry, measured from completion. Applies
+    /// to existing completed work too; never changes already assigned deadlines.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=31_536_000))]
+    response_retention_seconds: Option<u32>,
 }
 
 #[tokio::main]
@@ -31,7 +36,13 @@ async fn main() -> anyhow::Result<()> {
         .migrate()
         .await
         .map_err(|_| anyhow::anyhow!("database migration failed"))?;
-    let cleaner = Cleaner::new(store, retirer, args.allow_simulated);
+    let mut cleaner = Cleaner::new(store, retirer, args.allow_simulated);
+    if let Some(seconds) = args.response_retention_seconds {
+        cleaner = cleaner.with_response_retention(
+            ResponseRetention::new(seconds)
+                .ok_or_else(|| anyhow::anyhow!("invalid response retention policy"))?,
+        );
+    }
     if args.once {
         // Preserve the redacted Display message without attaching provider
         // error sources, which anyhow would otherwise print at process exit.

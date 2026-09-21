@@ -54,6 +54,7 @@ pub async fn destroy(
             Problem::Unavailable
         })?;
     match outcome {
+        DestroyAdmission::ResponseExpired(id) => Err(Problem::ResponseExpired(id)),
         DestroyAdmission::Accepted {
             operation_id,
             status,
