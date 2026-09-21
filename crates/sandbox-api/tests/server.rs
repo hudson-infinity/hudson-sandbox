@@ -803,3 +803,105 @@ async fn provisioning_retry_is_independent_of_database_timezone_and_cannot_unsus
     assert!(!rejected.exists());
     other_pool.close().await;
 }
+
+#[path = "support/output.rs"]
+mod output_fixture;
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+#[ignore = "requires HUDSON_TEST_S3_* private MinIO and PostgreSQL"]
+async fn output_minio_https_binary_read_revocation_missing_and_corrupt(pool: PgPool) {
+    use object_store::ObjectStoreExt;
+    use sandbox_protocol::output::OutputRefs;
+    let f = output_fixture::Fixture::new(&pool).await;
+    f.finish().await;
+    let (claim, work) = f.work().await;
+    let plans = output_fixture::plans(&work);
+    f.store
+        .save_output_plans(&claim, &plans, true)
+        .await
+        .unwrap();
+    let env = |key| std::env::var(key).unwrap();
+    let artifacts = sandbox_artifacts::S3Config {
+        endpoint: env("HUDSON_TEST_S3_ENDPOINT"),
+        region: "us-east-1".into(),
+        bucket: env("HUDSON_TEST_S3_BUCKET"),
+        access_key: env("HUDSON_TEST_S3_ACCESS_KEY"),
+        secret_key: env("HUDSON_TEST_S3_SECRET_KEY"),
+        session_token: None,
+        allow_loopback_http: true,
+    }
+    .build()
+    .unwrap();
+    let now = || (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
+    let refs = OutputRefs {
+        stdout: artifacts
+            .upload(&plans.stdout, &work.ticket.owner, now(), b"a\x00b\xff")
+            .await
+            .unwrap(),
+        stderr: artifacts
+            .upload(&plans.stderr, &work.ticket.owner, now(), b"err")
+            .await
+            .unwrap(),
+    };
+    f.store.publish_output(&claim, &refs, true).await.unwrap();
+    let mut server = Server::start(f.app(Some(Arc::new(artifacts))), ServerLimits::default()).await;
+    let path = format!("/v1/operations/{}/outputs/stdout", f.operation);
+    let r = server
+        .send("GET", &path, Some(&f.token), None, String::new())
+        .await;
+    assert_eq!(r.0, StatusCode::OK);
+    assert_eq!(r.2, b"a\x00b\xff");
+    assert_eq!(r.1["cache-control"], "no-store");
+    assert_eq!(r.1["x-output-truncated"], "true");
+    let r = server
+        .send(
+            "GET",
+            &format!("{path}?offset=2&limit=1"),
+            Some(&f.token),
+            None,
+            String::new(),
+        )
+        .await;
+    assert_eq!(r.2, b"b");
+    assert_eq!(r.1["x-output-next-offset"], "3");
+    assert_eq!(r.1["x-output-eof"], "false");
+    let r = server.send("GET", &path, None, None, String::new()).await;
+    assert_eq!(r.0, StatusCode::UNAUTHORIZED);
+    // Test-only destructive client, scoped to this test's random object keys.
+    let raw = object_store::aws::AmazonS3Builder::new()
+        .with_endpoint(env("HUDSON_TEST_S3_ENDPOINT"))
+        .with_region("us-east-1")
+        .with_bucket_name(env("HUDSON_TEST_S3_BUCKET"))
+        .with_access_key_id(env("HUDSON_TEST_S3_ACCESS_KEY"))
+        .with_secret_access_key(env("HUDSON_TEST_S3_SECRET_KEY"))
+        .with_allow_http(true)
+        .build()
+        .unwrap();
+    let key = object_store::path::Path::from(plans.stdout.object_key().unwrap());
+    raw.put(&key, b"corrupt".to_vec().into()).await.unwrap();
+    let r = server
+        .send("GET", &path, Some(&f.token), None, String::new())
+        .await;
+    assert_eq!(r.0, StatusCode::BAD_GATEWAY);
+    assert_eq!(body(&r)["code"], "output_corrupt");
+    raw.delete(&key).await.unwrap();
+    let r = server
+        .send("GET", &path, Some(&f.token), None, String::new())
+        .await;
+    assert_eq!(r.0, StatusCode::GONE);
+    assert_eq!(body(&r)["code"], "output_missing");
+    sqlx::query("UPDATE projects SET api_tokens='[]' WHERE id=$1")
+        .bind(f.project.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = server
+        .send("GET", &path, Some(&f.token), None, String::new())
+        .await;
+    assert_eq!(r.0, StatusCode::UNAUTHORIZED);
+    raw.delete(&object_store::path::Path::from(
+        plans.stderr.object_key().unwrap(),
+    ))
+    .await
+    .unwrap();
+    server.shutdown().await;
+}

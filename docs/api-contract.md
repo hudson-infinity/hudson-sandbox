@@ -1,6 +1,6 @@
 # API contract
 
-Status: partially implemented. Create, execute, destroy, sandbox/operation status, and project-scoped sandbox/operation lists have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
+Status: partially implemented. Create, execute, destroy, sandbox/operation status, project-scoped sandbox/operation lists, and retained-output reads have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
 
 ## API surfaces
 
@@ -153,7 +153,7 @@ Poll `GET /v1/operations/{operation_id}`. Confirmed exits provide `result.exit_c
 
 Execute operation status and list responses also include `output_status`: `none`, `pending`, `uploading`, `published`, or `expired`. This is independent of the process outcome. A confirmed exit initially reports `pending`; the opt-in independent archival worker can subsequently publish verified private references. Private object references are never returned in these status bodies. [Output storage](output-storage.md#database-publication) defines publication and expiry.
 
-Output bytes are not returned by these routes. Public output retrieval/streaming, file transfer, and cancellation remain unfinished. The host retains at most 32 command records and reserves at most 64 MiB of combined output limits per allocation without eviction; repeated work eventually requires a new sandbox. Exceeding journal capacity after dispatch intent can leave the command unknown; destroy remains available. This is a development limit, not a complete retention service. See [command ownership](controller.md#command-admission-and-dispatch-ownership) for recovery details.
+Output bytes are not returned by these routes. Retained output is available through the separate endpoint below; live streaming, file transfer, and cancellation remain unfinished. The host retains at most 32 command records and reserves at most 64 MiB of combined output limits per allocation without eviction; repeated work eventually requires a new sandbox. Exceeding journal capacity after dispatch intent can leave the command unknown; destroy remains available. This is a development limit, not a complete retention service. See [command ownership](controller.md#command-admission-and-dispatch-ownership) for recovery details.
 
 ## Output, files, and reconnects
 
@@ -240,3 +240,35 @@ Cursors are opaque, versioned positions scoped to the authenticated project, col
 ## Implemented HTTPS transport
 
 The [API server guide](api-server.md#transport-contract) owns TLS configuration, listener limits, startup/shutdown, and runnable local setup. The existing create/execute/destroy JSON routes normalize malformed JSON to `400 bad_request` and oversized bodies to `413 payload_too_large`, both as uncached problems. These replace Axum's raw JSON extractor errors; streaming routes remain unfinished.
+
+
+## Implemented retained-output reads
+
+`GET /v1/operations/{operation_id}/outputs/{output_name}` returns archived final bytes for `stdout` or `stderr`. It requires a current project bearer token and a project-owned execute operation with published references. The API resolves private object identity from validated database evidence; clients cannot supply buckets, keys, URLs, host paths or upload attempts. Non-execute, missing and cross-project operations return the same `404 not_found`. Reading output never executes or cancels a command.
+
+The optional query fields are `offset` (nonnegative byte offset, default 0) and `limit` (1–32768 bytes, default 32768). Unknown/duplicate fields, malformed values and the HTTP `Range` header return `400 bad_request`; this endpoint uses its explicit offset/limit contract. An offset beyond the captured size returns `416 output_range_invalid`. Offset equal to size returns `200` with an empty body and EOF, after storage verification. A missing object cannot take that path.
+
+Successful responses are `200 application/octet-stream`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and an attachment named `stdout.bin` or `stderr.bin`. Binary data is unchanged, including NUL and invalid UTF-8. These response headers describe the requested stream:
+
+| Header | Meaning |
+| --- | --- |
+| `X-Output-Offset`, `X-Output-Next-Offset` | Requested offset and next byte position; use the latter to fetch the next retained chunk |
+| `X-Output-Size`, `X-Output-Seen` | Captured byte length and guest-reported total bytes observed |
+| `X-Output-EOF` | Whether this chunk reaches the end of captured bytes |
+| `X-Output-Truncated` | Whether the guest discarded output beyond its admitted capture budget; EOF does not erase truncation |
+| `X-Output-Simulated` | Whether the producing receipt came from the development fake |
+
+These offsets address immutable final stdout or stderr bytes; they are not live SSE sequence cursors. Object keys, provider ETags/versions and private references are never returned. A command's success is independent of output availability.
+
+| HTTP / problem code | Meaning |
+| --- | --- |
+| `409 output_not_ready` | Final output is not published, including running, unknown, no-start and pending archival states; inspect the existing operation rather than resubmitting it |
+| `410 output_expired` | Output or operation response retention expired |
+| `410 output_missing` | Selected retained object is missing; do not interpret it as an empty stream |
+| `502 output_corrupt` | Stored bytes or metadata failed integrity verification |
+| `503 unavailable` | Backend failure, unavailable configuration, capacity limit, deadline, or inconsistent ownership/reference evidence |
+| `401 unauthenticated` | Credential missing, invalid, expired, removed/replaced/revoked, or project access disabled |
+
+The API admits at most four output reads per process without queuing buffers. Each storage read has a 25-second deadline inside the ordinary 30-second request limit. The [storage adapter](output-storage.md) verifies the complete bounded object before returning a range; repeated small reads therefore reread the object, a documented initial efficiency limit. After storage access, the API reloads ownership, selected references and retention, then revalidates the same credential hash and project as its final awaited check. It checks the effective retention deadline again immediately before forming the response. Database or credential-check failure releases no bytes. Revocation is enforced at these checks; already-delivered bytes cannot be withdrawn.
+
+`GET /v1/operations/{operation_id}/stream` remains unfinished. No live output, stream cursor/resumption or stream-revocation guarantee is implied by this final-output route. [Router tests](../crates/sandbox-api/tests/outputs.rs) exercise concurrent limits, deadline cancellation, binary ranges, tenant boundaries, simulated provenance, and revocation/retention changes during slow reads. A lock-contention regression test revokes a token during the final metadata lookup; returning bytes is forbidden. [HTTPS/MinIO tests](../crates/sandbox-api/tests/server.rs) exercise actual binary responses and missing/corrupt storage.

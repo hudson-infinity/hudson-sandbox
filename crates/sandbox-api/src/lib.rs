@@ -9,6 +9,7 @@ pub mod destroy;
 pub mod execute;
 pub mod headers;
 pub mod lists;
+pub mod outputs;
 pub mod problem;
 pub mod provision;
 pub mod reads;
@@ -36,6 +37,15 @@ impl FromRef<AppState> for Store {
 
 /// Build the router.
 pub fn router(state: AppState) -> Router {
+    router_with_output(state, None)
+}
+
+/// Operator-selected private output reader. Never supplied by an HTTP request.
+pub fn router_with_output(
+    state: AppState,
+    reader: Option<std::sync::Arc<dyn outputs::OutputReader>>,
+) -> Router {
+    let outputs = outputs::routes(state.store.clone(), reader);
     Router::new()
         .merge(sandboxes::routes())
         .merge(reads::routes())
@@ -43,4 +53,5 @@ pub fn router(state: AppState) -> Router {
         .merge(destroy::routes())
         .merge(execute::routes())
         .with_state(state)
+        .merge(outputs)
 }

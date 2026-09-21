@@ -102,3 +102,8 @@ Both `serve` and `provision-project` run embedded migrations before proceeding. 
 Certificates and keys are read once at startup. Replace them and restart to rotate; automatic renewal and reload are not implemented. The seven-day certificate above is for local development only. Do not disable certificate verification in clients.
 
 [Transport and provisioning tests](../crates/sandbox-api/tests/server.rs) exercise real TCP/TLS, trusted/untrusted certificates, hostname verification, plaintext rejection, create retry, reads/lists, destroy conflict and cleanup admission, revocation, body/time/connection bounds, draining, provisioning recovery, private-file checks, database-error redaction, and the actual binary's SIGTERM path. Existing [authentication tests](../crates/sandbox-api/src/auth.rs) and controller tests cover their own layers. These are control-plane tests, not Firecracker isolation evidence.
+
+
+## Private output reads
+
+Add `--output-config /absolute/path/output.json` to `sandbox-api serve` to configure the [retained-output endpoint](api-contract.md#implemented-retained-output-reads). Use a service-owned private file and separate read-only object-storage credentials as described in [output storage](output-storage.md#api-reader-configuration-and-evidence). The API reads the same private bucket as the supervisor; it does not receive storage location or credentials from customers. The existing TLS, bearer authentication and request/connection bounds still apply. Live SSE remains unfinished and will require its own stream transport limits.

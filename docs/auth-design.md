@@ -130,3 +130,8 @@ The operator-only `sandbox-api provision-project` command temporarily supplies p
 The [implementation](../crates/sandbox-api/src/provision.rs) saves a randomly generated project ID and 256-bit bearer secret in a private file before inserting hash-only token metadata. The token expires after 30 days. Retrying the same file reconciles the original intent; a changed project, quota, or credential is a conflict, and expiry/revocation is never reset. This is an offline operator recovery mechanism, not the future Admin audit/receipt implementation. Rotation, Admin provisioning, audit persistence, and management APIs remain separate work.
 
 The [API server guide](api-server.md#offline-project-provisioning) owns the commands, private-file requirements, initial quota values, crash recovery instructions, and transport evidence. No shared development credential is seeded automatically.
+
+
+## Retained-output authorization
+
+The [implemented output read](api-contract.md#implemented-retained-output-reads) checks project ownership before accessing storage. Its request-local credential proof retains the verified hash, not the raw bearer secret. After storage and final metadata lookup it reloads the credential and verifies the same project/key/hash, expiry, revocation and active project state before releasing bytes. A failed database check denies delivery. Checking credentials before the final metadata lookup is insufficient because that query can block; a regression test covers revocation during that wait. Retention is checked again after the last awaited credential check. This applies to bounded archived chunks; live streams still require the periodic rechecks above.

@@ -12,7 +12,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Pin the Rust toolchain. `rustfmt` and `clippy` configured, clippy warnings denied in CI.
 - [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
 - [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
-- [ ] Extend the integrated [create controller and fake](../controller.md) for execute (done), files, and outputs.
+- [ ] Extend the integrated [create controller and fake](../controller.md) for execute and retained output (done), files, and live streaming.
 - [x] Dedicated nested aarch64 Linux/KVM development host and real boot evidence; [development guide](../linux-development.md). This does not pass the release gates.
 - [ ] Self-hosted x86_64 runner for VM tests, once a supported host exists. Fork pull requests never run on it.
 
@@ -34,7 +34,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
 - [x] Project-scoped sandbox/operation lists with bounded cursor pagination; [collection read contract](../api-contract.md#implemented-collection-reads).
 - [x] `problem+json` errors with the machine-readable code list. Codes are added as routes need them.
-- [ ] Create, execute, destroy, get sandbox, get operation (done); outputs, file PUT remain.
+- [ ] Create, execute, destroy, get sandbox, get operation, retained-output GET (done); file PUT remains.
 - [x] Final output archival through the supervisor, independent fenced publication, and recovery of uploaded objects after destroy/restart; [scope and evidence](../output-storage.md).
 - [ ] SSE output stream with sequence cursors and resume.
 
@@ -68,7 +68,7 @@ The separate [allocation guardian](../allocation-guardian.md) implements verifie
 
 ## Passing 1a
 
-- [ ] A caller with a project token runs a command in a real microVM and reads its output.
+- [x] A caller with a project token runs a command in a real microVM and reads its retained output; [controlled nested aarch64 evidence](../evidence/2026-09-21-aarch64-output-read.json) only, not the complete supported-host gate.
 - [ ] A long-running process outlives the request that started it.
 - [ ] A file transfers in and is readable from inside the sandbox.
 - [ ] Destroy confirms allocation release in the database.
