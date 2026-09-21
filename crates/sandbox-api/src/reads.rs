@@ -97,7 +97,7 @@ pub async fn operation(
     Ok(no_store(Json(body_for(view)?)))
 }
 
-fn body_for(view: OperationView) -> Result<OperationBody, Problem> {
+pub(crate) fn body_for(view: OperationView) -> Result<OperationBody, Problem> {
     Ok(OperationBody {
         operation_id: view.id.to_string(),
         sandbox_id: view.sandbox_id.to_string(),
@@ -134,7 +134,7 @@ pub async fn sandbox(
     Ok(no_store(Json(sandbox_body_for(view)?)))
 }
 
-fn sandbox_body_for(view: SandboxView) -> Result<SandboxBody, Problem> {
+pub(crate) fn sandbox_body_for(view: SandboxView) -> Result<SandboxBody, Problem> {
     Ok(SandboxBody {
         observation_simulated: view.observation_simulated,
         sandbox_id: view.id.to_string(),
@@ -151,7 +151,7 @@ fn sandbox_body_for(view: SandboxView) -> Result<SandboxBody, Problem> {
 }
 
 /// Status reflects live state and must not be cached anywhere in between.
-fn no_store<T: IntoResponse>(body: T) -> Response {
+pub(crate) fn no_store<T: IntoResponse>(body: T) -> Response {
     let mut response = (StatusCode::OK, body).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
