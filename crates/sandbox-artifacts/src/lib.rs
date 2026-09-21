@@ -1,6 +1,7 @@
-//! Private S3-compatible output objects. No HTTP authorization, database
-//! publication, or garbage collection is implied by a successful upload.
+//! Private S3-compatible output and file-source objects. Successful storage I/O
+//! does not authorize customer access, database publication or guest mutation.
 mod config;
+pub mod sources;
 pub use config::S3Config;
 mod retirement;
 pub use retirement::ArtifactRetirer;
@@ -23,25 +24,25 @@ const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum Error {
     #[error("invalid artifact storage configuration")]
     InvalidConfig,
-    #[error("invalid output metadata")]
+    #[error("invalid artifact metadata")]
     InvalidMetadata,
-    #[error("output owner mismatch")]
+    #[error("artifact owner mismatch")]
     OwnerMismatch,
-    #[error("output retention expired")]
+    #[error("artifact retention expired")]
     Expired,
-    #[error("output object missing")]
+    #[error("artifact object missing")]
     Missing,
-    #[error("output integrity check failed")]
+    #[error("artifact integrity check failed")]
     Corrupt,
-    #[error("output upload attempt conflicts with existing object")]
+    #[error("artifact upload attempt conflicts with existing object")]
     Conflict,
-    #[error("invalid output range")]
+    #[error("invalid artifact range")]
     Bounds,
-    #[error("output transfer capacity exhausted")]
+    #[error("artifact transfer capacity exhausted")]
     Busy,
     /// May mean a write succeeded but its acknowledgement was lost. Reconcile
     /// by calling upload again with the SAME persisted plan and bytes.
-    #[error("output storage unavailable; outcome may be uncertain")]
+    #[error("artifact storage unavailable; outcome may be uncertain")]
     Unavailable,
 }
 impl From<InvalidOutput> for Error {

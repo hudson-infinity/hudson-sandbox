@@ -1,18 +1,22 @@
 //! Retire an immutable upload attempt without reopening its create-only key.
 //! Keep a compact current object forever; delete only verified old versions.
-use crate::{ArtifactStore, Error, TRANSFER_TIMEOUT, TRANSFERS, storage_error};
+use super::SourceStore;
+use crate::{Error, TRANSFER_TIMEOUT, TRANSFERS, storage_error};
 use futures_util::{TryStreamExt, future::BoxFuture};
 use object_store::{
     Attribute, Attributes, GetOptions, PutMode, PutOptions, UpdateVersion, path::Path,
 };
-use sandbox_protocol::output::{OutputOwner, OutputPlan, OutputRef, OutputRetirement};
+use sandbox_protocol::{
+    file_downloads::ReadScope,
+    file_sources::{SourcePlan, SourceRef, SourceRetirement},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fmt, sync::Arc};
 
-const MAX_MARKER: u64 = 8192;
+const MAX_MARKER: u64 = 16384;
 fn marker_key() -> Attribute {
-    Attribute::Metadata("hudson-output-retirement-sha256".into())
+    Attribute::Metadata("hudson-file-source-retirement-sha256".into())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,52 +24,52 @@ fn marker_key() -> Attribute {
 struct Marker {
     version: u32,
     plan_sha256: String,
-    previous: Option<OutputRef>,
+    previous: Option<SourceRef>,
 }
 
 enum Current {
     Missing,
-    Data(OutputRef),
-    Retired(OutputRetirement),
+    Data(SourceRef),
+    Retired(SourceRetirement),
 }
 
-pub(crate) trait VersionDelete: Send + Sync {
+pub(crate) trait SourceVersionDelete: Send + Sync {
     fn delete<'a>(
         &'a self,
-        plan: &'a OutputPlan,
+        plan: &'a SourcePlan,
         version: &'a str,
     ) -> BoxFuture<'a, Result<(), Error>>;
 }
 
 /// Created only from trusted operator configuration. Runtime API readers and
-/// archivers use ArtifactStore; cleanup uses this distinct capability.
+/// controllers use SourceStore; cleanup uses this distinct capability.
 #[derive(Clone)]
-pub struct ArtifactRetirer {
-    pub(crate) store: ArtifactStore,
-    pub(crate) delete: Arc<dyn VersionDelete>,
+pub struct SourceRetirer {
+    pub(crate) store: SourceStore,
+    pub(crate) delete: Arc<dyn SourceVersionDelete>,
 }
-impl fmt::Debug for ArtifactRetirer {
+impl fmt::Debug for SourceRetirer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ArtifactRetirer").finish_non_exhaustive()
+        f.debug_struct("SourceRetirer").finish_non_exhaustive()
     }
 }
 
-impl ArtifactRetirer {
+impl SourceRetirer {
     /// The caller must first freeze this exact attempt in the database. Owner
     /// and time come from trusted service state. Selected refs, when present,
     /// must come from the frozen manifest, never from customer parameters.
     ///
     /// A failed/uncertain call must retry the same plan. Retains a small marker
     /// at the original key so even an old in-flight create-only PUT cannot
-    /// recreate output. Versioned payloads are deleted by exact version ID;
+    /// recreate source bytes. Versioned payloads are deleted by exact version ID;
     /// the marker records that identity before any irreversible deletion.
     pub async fn retire(
         &self,
-        plan: &OutputPlan,
-        owner: &OutputOwner,
-        selected: Option<&OutputRef>,
+        plan: &SourcePlan,
+        owner: &ReadScope,
+        selected: Option<&SourceRef>,
         now: i64,
-    ) -> Result<OutputRetirement, Error> {
+    ) -> Result<SourceRetirement, Error> {
         plan.validate()?;
         if &plan.owner != owner {
             return Err(Error::OwnerMismatch);
@@ -87,9 +91,9 @@ impl ArtifactRetirer {
 
     async fn retire_inner(
         &self,
-        plan: &OutputPlan,
-        selected: Option<&OutputRef>,
-    ) -> Result<OutputRetirement, Error> {
+        plan: &SourcePlan,
+        selected: Option<&SourceRef>,
+    ) -> Result<SourceRetirement, Error> {
         let receipt = match self.current(plan, selected).await? {
             Current::Retired(receipt) => receipt,
             current => {
@@ -119,6 +123,7 @@ impl ArtifactRetirer {
                     (Attribute::CacheControl, "no-store".into()),
                 ]);
                 let result = self
+                    .store
                     .store
                     .inner
                     .put_opts(
@@ -157,10 +162,11 @@ impl ArtifactRetirer {
 
     async fn current(
         &self,
-        plan: &OutputPlan,
-        selected: Option<&OutputRef>,
+        plan: &SourcePlan,
+        selected: Option<&SourceRef>,
     ) -> Result<Current, Error> {
         let response = match self
+            .store
             .store
             .inner
             .get_opts(&Path::from(plan.object_key()?), GetOptions::default())
@@ -175,7 +181,7 @@ impl ArtifactRetirer {
             .get(&marker_key())
             .map(|v| v.as_ref().to_owned())
         else {
-            let (reference, _) = ArtifactStore::verify_response(plan, selected, response).await?;
+            let (reference, _) = SourceStore::verify(plan, selected, response).await?;
             return Ok(Current::Data(reference));
         };
         let size = response.meta.size;
@@ -196,7 +202,7 @@ impl ArtifactRetirer {
             return Err(Error::Corrupt);
         }
         let marker: Marker = serde_json::from_slice(&bytes).map_err(|_| Error::Corrupt)?;
-        let receipt = OutputRetirement {
+        let receipt = SourceRetirement {
             version: marker.version,
             plan_sha256: marker.plan_sha256,
             previous: marker.previous,
@@ -212,8 +218,8 @@ impl ArtifactRetirer {
 
     async fn remove_previous(
         &self,
-        plan: &OutputPlan,
-        receipt: &OutputRetirement,
+        plan: &SourcePlan,
+        receipt: &SourceRetirement,
     ) -> Result<(), Error> {
         let Some(previous) = &receipt.previous else {
             return Ok(());
@@ -245,6 +251,7 @@ impl ArtifactRetirer {
         };
         match self
             .store
+            .store
             .inner
             .get_opts(&Path::from(plan.object_key()?), options)
             .await
@@ -256,53 +263,14 @@ impl ArtifactRetirer {
     }
 }
 
-/// Uses the already-pinned object_store SigV4 implementation, not a new
-/// signing implementation. No current-key DELETE, listing, redirects, ambient
-/// credentials, automatic retries or provider error text are exposed.
-pub(crate) struct S3VersionDelete {
-    pub(crate) endpoint: url::Url,
-    pub(crate) bucket: String,
-    pub(crate) region: String,
-    pub(crate) credential: object_store::aws::AwsCredential,
-    pub(crate) client: object_store::client::HttpClient,
-}
-impl VersionDelete for S3VersionDelete {
+impl SourceVersionDelete for crate::retirement::S3VersionDelete {
     fn delete<'a>(
         &'a self,
-        plan: &'a OutputPlan,
+        plan: &'a SourcePlan,
         version: &'a str,
     ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move { self.delete_object(&plan.object_key()?, version).await })
     }
 }
-impl S3VersionDelete {
-    // Only typed, validated plan keys reach this private signer.
-    pub(crate) async fn delete_object(&self, key: &str, version: &str) -> Result<(), Error> {
-        if version.is_empty() || version.len() > 1024 || version.chars().any(char::is_control) {
-            return Err(Error::InvalidMetadata);
-        }
-        let mut url = self.endpoint.clone();
-        url.set_path(&format!("/{}/{}", self.bucket, key));
-        url.query_pairs_mut().append_pair("versionId", version);
-        let mut request = http::Request::builder()
-            .method(http::Method::DELETE)
-            .uri(url.as_str())
-            .body(object_store::client::HttpRequestBody::empty())
-            .map_err(|_| Error::InvalidMetadata)?;
-        object_store::aws::AwsAuthorizer::new(&self.credential, "s3", &self.region)
-            .try_authorize(&mut request, None)
-            .map_err(|_| Error::Unavailable)?;
-        let response = self
-            .client
-            .execute(request)
-            .await
-            .map_err(|_| Error::Unavailable)?;
-        match response.status().as_u16() {
-            204 | 404 => Ok(()),
-            _ => Err(Error::Unavailable),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests;
