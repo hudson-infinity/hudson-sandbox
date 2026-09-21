@@ -8,7 +8,7 @@ Status: implemented for the existing create, destroy, status, and collection rou
 
 The default bind address is `127.0.0.1:8443`. `--bind` can select a different IP address and port. A non-loopback bind is an explicit operator choice; use a certificate valid for the service hostname and configure host access controls before exposing it. The server supports HTTP/1.1 over TLS 1.2 or 1.3. It does not trust forwarded identity headers or accept client certificates as project credentials: the existing bearer-token checks run on every request.
 
-The initial non-streaming transport has fixed bounds:
+The HTTPS transport has fixed bounds; SSE adds its own body/session limits:
 
 | Resource | Bound and behavior |
 | --- | --- |
@@ -106,4 +106,12 @@ Certificates and keys are read once at startup. Replace them and restart to rota
 
 ## Private output reads
 
-Add `--output-config /absolute/path/output.json` to `sandbox-api serve` to configure the [retained-output endpoint](api-contract.md#implemented-retained-output-reads). Use a service-owned private file and separate read-only object-storage credentials as described in [output storage](output-storage.md#api-reader-configuration-and-evidence). The API reads the same private bucket as the supervisor; it does not receive storage location or credentials from customers. The existing TLS, bearer authentication and request/connection bounds still apply. Live SSE remains unfinished and will require its own stream transport limits.
+Add `--output-config /absolute/path/output.json` to `sandbox-api serve` to configure the [retained-output endpoint](api-contract.md#implemented-retained-output-reads). Use a service-owned private file and separate read-only object-storage credentials as described in [output storage](output-storage.md#api-reader-configuration-and-evidence). The API reads the same private bucket as the supervisor; it does not receive storage location or credentials from customers. The existing TLS, bearer authentication and request/connection bounds still apply. The separate [SSE endpoint](api-contract.md#implemented-output-streams) can use these archived objects and has its own session, queue and lifetime limits.
+
+## Live-output host configuration
+
+To enable live guest reads, add all of `--live-host-id`, `--live-endpoint`, `--live-ca-cert`, `--live-client-cert`, and `--live-client-key` to `sandbox-api serve`. The endpoint must be HTTPS and match the configured host's certificate identity. TLS file reads are bounded to 64 KiB. Provision these files in operator-controlled directories, keep the private key readable only by the API service, and restart to rotate them. The API uses this one configured host; HTTP callers cannot supply or override routing or certificates. Existing routes and archived streaming can run without live-host configuration.
+
+Pin the API's **dedicated reader leaf certificate** with `--output-reader-cert-sha256` on `sandbox-host` or `sandbox-fake-host`. It must differ from every controller certificate, including rotation pins. This API client calls only the [read-only service](supervisor-protocol.md#read-only-live-output). It reconnects using normal CA/host-name verification; no controller credential, mutation method, plaintext fallback or guest endpoint is exposed to customers.
+
+Simulated host observations are rejected by default. `--allow-simulated-live` is an explicit development opt-in and requires live-host configuration; it never turns simulated evidence into a real VM claim. All frames retain the provenance checked against the execution record. Configure `--output-config` as well to serve published history after guest destruction. File transfer, fleet provisioning, browser sessions and production release packaging remain separate work.

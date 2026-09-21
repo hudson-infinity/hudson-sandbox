@@ -15,6 +15,7 @@ pub mod provision;
 pub mod reads;
 pub mod sandboxes;
 pub mod server;
+pub mod streams;
 
 use axum::Router;
 use axum::extract::FromRef;
@@ -45,6 +46,15 @@ pub fn router_with_output(
     state: AppState,
     reader: Option<std::sync::Arc<dyn outputs::OutputReader>>,
 ) -> Router {
+    router_with_streams(state, reader, None)
+}
+
+pub fn router_with_streams(
+    state: AppState,
+    reader: Option<std::sync::Arc<dyn outputs::OutputReader>>,
+    live: Option<std::sync::Arc<dyn streams::live::LiveReader>>,
+) -> Router {
+    let streams = streams::routes(state.store.clone(), live, reader.clone());
     let outputs = outputs::routes(state.store.clone(), reader);
     Router::new()
         .merge(sandboxes::routes())
@@ -54,4 +64,5 @@ pub fn router_with_output(
         .merge(execute::routes())
         .with_state(state)
         .merge(outputs)
+        .merge(streams)
 }

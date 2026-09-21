@@ -61,7 +61,7 @@ impl std::fmt::Debug for OutputWork {
 }
 
 /// Internal lookup result. API responses must not expose private references.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OutputView {
     pub simulated: Option<bool>,
     pub status: String,
@@ -110,12 +110,15 @@ async fn fence(db: &mut PgConnection, claim: &OutputClaim) -> Result<(), OutputE
     Ok(())
 }
 
-struct Evidence {
-    owner: OutputOwner,
-    receipt: Receipt,
-    simulated: bool,
+pub(crate) struct Evidence {
+    pub(crate) owner: OutputOwner,
+    pub(crate) receipt: Receipt,
+    pub(crate) simulated: bool,
 }
-async fn evidence(db: &mut PgConnection, row: &PgRow) -> Result<Evidence, OutputError> {
+pub(crate) async fn execution_evidence(
+    db: &mut PgConnection,
+    row: &PgRow,
+) -> Result<Evidence, OutputError> {
     let operation_id = OperationId::from_uuid(row.try_get("id")?);
     let project_id = ProjectId::from_uuid(row.try_get("project_id")?);
     let sandbox_id = SandboxId::from_uuid(row.try_get("sandbox_id")?);
@@ -167,19 +170,7 @@ async fn evidence(db: &mut PgConnection, row: &PgRow) -> Result<Evidence, Output
     let receipt: Receipt = serde_json::from_value(observed["guest_receipt"].clone())
         .map_err(|_| OutputError::Corrupt)?;
     receipt.validate().map_err(|_| OutputError::Corrupt)?;
-    let (status, phase) = match receipt.state {
-        State::Exited if receipt.exit_code == Some(0) => ("succeeded", "exited"),
-        State::Exited => ("failed", "exited"),
-        State::TimedOut => ("failed", "timed_out"),
-        State::Cancelled => ("cancelled", "cancelled"),
-        _ => return Err(OutputError::Corrupt),
-    };
     if row.try_get::<String, _>("kind")? != "execute"
-        || row.try_get::<String, _>("status")? != status
-        || row.try_get::<Option<String>, _>("phase")?.as_deref() != Some(phase)
-        || row
-            .try_get::<Option<OffsetDateTime>, _>("completed_at")?
-            .is_none()
         || receipt.operation_id != operation_id
         || receipt.context.allocation_id.uuid() != allocation
         || receipt.context.generation != owner.generation
@@ -204,6 +195,27 @@ async fn evidence(db: &mut PgConnection, row: &PgRow) -> Result<Evidence, Output
         receipt,
         simulated,
     })
+}
+
+async fn evidence(db: &mut PgConnection, row: &PgRow) -> Result<Evidence, OutputError> {
+    let evidence = execution_evidence(db, row).await?;
+    let receipt = &evidence.receipt;
+    let (status, phase) = match receipt.state {
+        State::Exited if receipt.exit_code == Some(0) => ("succeeded", "exited"),
+        State::Exited => ("failed", "exited"),
+        State::TimedOut => ("failed", "timed_out"),
+        State::Cancelled => ("cancelled", "cancelled"),
+        _ => return Err(OutputError::Corrupt),
+    };
+    if row.try_get::<String, _>("status")? != status
+        || row.try_get::<Option<String>, _>("phase")?.as_deref() != Some(phase)
+        || row
+            .try_get::<Option<OffsetDateTime>, _>("completed_at")?
+            .is_none()
+    {
+        return Err(OutputError::Corrupt);
+    }
+    Ok(evidence)
 }
 
 fn validate_plans(

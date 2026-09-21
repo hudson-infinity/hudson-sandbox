@@ -23,12 +23,12 @@ pub(super) struct Fixture {
     pub(super) token: String,
     pub(super) store: Store,
     pub(super) project: ProjectId,
-    sandbox: SandboxId,
-    allocation: AllocationId,
-    host: HostId,
+    pub(super) sandbox: SandboxId,
+    pub(super) allocation: AllocationId,
+    pub(super) host: HostId,
     pub(super) operation: OperationId,
-    execution_claim: Claim,
-    observation: CommandObservation,
+    pub(super) execution_claim: Claim,
+    pub(super) observation: CommandObservation,
 }
 impl Fixture {
     pub(super) async fn new(pool: &PgPool) -> Self {

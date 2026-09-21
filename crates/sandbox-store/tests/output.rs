@@ -879,3 +879,150 @@ async fn expired_claim_after_lock_wait_cannot_save_plans_or_publish(pool: PgPool
         f.store.defer_output(&replacement, 3600).await.unwrap();
     }
 }
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn stream_scope_uses_retained_execution_boot_without_claiming_or_current_pointer(
+    pool: PgPool,
+) {
+    use sandbox_store::stream::StreamSource;
+    let mut f = Fixture::new(&pool).await;
+    assert!(matches!(
+        f.store
+            .stream_for_project(f.project, f.operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .source,
+        StreamSource::Pending
+    ));
+    let wire = f.observation.receipt.as_mut().unwrap();
+    wire.state = sandbox_protocol::guest::State::LaunchIntent as i32;
+    wire.exit_code = None;
+    wire.cleanup_confirmed = false;
+    f.finish().await;
+    let before = f.snapshot().await;
+    sqlx::query("UPDATE sandboxes SET current_allocation_id=NULL WHERE id=$1")
+        .bind(f.sandbox.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let StreamSource::Live { scope, simulated } = f
+        .store
+        .stream_for_project(f.project, f.operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .source
+    else {
+        panic!("live scope")
+    };
+    assert!(simulated);
+    assert_eq!(scope.owner.allocation_id, f.allocation);
+    assert_eq!(scope.owner.boot_id, "pinned-guest-boot");
+    assert_eq!(scope.owner.project_id, f.project);
+    assert_eq!(scope.owner.operation_id, f.operation);
+    assert_eq!(before, f.snapshot().await);
+    assert!(
+        f.store
+            .stream_for_project(ProjectId::generate(), f.operation)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    sqlx::query("UPDATE projects SET status='suspended' WHERE id=$1")
+        .bind(f.project.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        f.store
+            .stream_for_project(f.project, f.operation)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn stream_rejects_corrupt_intent_or_receipt_and_expired_or_old_epoch_history(pool: PgPool) {
+    use sandbox_store::stream::StreamSource;
+    let f = Fixture::new(&pool).await;
+    f.finish().await;
+    let original: Value = sqlx::query_scalar("SELECT payload FROM operations WHERE id=$1")
+        .bind(f.operation.uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut changed = original.clone();
+    changed["argv"] = json!(["different"]);
+    sqlx::query("UPDATE operations SET payload=$2 WHERE id=$1")
+        .bind(f.operation.uuid())
+        .bind(changed)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.store.stream_for_project(f.project, f.operation).await,
+        Err(OutputError::Corrupt)
+    ));
+    sqlx::query("UPDATE operations SET payload=$2 WHERE id=$1")
+        .bind(f.operation.uuid())
+        .bind(original)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE hosts SET supervisor_epoch=2 WHERE id=$1")
+        .bind(f.host.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .stream_for_project(f.project, f.operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .source,
+        StreamSource::Missing
+    ));
+    sqlx::query("UPDATE operations SET response_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1").bind(f.operation.uuid()).execute(&pool).await.unwrap();
+    assert!(matches!(
+        f.store
+            .stream_for_project(f.project, f.operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .source,
+        StreamSource::Expired
+    ));
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn stream_prefers_verified_publication_after_guest_is_gone(pool: PgPool) {
+    use sandbox_store::stream::StreamSource;
+    let f = Fixture::new(&pool).await;
+    f.finish().await;
+    let (claim, work) = f.work().await;
+    let p = plans(&work);
+    let r = refs(&p);
+    f.store.save_output_plans(&claim, &p, true).await.unwrap();
+    f.store.publish_output(&claim, &r, true).await.unwrap();
+    sqlx::query("UPDATE hosts SET supervisor_epoch=2 WHERE id=$1")
+        .bind(f.host.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before = f.snapshot().await;
+    let StreamSource::Archived(v) = f
+        .store
+        .stream_for_project(f.project, f.operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .source
+    else {
+        panic!("archived")
+    };
+    assert_eq!(v.references, Some(r));
+    assert_eq!(before, f.snapshot().await);
+}

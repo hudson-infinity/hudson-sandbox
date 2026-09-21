@@ -1,6 +1,6 @@
 # Guest command runner
 
-Status: the Linux guest component runs real processes and has local recovery tests plus [aarch64 Firecracker execution evidence](evidence/2026-09-21-aarch64-commands.json). The [authenticated guest protocol](guest-protocol.md) now connects it to a supervisor client for command and bounded output calls. The [real supervisor and public execute path](real-supervisor.md#command-dispatch-and-reconciliation) now integrate this runner with host watchdog ownership. [Retained output retrieval](output-storage.md) is implemented. Production images, file transfer and public live streaming remain unfinished. This does not pass either [Phase 1 gate](roadmap.md#scope-discipline-for-phase-1).
+Status: the Linux guest component runs real processes and has local recovery tests plus [aarch64 Firecracker execution evidence](evidence/2026-09-21-aarch64-commands.json). The [authenticated guest protocol](guest-protocol.md) now connects it to a supervisor client for command and bounded output calls. The [real supervisor and public execute path](real-supervisor.md#command-dispatch-and-reconciliation) now integrate this runner with host watchdog ownership. [Retained output retrieval](output-storage.md) is implemented. [Public SSE](api-contract.md#implemented-output-streams) supplies live and archived output. Production images and file transfer remain unfinished. This does not pass either [Phase 1 gate](roadmap.md#scope-discipline-for-phase-1).
 
 ## Responsibility and trust
 

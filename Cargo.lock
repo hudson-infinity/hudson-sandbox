@@ -2138,6 +2138,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "clap",
  "hex",
  "http",
@@ -2148,6 +2149,7 @@ dependencies = [
  "sandbox-artifacts",
  "sandbox-protocol",
  "sandbox-store",
+ "sandbox-supervisor",
  "serde",
  "serde_json",
  "sha2",
@@ -2157,6 +2159,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-stream",
+ "tonic",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -2296,6 +2299,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "clap",
  "hex",
  "http",
@@ -2317,6 +2321,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tonic",
  "tower",
 ]

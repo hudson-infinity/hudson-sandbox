@@ -9,6 +9,11 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = { workspace = true }
+sha2 = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+sandbox-supervisor = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 hyper = { workspace = true }

@@ -680,7 +680,7 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
             .build()
             .unwrap()
     });
-    let app = sandbox_api::router_with_output(
+    let app = sandbox_api::router_with_streams(
         sandbox_api::AppState {
             store: store.clone(),
             images: sandbox_protocol::images::ImageAllowlist::new([image.clone()]).unwrap(),
@@ -688,6 +688,17 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
         artifacts.clone().map(|s| {
             std::sync::Arc::new(s) as std::sync::Arc<dyn sandbox_api::outputs::OutputReader>
         }),
+        Some(std::sync::Arc::new(
+            sandbox_api::streams::live::LiveClient::new(
+                f.config.host,
+                f.url.clone(),
+                f.tls.ca.pem().into_bytes(),
+                f.reader.cert.pem().into_bytes(),
+                f.reader.key.serialize_pem().into_bytes(),
+                false,
+            )
+            .unwrap(),
+        )),
     );
     let mut controller = sandbox_controller::Controller::connect(
         store.clone(),
@@ -791,7 +802,7 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
                 "/bin/busybox",
                 "sh",
                 "-c",
-                "echo once >> /execution-marker; /bin/busybox printf 'a\\000b\\377'; /bin/busybox printf 'err\\000' >&2; /bin/busybox sleep 1; exit 0",
+                "echo once >> /execution-marker; /bin/busybox printf 'a\\000b\\377'; /bin/busybox printf 'err\\000' >&2; /bin/busybox sleep 3; exit 0",
             ],
             "succeeded",
             Some(0),
@@ -826,6 +837,83 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
         .await;
         assert_eq!(admitted, retry);
         let id = admitted["operation_id"].as_str().unwrap();
+        if output && expected_exit == Some(0) {
+            use base64::Engine;
+            use tokio_stream::StreamExt;
+            use tower::ServiceExt;
+            controller.tick().await.unwrap();
+            let request = http::Request::builder()
+                .uri(format!("/v1/operations/{id}/stream"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), http::StatusCode::OK);
+            let mut stream = response.into_body().into_data_stream();
+            let first = tokio::time::timeout(Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let first = std::str::from_utf8(&first).unwrap();
+            let data: Value = serde_json::from_str(
+                first
+                    .lines()
+                    .find_map(|l| l.strip_prefix("data: "))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(data["simulated"], false);
+            assert_eq!(data["complete"], false);
+            let mut observed = std::collections::BTreeMap::<String, Vec<u8>>::new();
+            let name = data["stream"].as_str().unwrap().to_string();
+            observed.insert(
+                name,
+                base64::engine::general_purpose::STANDARD
+                    .decode(data["data_base64"].as_str().unwrap())
+                    .unwrap(),
+            );
+            let cursor = first
+                .lines()
+                .find_map(|l| l.strip_prefix("id: "))
+                .unwrap()
+                .to_string();
+            drop(stream);
+            let request = http::Request::builder()
+                .uri(format!("/v1/operations/{id}/stream"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("last-event-id", cursor)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), http::StatusCode::OK);
+            let bytes = tokio::time::timeout(
+                Duration::from_secs(8),
+                axum::body::to_bytes(response.into_body(), 100000),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            assert!(text.contains("event: end"));
+            for line in text.lines().filter_map(|l| l.strip_prefix("data: ")) {
+                let frame: Value = serde_json::from_str(line).unwrap();
+                if let Some(name) = frame["stream"].as_str() {
+                    let captured = observed.entry(name.to_string()).or_default();
+                    assert_eq!(frame["offset"].as_u64().unwrap(), captured.len() as u64);
+                    captured.extend(
+                        base64::engine::general_purpose::STANDARD
+                            .decode(frame["data_base64"].as_str().unwrap())
+                            .unwrap(),
+                    );
+                }
+            }
+            assert_eq!(observed["stdout"], b"a\0b\xff");
+            assert_eq!(observed["stderr"], b"err\0");
+            eprintln!(
+                "real_sse_observation {{\"live_binary_before_completion\":true,\"reconnected_same_operation\":true,\"final_end\":true,\"simulated\":false}}"
+            );
+        }
         let until = Instant::now() + Duration::from_secs(15);
         loop {
             controller.tick().await.unwrap();
@@ -1037,11 +1125,18 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
                 &retained.bytes,
             )
             .await;
+            public_stream(
+                &app,
+                &token,
+                &owner.operation_id.to_string(),
+                &retained.bytes,
+            )
+            .await;
         }
         assert!(!m.group().exists());
         eprintln!(
             "real_output_archive_observation {}",
-            json!({"public_binary_output_verified":true,"public_output_after_destroy_and_epoch_restart":true,"binary_stdout_stderr_verified":true,"empty_streams_verified":true,"controller_published":true,"execution_marker_once":true,"destroy_confirmed":true,"epoch_2_reconciles_epoch_1_objects_without_guest":true})
+            json!({"public_sse_after_destroy_and_epoch_restart":true,"public_binary_output_verified":true,"public_output_after_destroy_and_epoch_restart":true,"binary_stdout_stderr_verified":true,"empty_streams_verified":true,"controller_published":true,"execution_marker_once":true,"destroy_confirmed":true,"epoch_2_reconciles_epoch_1_objects_without_guest":true})
         );
     }
     eprintln!(
@@ -1478,4 +1573,39 @@ async fn real_live_output_reads_binary_reconnects_without_journal_mutation_or_re
     eprintln!(
         "real_live_output_observation {{\"binary_stdout_stderr\":true,\"pending_eof_distinct\":true,\"reconnect_no_reexecution\":true,\"journal_unchanged\":true,\"destroy_and_old_epoch_rejected\":true}}"
     );
+}
+
+async fn public_stream(app: &axum::Router, token: &str, operation: &str, expected: &[u8]) {
+    use base64::Engine;
+    use tower::ServiceExt;
+    let request = http::Request::builder()
+        .uri(format!("/v1/operations/{operation}/stream"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let bytes = tokio::time::timeout(
+        Duration::from_secs(10),
+        axum::body::to_bytes(response.into_body(), 100000),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(text.contains("event: end"));
+    let mut stdout = Vec::new();
+    for line in text.lines().filter_map(|l| l.strip_prefix("data: ")) {
+        let frame: serde_json::Value = serde_json::from_str(line).unwrap();
+        if frame["stream"] == "stdout" {
+            assert_eq!(frame["simulated"], false);
+            assert_eq!(frame["offset"].as_u64().unwrap(), stdout.len() as u64);
+            stdout.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(frame["data_base64"].as_str().unwrap())
+                    .unwrap(),
+            );
+        }
+    }
+    assert_eq!(stdout, expected);
 }
