@@ -156,6 +156,35 @@ impl S3Config {
         })
     }
 
+    /// Separate private file-source namespace and typed storage capability.
+    pub fn build_sources(self) -> Result<crate::sources::SourceStore, Error> {
+        Ok(crate::sources::SourceStore {
+            store: self.build()?,
+        })
+    }
+    /// Source cleanup must use separately scoped operator credentials.
+    pub fn build_source_retirer(self) -> Result<crate::sources::SourceRetirer, Error> {
+        let endpoint = self.validate()?;
+        let client = Self::http_client()?;
+        let delete = S3VersionDelete {
+            endpoint,
+            bucket: self.bucket.clone(),
+            region: self.region.clone(),
+            credential: AwsCredential {
+                key_id: self.access_key.clone(),
+                secret_key: self.secret_key.clone(),
+                token: self.session_token.clone(),
+            },
+            client: HttpClient::new(client.clone()),
+        };
+        Ok(crate::sources::SourceRetirer {
+            store: crate::sources::SourceStore {
+                store: self.build_with_client(client)?,
+            },
+            delete: Arc::new(delete),
+        })
+    }
+
     fn build_with_client(self, client: reqwest::Client) -> Result<ArtifactStore, Error> {
         let endpoint = self.validate()?;
         let mut builder = AmazonS3Builder::new()
