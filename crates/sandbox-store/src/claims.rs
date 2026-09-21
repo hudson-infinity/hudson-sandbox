@@ -84,6 +84,7 @@ impl Store {
                   FROM operations
                  WHERE kind = $1
                    AND status IN ('queued', 'running', 'unknown')
+                   AND phase IS DISTINCT FROM 'cleanup_owned_by_destroy'
                    AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
                    AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp())
                  ORDER BY created_at, id

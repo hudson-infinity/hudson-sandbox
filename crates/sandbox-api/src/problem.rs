@@ -27,6 +27,7 @@ pub enum Problem {
     /// The same key was used for a different request, or a conflicting
     /// lifecycle transition is already in progress.
     Conflict(&'static str),
+    TransitionInProgress(sandbox_protocol::OperationId),
     /// A required backend is unavailable.
     Unavailable,
     /// Something failed that the caller cannot fix.
@@ -42,7 +43,7 @@ impl Problem {
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Conflict(_) | Self::TransitionInProgress(_) => StatusCode::CONFLICT,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -56,7 +57,7 @@ impl Problem {
             Self::Unauthenticated => "unauthenticated",
             Self::Forbidden => "forbidden",
             Self::NotFound => "not_found",
-            Self::Conflict(_) => "conflict",
+            Self::Conflict(_) | Self::TransitionInProgress(_) => "conflict",
             Self::Unavailable => "unavailable",
             Self::Internal => "internal",
         }
@@ -71,6 +72,7 @@ impl Problem {
             Self::Forbidden => "This credential does not have the required access",
             Self::NotFound => "No such resource",
             Self::Conflict(detail) => detail,
+            Self::TransitionInProgress(_) => "Another lifecycle operation is in progress",
             Self::Unavailable => "The service is temporarily unable to handle this request",
             Self::Internal => "The request could not be completed",
         }
@@ -81,6 +83,8 @@ impl Problem {
 /// RFC 9457 makes it optional and defaulting it to `about:blank` is honest.
 #[derive(Debug, Serialize)]
 struct Body {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
     title: &'static str,
     status: u16,
     code: &'static str,
@@ -90,6 +94,10 @@ impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         let status = self.status();
         let body = Json(Body {
+            operation_id: match self {
+                Self::TransitionInProgress(id) => Some(id.to_string()),
+                _ => None,
+            },
             title: self.title(),
             status: status.as_u16(),
             code: self.code(),

@@ -1,6 +1,6 @@
 //! One-host controller. Operator provisioning and TLS are required in every mode.
 use clap::Parser;
-use sandbox_controller::{ControllerConfig, CreateController, Tick};
+use sandbox_controller::{Controller, ControllerConfig, Tick};
 use sandbox_protocol::HostId;
 use sandbox_store::Store;
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let store = Store::connect(&args.database_url, 8).await?;
     store.migrate().await?;
-    let mut controller = CreateController::connect(
+    let mut controller = Controller::connect(
         store,
         ControllerConfig {
             endpoint: args.endpoint,
@@ -59,8 +59,8 @@ async fn main() -> anyhow::Result<()> {
             _ = tokio::signal::ctrl_c() => break,
             result = controller.tick() => match result {
                 Ok(Tick::Idle) => {},
-                Ok(tick) => eprintln!("create controller: {tick:?}"),
-                Err(error) => eprintln!("create controller: {error}"),
+                Ok(tick) => eprintln!("sandbox controller: {tick:?}"),
+                Err(error) => eprintln!("sandbox controller: {error}"),
             }
         }
         tokio::select! { _ = tokio::signal::ctrl_c() => break, _ = tokio::time::sleep(Duration::from_millis(500)) => {} }

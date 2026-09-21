@@ -137,7 +137,7 @@ async fn stop_before_create_blocks_even_an_unseen_operation() {
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(observation.state, AllocationState::Absent as i32);
+    assert_eq!(observation.state, AllocationState::FencedAbsent as i32);
     assert_eq!(
         fake.create(Request::new(request)).await.unwrap_err().code(),
         Code::FailedPrecondition
@@ -278,5 +278,54 @@ async fn watchdog_expires_without_traffic_and_retry_cannot_extend_it() {
         .into_inner();
     assert_eq!(result.state, AllocationState::Released as i32);
     assert_eq!(result.start_count, 1);
+    assert_eq!(fake.total_starts().await, 1);
+}
+
+#[tokio::test]
+async fn fenced_absence_consumes_its_generation_and_is_observable_after_lost_reply() {
+    let (fake, request) = fixture();
+    let owner = request.ownership.clone().unwrap();
+    fake.lose_next_stop_reply().await;
+    assert_eq!(
+        fake.stop(Request::new(StopRequest {
+            ownership: Some(owner.clone())
+        }))
+        .await
+        .unwrap_err()
+        .code(),
+        Code::Unavailable
+    );
+    let observation = fake
+        .inspect(Request::new(InspectRequest {
+            ownership: Some(owner),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(observation.state, AllocationState::FencedAbsent as i32);
+    assert_eq!(observation.start_count, 0);
+    let mut replacement = request;
+    let owner = replacement.ownership.as_mut().unwrap();
+    owner.allocation_id = AllocationId::generate().to_string();
+    owner.operation_id = OperationId::generate().to_string();
+    assert_eq!(
+        fake.create(Request::new(replacement.clone()))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    // The rejected binding remains fenced; a new incarnation needs a new ID too.
+    let owner = replacement.ownership.as_mut().unwrap();
+    owner.allocation_id = AllocationId::generate().to_string();
+    owner.generation += 1;
+    assert_eq!(
+        fake.create(Request::new(replacement))
+            .await
+            .unwrap()
+            .into_inner()
+            .state,
+        AllocationState::Ready as i32
+    );
     assert_eq!(fake.total_starts().await, 1);
 }
