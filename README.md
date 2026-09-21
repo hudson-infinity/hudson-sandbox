@@ -4,7 +4,7 @@
 
 Hudson Sandbox is a project from **Hudson Labs** building a general-purpose secure runtime for untrusted Linux workloads. Run scripts, applications, build jobs, automation, and services with controlled resources, controlled connectivity, and a reliable lifecycle. AI agents are one possible client.
 
-**Status: early implementation.** PostgreSQL admission, authentication, status handlers, and the [create/destroy controller](docs/controller.md) have tests through an authenticated fake supervisor. The fake runs no customer code. Real VM execution, the standalone HTTPS API server, SDKs, public CLI, management UI, and installer remain unfinished. There are no validated isolation or performance guarantees, or a workload quickstart yet.
+**Status: early implementation.** PostgreSQL admission, authentication, status handlers, and the [create/destroy controller](docs/controller.md) have tests through an authenticated fake supervisor. The fake runs no customer code. The [HTTPS API and offline project provisioning](docs/api-server.md) now run as a standalone process. Real VM execution, SDKs, public CLI, management UI, and installer remain unfinished. There are no validated isolation or performance guarantees, or a workload quickstart yet.
 
 ## What we are building
 

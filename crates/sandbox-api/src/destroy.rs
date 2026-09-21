@@ -23,8 +23,9 @@ pub async fn destroy(
     caller: Authenticated,
     Path(id): Path<String>,
     RequestKey(key): RequestKey,
-    Json(request): Json<DestroyRequest>,
+    request: Result<Json<DestroyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Problem> {
+    let Json(request) = request.map_err(Problem::from_json)?;
     let sandbox: SandboxId = id
         .parse()
         .map_err(|_| Problem::BadRequest("that is not a valid sandbox id"))?;

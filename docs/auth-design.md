@@ -1,6 +1,6 @@
 # Authentication and management UI access
 
-Status: proposed design, not implemented. This document owns **Project access** and **Admin access**, credential/session validation, permission enforcement, and audit semantics for the Sandbox Management UI and APIs. It extends [architecture](architecture.md) and [data models](data-models.md).
+Status: project bearer authentication and offline project provisioning are implemented; Admin credentials, sessions, UI, and audit behavior remain proposed. This document owns **Project access** and **Admin access**, credential/session validation, permission enforcement, and audit semantics for the Sandbox Management UI and APIs. It extends [architecture](architecture.md) and [data models](data-models.md).
 
 Project access manages one project's sandboxes. Admin access manages the entire installation. Every deployment, including local development, requires authentication. There is no auth-disable switch or implicit local identity.
 
@@ -121,4 +121,12 @@ Operations gain a server-assigned `initiator_kind` (`project`, `admin`, or `serv
 
 Implement setup, validators, session/audit persistence, and shared policy enforcement before wiring UI actions. Select the maintained session implementation, admin-configuration distribution mechanism, login rate-limit defaults, and audit retention during implementation. Detailed field/index decisions belong to [data models](data-models.md); frontend choices belong to [UI design](ui-design.md).
 
-No executable authentication/session tests exist yet. Link actual tests and CI evidence to the acceptance cases above once implemented. Delivery sequencing is owned by [roadmap](roadmap.md).
+Project bearer authentication has [executable tests](../crates/sandbox-api/src/auth.rs), including current project/token state. [HTTPS/provisioning tests](../crates/sandbox-api/tests/server.rs) cover TLS and private credential delivery. Admin/session and live-stream validation remain unfinished. Delivery sequencing is owned by [roadmap](roadmap.md).
+
+## Implemented offline project provisioning
+
+The operator-only `sandbox-api provision-project` command temporarily supplies project access before Admin APIs and UI setup exist. It requires direct database authority and a private Unix credential directory; it exposes no HTTP bootstrap route and does not issue an Admin credential. The planned Admin-first setup flow above remains deferred.
+
+The [implementation](../crates/sandbox-api/src/provision.rs) saves a randomly generated project ID and 256-bit bearer secret in a private file before inserting hash-only token metadata. The token expires after 30 days. Retrying the same file reconciles the original intent; a changed project, quota, or credential is a conflict, and expiry/revocation is never reset. This is an offline operator recovery mechanism, not the future Admin audit/receipt implementation. Rotation, Admin provisioning, audit persistence, and management APIs remain separate work.
+
+The [API server guide](api-server.md#offline-project-provisioning) owns the commands, private-file requirements, initial quota values, crash recovery instructions, and transport evidence. No shared development credential is seeded automatically.

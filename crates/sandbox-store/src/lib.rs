@@ -12,6 +12,7 @@ pub mod leases;
 pub mod lists;
 pub mod placement;
 pub mod projects;
+pub mod provision;
 pub mod reads;
 
 use std::time::Duration;
