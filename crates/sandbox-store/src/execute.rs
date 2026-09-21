@@ -27,6 +27,7 @@ pub struct ExecuteCommand {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecuteAdmission {
+    ResponseExpired(OperationId),
     Accepted {
         operation_id: OperationId,
         status: String,
@@ -59,18 +60,27 @@ async fn existing(
     r: &ExecuteCommand,
     digest: &RequestDigest,
 ) -> Result<Option<ExecuteAdmission>, sqlx::Error> {
-    let row = sqlx::query("SELECT id,request_digest,status FROM operations WHERE project_id=$1 AND idempotency_key=$2")
+    let row = sqlx::query("SELECT id,request_digest,status,digest_version,
+        COALESCE(status IN ('succeeded','failed','cancelled') AND response_expires_at<=clock_timestamp(),false) AS response_expired
+        FROM operations WHERE project_id=$1 AND idempotency_key=$2")
         .bind(r.project_id.uuid()).bind(r.idempotency_key.as_str()).fetch_optional(db).await?;
     row.map(|row| -> Result<ExecuteAdmission, sqlx::Error> {
         let old: Vec<u8> = row.try_get("request_digest")?;
-        Ok(if old.as_slice() == digest.as_bytes().as_slice() {
-            ExecuteAdmission::Accepted {
-                operation_id: OperationId::from_uuid(row.try_get("id")?),
-                status: row.try_get("status")?,
-            }
-        } else {
-            ExecuteAdmission::DigestConflict
-        })
+        let id = OperationId::from_uuid(row.try_get("id")?);
+        Ok(
+            if old.as_slice() != digest.as_bytes().as_slice()
+                || row.try_get::<i32, _>("digest_version")? != DIGEST_VERSION
+            {
+                ExecuteAdmission::DigestConflict
+            } else if row.try_get::<bool, _>("response_expired")? {
+                ExecuteAdmission::ResponseExpired(id)
+            } else {
+                ExecuteAdmission::Accepted {
+                    operation_id: id,
+                    status: row.try_get("status")?,
+                }
+            },
+        )
     })
     .transpose()
 }

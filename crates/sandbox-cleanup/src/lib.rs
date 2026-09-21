@@ -9,6 +9,7 @@ use sandbox_store::{
     Store,
     output::OutputError,
     output_cleanup::{CleanupClaim, CleanupCompletion, CleanupPreparation},
+    retention::ResponseRetention,
 };
 use std::{
     fmt,
@@ -47,11 +48,13 @@ pub struct Cleaner<R = ArtifactRetirer> {
     store: Store,
     retirer: R,
     allow_simulated: bool,
+    response_retention: Option<ResponseRetention>,
 }
 impl<R> fmt::Debug for Cleaner<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cleaner")
             .field("allow_simulated", &self.allow_simulated)
+            .field("response_retention", &self.response_retention)
             .finish_non_exhaustive()
     }
 }
@@ -59,6 +62,7 @@ impl<R> fmt::Debug for Cleaner<R> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CleanupTick {
     Idle,
+    RetentionAssigned(u64),
     Waiting(OperationId),
     Completed(OperationId),
 }
@@ -66,6 +70,8 @@ pub enum CleanupTick {
 pub enum CleanupError {
     #[error("cleanup database operation failed: {0}")]
     Store(#[from] OutputError),
+    #[error("response retention database operation failed")]
+    Retention,
     #[error("cleanup storage retirement failed: {0}")]
     Storage(#[from] ArtifactError),
     #[error("cleanup deadline exceeded; outcome may be uncertain")]
@@ -98,15 +104,35 @@ impl<R: Retirement> Cleaner<R> {
             store,
             retirer,
             allow_simulated,
+            response_retention: None,
         }
+    }
+
+    /// Explicit operator policy. Previously assigned deadlines are immutable
+    /// through this interface; active and unknown operations are left alone.
+    pub fn with_response_retention(mut self, policy: ResponseRetention) -> Self {
+        self.response_retention = Some(policy);
+        self
     }
 
     /// Discover at most 100 candidates and process one, keeping storage I/O
     /// independent of lifecycle dispatch. Multiple processes share DB claims.
     pub async fn tick(&self) -> Result<CleanupTick, CleanupError> {
+        let assigned = if let Some(policy) = self.response_retention {
+            tokio::time::timeout(QUERY_TIMEOUT, self.store.assign_response_retention(policy))
+                .await
+                .map_err(|_| CleanupError::Timeout)?
+                .map_err(|_| CleanupError::Retention)?
+        } else {
+            0
+        };
         query(self.store.enqueue_expired_output(100)).await?;
         let Some(claim) = query(self.store.claim_output_cleanup(CLAIM_SECONDS)).await? else {
-            return Ok(CleanupTick::Idle);
+            return Ok(if assigned == 0 {
+                CleanupTick::Idle
+            } else {
+                CleanupTick::RetentionAssigned(assigned)
+            });
         };
         let result = tokio::time::timeout(PROCESS_TIMEOUT, self.process(&claim))
             .await

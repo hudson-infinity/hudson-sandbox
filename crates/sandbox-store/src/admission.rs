@@ -55,6 +55,8 @@ pub struct CreateSandbox {
 /// What admission decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
+    /// Identical retry of a completed operation whose response expired.
+    ResponseExpired(OperationId),
     /// New work is outside the supported per-guest resource envelope.
     InvalidResources,
     /// New work is not permitted by the current operator image policy.
@@ -223,7 +225,9 @@ async fn existing_operation(
 ) -> Result<Option<Admission>, StoreError> {
     let row = sqlx::query(
         r"
-        SELECT id, sandbox_id, status, request_digest
+        SELECT id, sandbox_id, status, request_digest, digest_version,
+            COALESCE(status IN ('succeeded','failed','cancelled')
+                AND response_expires_at<=clock_timestamp(),false) AS response_expired
           FROM operations
          WHERE project_id = $1 AND idempotency_key = $2
         ",
@@ -245,8 +249,20 @@ async fn existing_operation(
 
     // Content is compared before today's lifecycle state, so an identical
     // retry resolves the same way whatever has happened since.
-    if RequestDigest::from_bytes(stored) != request.request_digest {
+    if RequestDigest::from_bytes(stored) != request.request_digest
+        || row
+            .try_get::<i32, _>("digest_version")
+            .map_err(StoreError::Query)?
+            != DIGEST_VERSION
+    {
         return Ok(Some(Admission::DigestConflict { operation_id }));
+    }
+
+    if row
+        .try_get::<bool, _>("response_expired")
+        .map_err(StoreError::Query)?
+    {
+        return Ok(Some(Admission::ResponseExpired(operation_id)));
     }
 
     Ok(Some(Admission::Existing {

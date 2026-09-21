@@ -23,6 +23,7 @@ pub struct DestroySandbox {
 }
 #[derive(Debug)]
 pub enum DestroyAdmission {
+    ResponseExpired(OperationId),
     Accepted {
         operation_id: OperationId,
         status: String,
@@ -42,13 +43,19 @@ async fn existing(
     db: &mut PgConnection,
     request: &DestroySandbox,
 ) -> Result<Option<DestroyAdmission>, sqlx::Error> {
-    let row=sqlx::query("SELECT id,request_digest,status FROM operations WHERE project_id=$1 AND idempotency_key=$2")
+    let row=sqlx::query("SELECT id,request_digest,status,digest_version,
+        COALESCE(status IN ('succeeded','failed','cancelled') AND response_expires_at<=clock_timestamp(),false) AS response_expired
+        FROM operations WHERE project_id=$1 AND idempotency_key=$2")
         .bind(request.project_id.uuid()).bind(request.idempotency_key.as_str()).fetch_optional(db).await?;
     row.map(|row| -> Result<DestroyAdmission, sqlx::Error> {
         let digest: Vec<u8> = row.try_get("request_digest")?;
         Ok(
-            if digest.as_slice() != request.request_digest.as_bytes().as_slice() {
+            if digest.as_slice() != request.request_digest.as_bytes().as_slice()
+                || row.try_get::<i32, _>("digest_version")? != DIGEST_VERSION
+            {
                 DestroyAdmission::DigestConflict
+            } else if row.try_get::<bool, _>("response_expired")? {
+                DestroyAdmission::ResponseExpired(OperationId::from_uuid(row.try_get("id")?))
             } else {
                 DestroyAdmission::Accepted {
                     operation_id: OperationId::from_uuid(row.try_get("id")?),

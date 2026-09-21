@@ -33,6 +33,7 @@ pub async fn execute(
         .await
         .map_err(|_| Problem::Unavailable)?;
     match result {
+        ExecuteAdmission::ResponseExpired(id) => Err(Problem::ResponseExpired(id)),
         ExecuteAdmission::Accepted {
             operation_id,
             status,

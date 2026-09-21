@@ -126,6 +126,7 @@ pub async fn create(
         })?;
 
     Ok(match admission {
+        Admission::ResponseExpired(id) => return Err(Problem::ResponseExpired(id)),
         Admission::ImageDenied => return Err(Problem::ImageDenied),
         Admission::InvalidResources => {
             return Err(Problem::BadRequest(
