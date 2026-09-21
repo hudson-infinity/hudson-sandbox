@@ -508,5 +508,46 @@ async fn output_rejects_symlinks_nonregular_files_and_offsets_outside_retained_b
         .await
         .unwrap();
     assert!(empty.data.is_empty() && empty.complete && empty.at_end);
+    assert!(
+        runner
+            .start(f.request("touch after-shutdown"))
+            .await
+            .is_err()
+    );
+    assert!(!f.state.path().join("after-shutdown").exists());
+    f.assert_empty();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn shutdown_fences_concurrent_admission_before_releasing_ownership() {
+    let f = Fixture::new();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let request = f.request("sleep 30");
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+    let admitting = runner.clone();
+    let gate = barrier.clone();
+    let input = request.clone();
+    let start = tokio::spawn(async move {
+        gate.wait().await;
+        admitting.start(input).await
+    });
+    let draining = runner.clone();
+    let gate = barrier.clone();
+    let stop = tokio::spawn(async move {
+        gate.wait().await;
+        draining.shutdown().await
+    });
+    barrier.wait().await;
+    let admitted = start.await.unwrap();
+    let stopped = stop.await.unwrap();
+    stopped.unwrap();
+    if admitted.is_ok() {
+        assert_eq!(
+            runner.inspect(request.operation_id).await.unwrap().state,
+            State::Cancelled
+        );
+    }
+    assert!(runner.start(f.request("true")).await.is_err());
     f.assert_empty();
 }

@@ -37,6 +37,7 @@ struct Registry {
     receipts: BTreeMap<OperationId, Receipt>,
     active: Option<(OperationId, watch::Sender<bool>)>,
     failed: bool,
+    closed: bool,
 }
 #[derive(Debug)]
 struct Inner {
@@ -232,6 +233,7 @@ impl Runner {
                 receipts,
                 active: None,
                 failed: false,
+                closed: false,
             }),
             _lock: lock,
         })))
@@ -247,6 +249,7 @@ impl Runner {
             ensure!(existing.digest == digest, "operation payload conflict");
             return Ok(existing.clone());
         }
+        ensure!(!registry.closed, "runner is shutting down");
         ensure!(!registry.failed, "runner requires host recovery");
         ensure!(registry.active.is_none(), "another command is active");
         let remaining = request
@@ -594,14 +597,13 @@ impl Runner {
 impl Runner {
     /// Stop admitted work before an orderly guest agent shutdown; host watchdog still owns VM death.
     pub async fn shutdown(&self) -> Result<()> {
-        let active = self
-            .0
-            .registry
-            .lock()
-            .await
-            .active
-            .as_ref()
-            .map(|(id, _)| *id);
+        let active = {
+            let mut registry = self.0.registry.lock().await;
+            // Fence new admission under the same lock as start(), including a handler
+            // already running on another runtime thread when the listener is dropped.
+            registry.closed = true;
+            registry.active.as_ref().map(|(id, _)| *id)
+        };
         if let Some(id) = active {
             self.cancel(id).await?;
             timeout(Duration::from_secs(10), async {
