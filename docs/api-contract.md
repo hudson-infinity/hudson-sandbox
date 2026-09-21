@@ -170,7 +170,7 @@ Keep sandbox, operation, and snapshot metadata long enough to explain ownership,
 
 ## Acceptance checks and open decisions
 
-No API tests exist yet. Test concurrent same-key admission, changed-payload conflicts, retries after state changes, expired-result tombstones, revoked access, streaming gaps/reconnects, and destructive no-ops. Cross-project and Admin-scope checks follow [auth acceptance](auth-design.md#acceptance-checks). Recovery from uncertain execution follows [lifecycle acceptance](lifecycle.md#acceptance-checks).
+[Create admission tests](../crates/sandbox-api/tests/create.rs), [status route tests](../crates/sandbox-api/tests/reads.rs), and [destroy recovery tests](../crates/sandbox-controller/tests/destroy.rs) exercise implemented behavior. Expired-result tombstones, streaming gaps/reconnects, and the remaining operation surfaces still need implementation and validation. Cross-project and Admin-scope checks follow [auth acceptance](auth-design.md#acceptance-checks). Recovery from uncertain execution follows [lifecycle acceptance](lifecycle.md#acceptance-checks).
 
 Client acceptance must also cover equivalent API/SDK/CLI outcomes, key reuse across client restarts, no resubmission after a wait timeout, structured output without credential leakage, output truncation/reconnects, and explicit file transfer. These checks require implemented clients and are not available today.
 
@@ -183,3 +183,15 @@ Sandbox status responses optionally include `observation_simulated`: true for co
 ## Implemented destroy admission
 
 The [destroy controller contract](controller.md#destroy-admission-and-cleanup) owns implemented stop and release evidence. `POST /v1/sandboxes/{sandbox_id}/destroy` accepts `{}` or an optional `correlation_id` up to 200 bytes, requires the ordinary project token and idempotency key, and returns `202` with an operation handle. Exact retries resolve first. A live transition returns `409` with its authorized `operation_id`; an unknown create can transfer cleanup ownership. A new key on a tombstone returns an already succeeded no-op operation. Completion retains the original sandbox identity permanently.
+
+## Implemented image admission
+
+The in-process API router requires an explicit immutable `ImageAllowlist` in `AppState`. The [shared configuration type](../crates/sandbox-protocol/src/images.rs) accepts 1–256 distinct canonical `sha256:` digests with exactly 64 lowercase hexadecimal characters. Empty, duplicate, uppercase, malformed, and oversized configurations are rejected; there is no allow-all default. This is configuration for the operator embedding the router; the public server and its configuration loader are still unfinished.
+
+For a new create, [admission storage](../crates/sandbox-store/src/admission.rs) checks membership before inserting sandbox or operation rows. An unapproved image returns HTTP `403`, `application/problem+json`, code `image_not_allowed`, with `Cache-Control: no-store`. No retry key or capacity is consumed. Malformed or noncanonical digests return `400`.
+
+Authentication and request validation still apply to every retry. For a valid request, storage resolves an existing project-wide idempotency key before consulting the current image allowlist: an identical retry returns its original handles and current status even after image removal; different content returns `409`. A fresh key for a removed image is rejected. A policy update takes effect when the operator replaces the router state; it is not a customer API operation. Configure every API replica consistently during a rollout, since each uses its own immutable policy snapshot.
+
+The controller and supervisor retain independent checks before starting an allocation. Align their configuration with the API; acceptance never promises execution. Allowlist membership is operator authorization, not verification of artifact bytes, required init/agent components, or host compatibility. Image production, byte verification, and compatibility-manifest pinning at admission remain required before the runtime can claim the [supported image contract](compatibility.md#how-a-sandbox-boots).
+
+[HTTP admission tests](../crates/sandbox-api/tests/create.rs) cover policy removal, retry preservation, no-side-effect denial, concurrent admission, authentication, and project isolation.

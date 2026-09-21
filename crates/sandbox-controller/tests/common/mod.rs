@@ -108,6 +108,7 @@ impl Fixture {
         let store = Store::from_pool(pool.clone());
         Self {
             app: router(AppState {
+                images: sandbox_protocol::images::ImageAllowlist::new([digest.clone()]).unwrap(),
                 store: store.clone(),
             }),
             store,

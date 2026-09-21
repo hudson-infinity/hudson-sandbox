@@ -85,19 +85,14 @@ fn bounded_deadline(deadline: i64, now: i64) -> Result<Duration, Status> {
     Ok(Duration::from_millis(remaining as u64))
 }
 
-fn valid_digest(digest: &str) -> bool {
-    digest.strip_prefix("sha256:").is_some_and(|s| {
-        s.len() == 64
-            && s.bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
-}
-
 impl FakeHost {
     pub fn new(config: FakeConfig) -> Result<Self, Status> {
         if config.epoch <= 0
             || config.images.is_empty()
-            || config.images.iter().any(|s| !valid_digest(s))
+            || config
+                .images
+                .iter()
+                .any(|s| !sandbox_protocol::images::valid_image_digest(s))
             || config.capacity.vcpu == 0
             || config.capacity.memory_mib == 0
             || config.capacity.disk_mib == 0

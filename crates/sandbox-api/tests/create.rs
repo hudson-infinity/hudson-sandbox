@@ -54,6 +54,11 @@ async fn fixture(status: &str) -> Option<Fixture> {
 
     Some(Fixture {
         app: router(AppState {
+            images: sandbox_protocol::images::ImageAllowlist::new([format!(
+                "sha256:{}",
+                "a".repeat(64)
+            )])
+            .unwrap(),
             store: store.clone(),
         }),
         store,
@@ -303,4 +308,178 @@ async fn errors_are_problem_json() {
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
 
     f.cleanup().await;
+}
+
+fn configured_router(store: &Store, digit: char) -> Router {
+    router(AppState {
+        store: store.clone(),
+        images: sandbox_protocol::images::ImageAllowlist::new([format!(
+            "sha256:{}",
+            digit.to_string().repeat(64)
+        )])
+        .unwrap(),
+    })
+}
+
+#[tokio::test]
+async fn unapproved_image_has_no_side_effects_and_does_not_consume_key() {
+    let Some(f) = fixture("active").await else {
+        return;
+    };
+    let key = "denied-image-retry-key";
+    let mut denied = f.valid_body();
+    denied["image_digest"] = json!(format!("sha256:{}", "b".repeat(64)));
+    let (status, body, headers) = f.send(f.request(Some(key), Some(&f.token), denied)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "image_not_allowed");
+    assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    for table in ["sandboxes", "operations", "allocations"] {
+        let (count,): (i64,) =
+            sqlx::query_as(&format!("SELECT count(*) FROM {table} WHERE project_id=$1"))
+                .bind(f.project_id.uuid())
+                .fetch_one(f.store.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "denial inserted {table}");
+    }
+    let (status, _, _) = f
+        .send(f.request(Some(key), Some(&f.token), f.valid_body()))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn policy_removal_preserves_retries_and_conflicts_but_rejects_new_work() {
+    let Some(mut f) = fixture("active").await else {
+        return;
+    };
+    let key = "policy-removal-retry-01";
+    let (status, original, _) = f
+        .send(f.request(Some(key), Some(&f.token), f.valid_body()))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    f.app = configured_router(&f.store, 'b');
+    let (status, retry, _) = f
+        .send(f.request(Some(key), Some(&f.token), f.valid_body()))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(retry, original);
+    let mut changed = f.valid_body();
+    changed["name"] = json!("changed after revocation");
+    let (status, body, _) = f.send(f.request(Some(key), Some(&f.token), changed)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "conflict");
+    let (status, body, _) = f
+        .send(f.request(Some("new-after-removal-01"), Some(&f.token), f.valid_body()))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "image_not_allowed");
+    let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM operations WHERE project_id=$1")
+        .bind(f.project_id.uuid())
+        .fetch_one(f.store.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn denial_still_requires_auth_and_canonical_digest() {
+    let Some(f) = fixture("active").await else {
+        return;
+    };
+    let mut body = f.valid_body();
+    body["image_digest"] = json!(format!("sha256:{}", "b".repeat(64)));
+    let (status, body, _) = f
+        .send(f.request(Some("unauthorized-image-01"), None, body))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthenticated");
+    let mut body = f.valid_body();
+    body["image_digest"] = json!(format!("sha256:{}", "A".repeat(64)));
+    let (status, body, _) = f
+        .send(f.request(Some("noncanonical-image-1"), Some(&f.token), body))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "bad_request");
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn concurrent_approved_creates_share_one_handle_and_denials_write_nothing() {
+    let Some(f) = fixture("active").await else {
+        return;
+    };
+    let mut tasks = tokio::task::JoinSet::new();
+    for i in 0..16 {
+        let denied = i % 2 == 0;
+        let mut body = f.valid_body();
+        if denied {
+            body["image_digest"] = json!(format!("sha256:{}", "b".repeat(64)));
+        }
+        let key = if denied {
+            "concurrent-denied-image"
+        } else {
+            "concurrent-allowed-img"
+        };
+        let request = f.request(Some(key), Some(&f.token), body);
+        let app = f.app.clone();
+        tasks.spawn(async move {
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            (denied, status, body)
+        });
+    }
+    let mut handle = None;
+    while let Some(result) = tasks.join_next().await {
+        let (denied, status, body) = result.unwrap();
+        if denied {
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        } else {
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+            if let Some(ref previous) = handle {
+                assert_eq!(previous, &body["operation_id"]);
+            }
+            handle = Some(body["operation_id"].clone());
+        }
+    }
+    for table in ["sandboxes", "operations"] {
+        let (count,): (i64,) =
+            sqlx::query_as(&format!("SELECT count(*) FROM {table} WHERE project_id=$1"))
+                .bind(f.project_id.uuid())
+                .fetch_one(f.store.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+    }
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn another_projects_key_cannot_bypass_image_policy() {
+    let Some(a) = fixture("active").await else {
+        return;
+    };
+    let Some(mut b) = fixture("active").await else {
+        return;
+    };
+    let key = "shared-key-image-policy";
+    let (status, _, _) = a
+        .send(a.request(Some(key), Some(&a.token), a.valid_body()))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    b.app = configured_router(&b.store, 'b');
+    let (status, body, _) = b
+        .send(b.request(Some(key), Some(&b.token), b.valid_body()))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "image_not_allowed");
+    a.cleanup().await;
+    b.cleanup().await;
 }
