@@ -2,6 +2,7 @@
 mod archive;
 mod commands;
 mod journal;
+mod live_output;
 use crate::guardian::{self, Action, Artifact, Manifest, Receipt, State as GuardianState};
 use journal::{Journal, Record};
 use sandbox_protocol::{
@@ -79,6 +80,7 @@ struct Inner {
     workers: Arc<tokio::sync::Semaphore>,
     artifacts: Option<sandbox_artifacts::ArtifactStore>,
     archive_workers: tokio::sync::Semaphore,
+    output_readers: tokio::sync::Semaphore,
     cursor: AtomicUsize,
 }
 #[derive(Debug, Clone)]
@@ -171,6 +173,7 @@ impl Host {
                 workers: Arc::new(tokio::sync::Semaphore::new(8)),
                 artifacts,
                 archive_workers: tokio::sync::Semaphore::new(2),
+                output_readers: tokio::sync::Semaphore::new(4),
                 cursor: AtomicUsize::new(0),
             }),
         })

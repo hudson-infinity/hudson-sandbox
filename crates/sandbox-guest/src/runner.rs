@@ -412,27 +412,32 @@ impl Runner {
         let out = child.stdout.take().context("launcher stdout missing")?;
         let err = child.stderr.take().context("launcher stderr missing")?;
         let (failed, mut capture_failure) = tokio::sync::mpsc::channel(3);
-        let spawn_capture = |reader, file, budget, failed: tokio::sync::mpsc::Sender<()>| {
-            tokio::spawn(async move {
-                let result = capture(reader, file, budget).await;
-                if result.is_err() {
-                    let _ = failed.send(()).await;
-                }
-                result
-            })
-        };
+        let spawn_capture =
+            |reader, file, budget, failed: tokio::sync::mpsc::Sender<()>, stdout| {
+                let runner = self.clone();
+                let id = request.operation_id;
+                tokio::spawn(async move {
+                    let result = capture(reader, file, budget, runner, id, stdout).await;
+                    if result.is_err() {
+                        let _ = failed.send(()).await;
+                    }
+                    result
+                })
+            };
         // Erase only the pipe types so both streams share one bounded capture implementation.
         let mut out_task = spawn_capture(
             Box::new(out) as Box<dyn AsyncRead + Unpin + Send>,
             stdout,
             budget.clone(),
             failed.clone(),
+            true,
         );
         let mut err_task = spawn_capture(
             Box::new(err) as Box<dyn AsyncRead + Unpin + Send>,
             stderr,
             budget,
             failed.clone(),
+            false,
         );
         let input_task = tokio::spawn(async move {
             let result = input.write_all(&packet).await;
@@ -491,6 +496,9 @@ async fn capture(
     mut input: Box<dyn AsyncRead + Unpin + Send>,
     file: File,
     budget: Arc<AtomicU64>,
+    runner: Runner,
+    id: OperationId,
+    stdout: bool,
 ) -> Result<Output> {
     let mut output = tokio::fs::File::from_std(file);
     let mut result = Output::default();
@@ -510,6 +518,19 @@ async fn capture(
         output.write_all(&bytes[..keep]).await?;
         result.stored += keep as u64;
         result.truncated |= keep < count;
+        // Tokio files may still have a queued write. Publish counters only after
+        // those bytes are readable; durable terminal receipts still require sync_all.
+        output.flush().await?;
+        let mut registry = runner.0.registry.lock().await;
+        let receipt = registry
+            .receipts
+            .get_mut(&id)
+            .context("capture receipt missing")?;
+        if stdout {
+            receipt.stdout = result.clone();
+        } else {
+            receipt.stderr = result.clone();
+        }
     }
     output.sync_all().await?;
     Ok(result)
@@ -565,16 +586,18 @@ impl Runner {
                 "invalid retained output file"
             );
             ensure!(
-                request.offset <= metadata.len(),
+                metadata.len() >= stored && request.offset <= stored,
                 "offset past retained output"
             );
             data.resize(
-                (metadata.len() - request.offset).min(u64::from(request.limit)) as usize,
+                (stored - request.offset).min(u64::from(request.limit)) as usize,
                 0,
             );
             let count = file.read_at(&mut data, request.offset)?;
             data.truncate(count);
-            metadata.len()
+            // A later capture may have written more bytes. This read exposes only
+            // the prefix accounted for by its receipt snapshot.
+            stored
         } else {
             ensure!(request.offset == 0, "offset past retained output");
             0

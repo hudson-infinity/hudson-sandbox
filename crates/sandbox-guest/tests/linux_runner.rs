@@ -551,3 +551,69 @@ async fn shutdown_fences_concurrent_admission_before_releasing_ownership() {
     assert!(runner.start(f.request("true")).await.is_err());
     f.assert_empty();
 }
+
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux VM"]
+async fn live_capture_counters_bound_reads_before_terminal_receipt() {
+    use sandbox_protocol::guest::{ReadOutput, Stream};
+    let f = Fixture::new();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let request = f.request("printf '\\000\\377a'; printf '\\376e' >&2; sleep 2; printf z");
+    let id = request.operation_id;
+    runner.start(request).await.unwrap();
+    let until = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let r = runner.inspect(id).await.unwrap();
+        r.validate().unwrap();
+        if r.stdout.stored == 3 && r.stderr.stored == 2 {
+            assert_eq!(r.state, State::LaunchIntent);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < until);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let mut read = ReadOutput {
+        operation_id: id.to_string(),
+        stream: Stream::Stdout as i32,
+        offset: 0,
+        limit: 32,
+    };
+    let chunk = runner.output(&read).await.unwrap();
+    assert_eq!(chunk.data, [0, 255, b'a']);
+    assert!(chunk.at_end && !chunk.complete);
+    read.offset = 3;
+    let end = runner.output(&read).await.unwrap();
+    assert!(end.data.is_empty() && !end.complete);
+    // Bytes outside the captured prefix are not exposed, even if present in the file.
+    let path = f.state.path().join(format!("{id}.stdout"));
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"unaccounted")
+        .unwrap();
+    let end = runner.output(&read).await.unwrap();
+    assert!(end.data.is_empty() && !end.complete);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(3)
+        .unwrap();
+    let until = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let r = runner.inspect(id).await.unwrap();
+        if r.cleanup_confirmed {
+            assert_eq!(r.state, State::Exited);
+            assert_eq!(r.stdout.stored, 4);
+            assert_eq!(r.stderr.stored, 2);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < until);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let final_chunk = runner.output(&read).await.unwrap();
+    assert_eq!(final_chunk.data, b"z");
+    assert!(final_chunk.complete);
+    f.assert_empty();
+}

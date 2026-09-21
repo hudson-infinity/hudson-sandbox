@@ -32,3 +32,5 @@ pub mod bootstrap;
 
 pub mod command;
 pub mod output;
+
+pub mod live_output;

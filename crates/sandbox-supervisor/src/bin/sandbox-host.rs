@@ -30,6 +30,9 @@ async fn main() -> anyhow::Result<()> {
         /// SHA-256 of an authorized controller's DER leaf certificate. Repeat for rotation.
         #[arg(long, required = true)]
         controller_cert_sha256: Vec<String>,
+        /// SHA-256 of a distinct read-only API client certificate. Repeat for rotation.
+        #[arg(long)]
+        output_reader_cert_sha256: Vec<String>,
         /// Private service-owned JSON file with operator S3 credentials/configuration.
         #[arg(long)]
         output_config: Option<PathBuf>,
@@ -45,6 +48,20 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let identity = ControllerIdentity::new(pins)?;
+    let reader_identity = if args.output_reader_cert_sha256.is_empty() {
+        None
+    } else {
+        let pins = args
+            .output_reader_cert_sha256
+            .iter()
+            .map(|p| {
+                let mut bytes = [0u8; 32];
+                hex::decode_to_slice(p, &mut bytes)?;
+                Ok(bytes)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Some(ControllerIdentity::output_reader(pins, &identity)?)
+    };
     let tls = server_tls(
         &std::fs::read(args.ca_cert)?,
         &std::fs::read(args.server_cert)?,
@@ -59,6 +76,13 @@ async fn main() -> anyhow::Result<()> {
         .map(sandbox_artifacts::S3Config::build)
         .transpose()?;
     let host = Host::open_with_artifacts(config, artifacts)?;
+    let reader_service = reader_identity.map(|identity| {
+        let service =
+            sandbox_protocol::supervisor::live_output_server::LiveOutputServer::new(host.clone())
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        tonic::service::interceptor::InterceptedService::new(service, identity)
+    });
     let service = SupervisorServer::new(host.clone())
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
@@ -75,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
     let result = tonic::transport::Server::builder()
         .tls_config(tls)?
         .add_service(service)
+        .add_optional_service(reader_service)
         .serve_with_shutdown(args.listen, async {
             let _ = tokio::signal::ctrl_c().await;
         })
