@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use sandbox_api::{
     AppState,
     provision::provision,
-    router_with_output,
+    router_with_streams,
     server::{ServerLimits, serve, tls_acceptor},
 };
 use sandbox_protocol::images::ImageAllowlist;
@@ -32,6 +32,20 @@ enum Command {
         /// Private service-owned S3 JSON configuration; provision read-only credentials.
         #[arg(long)]
         output_config: Option<PathBuf>,
+        /// Operator-selected live-output host; never accepted from API callers.
+        #[arg(long, requires_all = ["live_endpoint", "live_ca_cert", "live_client_cert", "live_client_key"])]
+        live_host_id: Option<sandbox_protocol::HostId>,
+        #[arg(long, requires = "live_host_id")]
+        live_endpoint: Option<String>,
+        #[arg(long, requires = "live_host_id")]
+        live_ca_cert: Option<PathBuf>,
+        #[arg(long, requires = "live_host_id")]
+        live_client_cert: Option<PathBuf>,
+        #[arg(long, requires = "live_host_id")]
+        live_client_key: Option<PathBuf>,
+        /// Explicit development opt-in for a configured fake reader host.
+        #[arg(long, requires = "live_host_id")]
+        allow_simulated_live: bool,
     },
     /// Create or resume one project via a private credential file. Requires direct DATABASE_URL access.
     ProvisionProject {
@@ -72,6 +86,12 @@ async fn main() -> anyhow::Result<()> {
             tls_key,
             image_digest,
             output_config,
+            live_host_id,
+            live_endpoint,
+            live_ca_cert,
+            live_client_cert,
+            live_client_key,
+            allow_simulated_live,
         } => {
             let images = ImageAllowlist::new(image_digest)?;
             let acceptor = tls_acceptor(
@@ -81,6 +101,34 @@ async fn main() -> anyhow::Result<()> {
             let shutdown = shutdown_signal()?;
             let store = store().await?;
             let output = load_output(output_config.as_deref())?;
+            let live = match live_host_id {
+                None => None,
+                Some(host) => {
+                    let read = |path: Option<PathBuf>| -> anyhow::Result<Vec<u8>> {
+                        use std::io::Read;
+                        let path = path.context("live TLS file required")?;
+                        let mut bytes = Vec::new();
+                        std::fs::File::open(path)
+                            .context("opening live TLS file")?
+                            .take(65537)
+                            .read_to_end(&mut bytes)
+                            .context("reading live TLS file")?;
+                        anyhow::ensure!(bytes.len() <= 65536, "live TLS file too large");
+                        Ok(bytes)
+                    };
+                    Some(
+                        std::sync::Arc::new(sandbox_api::streams::live::LiveClient::new(
+                            host,
+                            live_endpoint.context("live endpoint required")?,
+                            read(live_ca_cert)?,
+                            read(live_client_cert)?,
+                            read(live_client_key)?,
+                            allow_simulated_live,
+                        )?)
+                            as std::sync::Arc<dyn sandbox_api::streams::live::LiveReader>,
+                    )
+                }
+            };
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .context("binding HTTPS listener")?;
@@ -88,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
             serve(
                 listener,
                 acceptor,
-                router_with_output(AppState { store, images }, output),
+                router_with_streams(AppState { store, images }, output, live),
                 ServerLimits::default(),
                 shutdown,
             )

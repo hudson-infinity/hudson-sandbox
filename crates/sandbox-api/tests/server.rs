@@ -844,6 +844,16 @@ async fn output_minio_https_binary_read_revocation_missing_and_corrupt(pool: PgP
     };
     f.store.publish_output(&claim, &refs, true).await.unwrap();
     let mut server = Server::start(f.app(Some(Arc::new(artifacts))), ServerLimits::default()).await;
+    let stream_path = format!("/v1/operations/{}/stream", f.operation);
+    let streamed = server
+        .send("GET", &stream_path, Some(&f.token), None, String::new())
+        .await;
+    assert_eq!(streamed.0, StatusCode::OK);
+    assert_eq!(streamed.1["content-type"], "text/event-stream");
+    let frames = std::str::from_utf8(&streamed.2).unwrap();
+    assert!(
+        frames.contains("YQBi/w==") && frames.contains("ZXJy") && frames.contains("event: end")
+    );
     let path = format!("/v1/operations/{}/outputs/stdout", f.operation);
     let r = server
         .send("GET", &path, Some(&f.token), None, String::new())
@@ -889,6 +899,14 @@ async fn output_minio_https_binary_read_revocation_missing_and_corrupt(pool: PgP
         .await;
     assert_eq!(r.0, StatusCode::GONE);
     assert_eq!(body(&r)["code"], "output_missing");
+    let gap = server
+        .send("GET", &stream_path, Some(&f.token), None, String::new())
+        .await;
+    assert_eq!(gap.0, StatusCode::OK);
+    let text = std::str::from_utf8(&gap.2).unwrap();
+    assert!(text.contains("event: gap") && text.contains("output_missing"));
+    assert!(!text.contains("data_base64"));
+
     sqlx::query("UPDATE projects SET api_tokens='[]' WHERE id=$1")
         .bind(f.project.uuid())
         .execute(&pool)

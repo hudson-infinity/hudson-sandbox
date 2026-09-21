@@ -88,6 +88,8 @@ Recheck session validity, source credential, and applicable project policy at mo
 
 This supports our same-origin management UI. Embedded third-party browser access and dedicated stream-scoped credentials remain deferred.
 
+The implemented [bearer SSE endpoint](api-contract.md#implemented-output-streams) derives scopes from authorized execution records, rechecks after each backend read, and runs an independent five-second authorization watchdog with bounded queries. A slow consumer does not stop the watchdog. Failed checks suppress queued output and close the response; the stream never refreshes or extends a credential. Browser session and UI stream support above remain design work.
+
 ## UI contract boundary
 
 [UI design](ui-design.md) owns navigation, screens, setup, token issuance, confirmations, and error/loading states. It consumes the permission matrix above. Both Project and Admin interfaces call the same lifecycle services; hiding controls never substitutes for server authorization. Hudson's agent/task UI remains separate.

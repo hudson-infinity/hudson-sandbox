@@ -30,6 +30,8 @@ rustix = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
+tokio-stream = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 sandbox-controller = { path = "../sandbox-controller" }
 sandbox-api = { path = "../sandbox-api" }

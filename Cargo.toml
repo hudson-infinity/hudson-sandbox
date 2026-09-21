@@ -15,6 +15,7 @@ publish = false
 # costs nothing and keeps the choice in one place. Pin the exact version when
 # the first crate actually takes the dependency.
 [workspace.dependencies]
+base64 = "0.22"
 sandbox-protocol = { path = "crates/sandbox-protocol" }
 sandbox-store = { path = "crates/sandbox-store" }
 sandbox-supervisor = { path = "crates/sandbox-supervisor" }
