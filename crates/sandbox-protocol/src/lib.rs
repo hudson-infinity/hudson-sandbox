@@ -5,5 +5,7 @@
 //! supervisor, and guest agent cannot drift in their understanding of it.
 
 pub mod ids;
+pub mod token;
 
 pub use ids::{HostId, Id, IdParseError, OperationId, ProjectId, SandboxId, SnapshotId};
+pub use token::{ProjectToken, TokenHash, TokenKeyId, TokenParseError};
