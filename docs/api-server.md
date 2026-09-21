@@ -1,0 +1,104 @@
+# Running the HTTPS API
+
+Status: implemented for the existing create, destroy, status, and collection routes. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. No workload execution, installer, SDK, public client CLI, management API/UI, or production isolation guarantee is implied by this setup.
+
+## Transport contract
+
+`sandbox-api serve` requires a PEM certificate chain, a matching PEM private key, `DATABASE_URL` in its environment, and one or more `--image-digest` arguments. The [image policy](api-contract.md#implemented-image-admission) is mandatory and immutable until restart. TLS material and image configuration are checked before database access; migrations must finish before the socket is bound. Bad configuration or unavailable storage exits with a nonzero status. No plaintext listener or authentication bypass exists.
+
+The default bind address is `127.0.0.1:8443`. `--bind` can select a different IP address and port. A non-loopback bind is an explicit operator choice; use a certificate valid for the service hostname and configure host access controls before exposing it. The server supports HTTP/1.1 over TLS 1.2 or 1.3. It does not trust forwarded identity headers or accept client certificates as project credentials: the existing bearer-token checks run on every request.
+
+The initial non-streaming transport has fixed bounds:
+
+| Resource | Bound and behavior |
+| --- | --- |
+| Connections, including incomplete TLS handshakes | 128; additional sockets are closed without queuing tasks |
+| TLS handshake | 5 seconds |
+| HTTP request headers | 10 seconds; at most 64 headers and a 32 KiB parser buffer |
+| JSON body | 64 KiB, including chunked bodies; `413 payload_too_large` |
+| Handler, including authentication and reading the body | 30 seconds; `503 unavailable` on expiry |
+| Whole connection, including a stalled response writer | 120 seconds |
+| Shutdown drain | Stop accepting on SIGINT/SIGTERM; finish active requests for up to 10 seconds, then close remaining connections |
+
+The [transport implementation](../crates/sandbox-api/src/server.rs) uses Rustls and [Hyper's HTTP/1 connection builder](https://docs.rs/hyper/1.11.1/hyper/server/conn/http1/struct.Builder.html). These bounds are not per-project rate limits, admission quotas, a load benchmark, or protection against every denial-of-service attack. Streaming endpoints will require a separate lifetime and revocation policy.
+
+A timeout, disconnect, or forced shutdown can occur after a database commit. Recover a mutation using its original idempotency key and payload; do not infer cancellation from a transport failure. JSON extraction failures return generic `400 bad_request` problems; body-limit failures return `413` problems. Protocol-level failures such as malformed HTTP headers can close the connection or use Hyper's plain protocol error response. API responses do not include raw parser input. Logs omit request headers, bodies, query strings, and database configuration; the binary deliberately does not enable wire-level debug logging from `RUST_LOG`.
+
+## Offline project provisioning
+
+Until the planned Admin APIs exist, an operator with direct database access can run `sandbox-api provision-project --name NAME --credential-file PATH`. This command is an offline deployment tool, not a public client command or unauthenticated HTTP endpoint. The [authentication contract](auth-design.md#implemented-offline-project-provisioning) owns its scope and retry behavior.
+
+The credential directory must be private on Unix, normally mode `0700`. The command creates a new mode `0600` JSON file containing a project ID and a 30-day bearer token, syncs the file and directory, and only then attempts the project insert. PostgreSQL receives hash-only token metadata. Stdout contains the project ID and file path, never the token. Existing files must be private regular files, at most 4096 bytes; symlinks are refused.
+
+The initial project receives explicit allocation quotas matching the current placement defaults: 25 sandboxes, 100 vCPUs, 204800 MiB memory, and 1638400 MiB writable disk. This command does not add a pending-operation admission quota. Quota enforcement and admission behavior remain owned by the store/controller contracts.
+
+Retry the same command with the same file after any uncertain result. It verifies the same ID, name, credential metadata, active status, and quotas. It never overwrites an existing project, replaces a token, renews expiry, unsuspends a project, or reverses revocation. If a project was legitimately changed, provisioning reports a conflict. An expired or malformed file is refused and retained for operator investigation. There is no atomic filesystem/database transaction: a crash can leave a credential file without a project. The retained file is the recovery input; deleting it and running with a fresh path can create a second project. Use an operator-owned private directory and retain the file until the result is confirmed.
+
+## Local control-plane example
+
+Prerequisites: the pinned Rust toolchain, `protoc`, Python 3, OpenSSL, and the [local PostgreSQL stack](implementation/dev-env.md). Run `make up` and configure `DATABASE_URL` from `.env.example`; the binary does not load `.env` automatically. This example uses a synthetic image digest to exercise admission. No runnable image is shipped and no customer command runs.
+
+Create private local configuration outside the repository:
+
+```sh
+export SANDBOX_DEV_DIR="$HOME/.local/share/hudson-sandbox-dev"
+umask 077
+mkdir -p "$SANDBOX_DEV_DIR"
+chmod 700 "$SANDBOX_DEV_DIR"
+cat > "$SANDBOX_DEV_DIR/tls.cnf" <<'TLS'
+[req]
+prompt = no
+distinguished_name = dn
+x509_extensions = extensions
+[dn]
+CN = localhost
+[extensions]
+subjectAltName = DNS:localhost,IP:127.0.0.1
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+TLS
+openssl req -x509 -newkey rsa:3072 -nodes -days 7 \
+  -config "$SANDBOX_DEV_DIR/tls.cnf" \
+  -keyout "$SANDBOX_DEV_DIR/server.key" \
+  -out "$SANDBOX_DEV_DIR/server.pem"
+
+cargo run -p sandbox-api -- provision-project \
+  --name local-project \
+  --credential-file "$SANDBOX_DEV_DIR/project.json"
+
+cargo run -p sandbox-api -- serve \
+  --tls-cert "$SANDBOX_DEV_DIR/server.pem" \
+  --tls-key "$SANDBOX_DEV_DIR/server.key" \
+  --image-digest sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+```
+
+In another terminal with `SANDBOX_DEV_DIR` set, this client trusts that development certificate explicitly and reads the bearer token from its file without placing it in a shell argument or printing it:
+
+```python
+import json
+import os
+import pathlib
+import ssl
+import urllib.request
+
+config = pathlib.Path(os.environ["SANDBOX_DEV_DIR"])
+credential = json.loads((config / "project.json").read_text())
+tls = ssl.create_default_context(cafile=str(config / "server.pem"))
+request = urllib.request.Request(
+    "https://localhost:8443/v1/sandboxes",
+    headers={"Authorization": "Bearer " + credential["token"]},
+)
+with urllib.request.urlopen(request, context=tls, timeout=10) as response:
+    print(response.read().decode())
+```
+
+An empty project returns `{"items":[],"next_cursor":null}`. Use the [implemented API routes](api-contract.md#example-and-resource-routes) for create/status/destroy. Create remains queued until a separately configured controller can place it; a fake supervisor always reports simulated observations. The TLS tests seed an uncertain create to exercise destroy admission without starting a controller or claiming a VM ran.
+
+## Migrations, certificates, and verification
+
+Both `serve` and `provision-project` run embedded migrations before proceeding. `sandbox-api migrate` runs them without opening a listener. Coordinate schema upgrades across operators and services; migration 0004 builds ordinary indexes and can block writes during construction. There is no automatic rollback or zero-downtime upgrade claim.
+
+Certificates and keys are read once at startup. Replace them and restart to rotate; automatic renewal and reload are not implemented. The seven-day certificate above is for local development only. Do not disable certificate verification in clients.
+
+[Transport and provisioning tests](../crates/sandbox-api/tests/server.rs) exercise real TCP/TLS, trusted/untrusted certificates, hostname verification, plaintext rejection, create retry, reads/lists, destroy conflict and cleanup admission, revocation, body/time/connection bounds, draining, provisioning recovery, private-file checks, database-error redaction, and the actual binary's SIGTERM path. Existing [authentication tests](../crates/sandbox-api/src/auth.rs) and controller tests cover their own layers. These are control-plane tests, not Firecracker isolation evidence.

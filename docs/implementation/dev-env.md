@@ -6,7 +6,7 @@ The service runs customer code in Firecracker microVMs, which needs Linux with K
 
 ## Stage 0 — everything except a real VM, on macOS
 
-The Rust libraries and local dependencies run natively today. The process layout below is the target: the API binary and CLI remain incomplete; the [create/destroy controller](../controller.md) now runs against one operator-provisioned host. [The authenticated fake supervisor](../supervisor-protocol.md) now runs on loopback with operator-supplied certificates. Install `protoc` before building (`brew install protobuf` on macOS).
+The Rust libraries and local dependencies run natively today. The [HTTPS API binary and offline project provisioning](../api-server.md) now run locally; the public client CLI remains incomplete; the [create/destroy controller](../controller.md) now runs against one operator-provisioned host. [The authenticated fake supervisor](../supervisor-protocol.md) now runs on loopback with operator-supplied certificates. Install `protoc` before building (`brew install protobuf` on macOS).
 
 ```text
 macOS

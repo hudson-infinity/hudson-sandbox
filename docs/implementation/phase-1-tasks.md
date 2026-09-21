@@ -29,6 +29,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 - [ ] OpenAPI document for this phase's routes only. Generate types from it.
 - [x] Project bearer token authentication, hashed storage, constant-time comparison.
+- [x] Standalone HTTPS listener and offline project provisioning with private credential delivery; [transport/setup evidence](../api-server.md).
 - [x] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
 - [x] Project-scoped sandbox/operation lists with bounded cursor pagination; [collection read contract](../api-contract.md#implemented-collection-reads).
 - [x] `problem+json` errors with the machine-readable code list. Codes are added as routes need them.

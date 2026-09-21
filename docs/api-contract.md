@@ -188,7 +188,7 @@ The [destroy controller contract](controller.md#destroy-admission-and-cleanup) o
 
 ## Implemented image admission
 
-The in-process API router requires an explicit immutable `ImageAllowlist` in `AppState`. The [shared configuration type](../crates/sandbox-protocol/src/images.rs) accepts 1–256 distinct canonical `sha256:` digests with exactly 64 lowercase hexadecimal characters. Empty, duplicate, uppercase, malformed, and oversized configurations are rejected; there is no allow-all default. This is configuration for the operator embedding the router; the public server and its configuration loader are still unfinished.
+The API router requires an explicit immutable `ImageAllowlist` in `AppState`. The [shared configuration type](../crates/sandbox-protocol/src/images.rs) accepts 1–256 distinct canonical `sha256:` digests with exactly 64 lowercase hexadecimal characters. Empty, duplicate, uppercase, malformed, and oversized configurations are rejected; there is no allow-all default. The [HTTPS server](api-server.md) loads this policy from required `--image-digest` arguments. Embedded callers supply the same type directly.
 
 For a new create, [admission storage](../crates/sandbox-store/src/admission.rs) checks membership before inserting sandbox or operation rows. An unapproved image returns HTTP `403`, `application/problem+json`, code `image_not_allowed`, with `Cache-Control: no-store`. No retry key or capacity is consumed. Malformed or noncanonical digests return `400`.
 
@@ -210,3 +210,7 @@ Pagination orders by immutable `(created_at, id)` descending, retaining microsec
 Cursors are opaque, versioned positions scoped to the authenticated project, collection, and operation filter. Pass each `next_cursor` back unchanged with the same filter. Malformed, oversized (over 2,048 bytes), wrong-version, or wrong-scope cursors return `400` with `problem+json`. Their private encoding is not a client contract. A cursor is not a credential: every page authenticates again and [all list queries](../crates/sandbox-store/src/lists.rs) independently bind the owning project in SQL. Editing a cursor may change a position but cannot grant access to another project.
 
 [Migration 0004](../migrations/0004_collection_indexes.sql) adds indexes matching project-scoped ordering and the operations sandbox filter. It changes no resource rows. Ordinary index creation can block writes while the indexes build; apply it through the coordinated migration process and plan a maintenance window for an existing large installation. An [upgrade test](../crates/sandbox-store/tests/collection_upgrade.rs) verifies index definitions and preservation of existing rows, while [HTTP tests](../crates/sandbox-api/tests/lists.rs) cover ties, inserts between pages, bounds, revocation, cursor scope/tampering, project isolation, and unchanged resource state. Large-dataset query latency remains to be measured.
+
+## Implemented HTTPS transport
+
+The [API server guide](api-server.md#transport-contract) owns TLS configuration, listener limits, startup/shutdown, and runnable local setup. The existing create/destroy JSON routes normalize malformed JSON to `400 bad_request` and oversized bodies to `413 payload_too_large`, both as uncached problems. These replace Axum's raw JSON extractor errors; this transport change does not add execute or streaming routes.

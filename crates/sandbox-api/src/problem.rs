@@ -18,6 +18,8 @@ use serde::Serialize;
 pub enum Problem {
     /// The request could not be understood.
     BadRequest(&'static str),
+    /// JSON body exceeds the transport limit.
+    PayloadTooLarge,
     /// No usable credential was presented.
     Unauthenticated,
     /// A valid credential without the required access.
@@ -37,11 +39,20 @@ pub enum Problem {
 }
 
 impl Problem {
+    pub(crate) fn from_json(error: axum::extract::rejection::JsonRejection) -> Self {
+        if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            Self::PayloadTooLarge
+        } else {
+            Self::BadRequest("invalid JSON request")
+        }
+    }
+
     /// The HTTP status this problem maps to.
     #[must_use]
     pub fn status(self) -> StatusCode {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::ImageDenied => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
@@ -56,6 +67,7 @@ impl Problem {
     pub fn code(self) -> &'static str {
         match self {
             Self::BadRequest(_) => "bad_request",
+            Self::PayloadTooLarge => "payload_too_large",
             Self::Unauthenticated => "unauthenticated",
             Self::Forbidden => "forbidden",
             Self::ImageDenied => "image_not_allowed",
@@ -71,6 +83,7 @@ impl Problem {
     pub fn title(self) -> &'static str {
         match self {
             Self::BadRequest(detail) => detail,
+            Self::PayloadTooLarge => "The request body is too large",
             Self::Unauthenticated => "Authentication is required",
             Self::Forbidden => "This credential does not have the required access",
             Self::ImageDenied => "The requested image is not allowed",

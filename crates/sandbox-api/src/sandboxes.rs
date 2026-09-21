@@ -95,8 +95,9 @@ pub async fn create(
     State(state): State<AppState>,
     caller: Authenticated,
     RequestKey(idempotency_key): RequestKey,
-    Json(request): Json<CreateRequest>,
+    request: Result<Json<CreateRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Problem> {
+    let Json(request) = request.map_err(Problem::from_json)?;
     let resources = validate(&request)?;
     let digest = RequestDigest::compute("POST", "/v1/sandboxes", &request).map_err(|error| {
         tracing::error!(%error, "could not digest a validated request");
