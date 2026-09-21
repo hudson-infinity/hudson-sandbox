@@ -4,6 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .skip_debug([
             ".hudson.supervisor.v1.LiveOutputRequest",
+            ".hudson.supervisor.v1.FileWriteRequest",
             ".hudson.supervisor.v1.LiveOutputObservation",
         ])
         .extern_path(".hudson.guest.v1", "crate::guest")

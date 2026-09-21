@@ -1,6 +1,7 @@
 //! Durable, root-operated lifecycle adapter. Guest readiness and cleanup remain observations.
 mod archive;
 mod commands;
+mod files;
 mod journal;
 mod live_output;
 use crate::guardian::{self, Action, Artifact, Manifest, Receipt, State as GuardianState};
@@ -238,6 +239,7 @@ impl Host {
                 stopped: false,
                 released: false,
                 commands: BTreeMap::new(),
+                files: BTreeMap::new(),
                 archives: BTreeMap::new(),
                 lease_revision: 0,
                 lease_request: None,
@@ -697,6 +699,50 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn begin_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.work(move |h| h.file_sync(r.into_inner(), files::FileAction::Begin))
+            .await
+            .map(Response::new)
+    }
+
+    async fn inspect_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.work(move |h| h.file_sync(r.into_inner(), files::FileAction::Inspect))
+            .await
+            .map(Response::new)
+    }
+
+    async fn commit_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.work(move |h| h.file_sync(r.into_inner(), files::FileAction::Commit))
+            .await
+            .map(Response::new)
+    }
+
+    async fn abort_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.work(move |h| h.file_sync(r.into_inner(), files::FileAction::Abort))
+            .await
+            .map(Response::new)
+    }
+    async fn write_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileWriteRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.work(move |h| h.file_write_sync(r.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn prepare_output(
         &self,
         r: Request<sandbox_protocol::supervisor::OutputRequest>,

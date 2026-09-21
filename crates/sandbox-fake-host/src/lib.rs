@@ -4,6 +4,7 @@
 
 mod archive;
 mod commands;
+mod files;
 mod live_output;
 use sandbox_protocol::{
     AllocationId, HostId, OperationId, ProjectId, SandboxId,
@@ -54,6 +55,8 @@ struct State {
     fail_next_health: bool,
     total_starts: u64,
     total_commands: u64,
+    file_commits: u64,
+    lose_next_file_reply: bool,
     hold_next_command: bool,
     lose_next_command_reply: bool,
     lose_next_cancel_reply: bool,
@@ -80,6 +83,8 @@ struct Fence {
     lease_request: Option<(i64, i64)>,
     commands: HashMap<String, sandbox_protocol::command::CommandRecord>,
     archives: HashMap<String, sandbox_supervisor::archive::ArchiveRecord>,
+    files: HashMap<String, sandbox_protocol::supervisor_files::FileRecord>,
+    file_data: HashMap<String, Vec<u8>>,
 }
 
 /// Database/controller deadlines and the supervisor wall clock must be synchronized.
@@ -160,6 +165,13 @@ impl FakeHost {
                 record.reason = "simulated lease expiry";
             }
         }
+        for (id, record) in &state.allocations {
+            if record.state == AllocationState::Released
+                && let Some(fence) = state.fences.get_mut(id)
+            {
+                fence.file_data.clear();
+            }
+        }
     }
 
     fn ownership(&self, value: Option<Ownership>, now: i64) -> Result<Ownership, Status> {
@@ -211,6 +223,8 @@ impl FakeHost {
                 lease_request: None,
                 commands: HashMap::new(),
                 archives: HashMap::new(),
+                files: HashMap::new(),
+                file_data: HashMap::new(),
             });
         if fence.owner.project_id != owner.project_id
             || fence.owner.sandbox_id != owner.sandbox_id
@@ -258,6 +272,7 @@ impl FakeHost {
         Self::fence(&mut state, &owner)?;
         if stop && let Some(fence) = state.fences.get_mut(&owner.allocation_id) {
             fence.stopped = true;
+            fence.file_data.clear();
         }
         if stop {
             state
@@ -404,6 +419,50 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn begin_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.file_inner(r.into_inner(), files::FileAction::Begin)
+            .await
+            .map(Response::new)
+    }
+
+    async fn inspect_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.file_inner(r.into_inner(), files::FileAction::Inspect)
+            .await
+            .map(Response::new)
+    }
+
+    async fn commit_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.file_inner(r.into_inner(), files::FileAction::Commit)
+            .await
+            .map(Response::new)
+    }
+
+    async fn abort_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.file_inner(r.into_inner(), files::FileAction::Abort)
+            .await
+            .map(Response::new)
+    }
+    async fn write_file(
+        &self,
+        r: Request<sandbox_protocol::supervisor::FileWriteRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::FileObservation>, Status> {
+        self.file_write_inner(r.into_inner())
+            .await
+            .map(Response::new)
+    }
+
     async fn prepare_output(
         &self,
         r: Request<sandbox_protocol::supervisor::OutputRequest>,

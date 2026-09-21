@@ -58,6 +58,15 @@ impl FakeHost {
         {
             return Err(Status::invalid_argument("command identity or output cap"));
         }
+        if state
+            .fences
+            .get(&owner.allocation_id)
+            .is_some_and(|f| f.files.contains_key(&owner.operation_id))
+        {
+            return Err(Status::already_exists(
+                "operation belongs to a file transfer",
+            ));
+        }
         if state.fences.get(&owner.allocation_id).is_some_and(|f| {
             !f.commands.contains_key(&owner.operation_id) && f.commands.len() >= MAX_COMMANDS
         }) {

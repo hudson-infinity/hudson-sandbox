@@ -6,7 +6,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
 };
 
-const MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_BYTES: u64 = 16 * 1024 * 1024;
 pub(super) const MAX_RECORDS: usize = 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +21,8 @@ pub(super) struct Record {
     pub released: bool,
     #[serde(default)]
     pub commands: BTreeMap<String, sandbox_protocol::command::CommandRecord>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, sandbox_protocol::supervisor_files::FileRecord>,
     #[serde(default)]
     pub archives: BTreeMap<String, crate::archive::ArchiveRecord>,
     pub lease_revision: i64,
@@ -107,6 +109,15 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
         }
         Err(e) => return Err(e.into()),
     };
+    anyhow::ensure!(
+        journal
+            .records
+            .values()
+            .map(|r| r.files.len())
+            .sum::<usize>()
+            <= sandbox_protocol::supervisor_files::MAX_HOST_FILES,
+        "too many host file records"
+    );
     journal.epoch = config.epoch;
     // New epochs never revive an old owner, even when its guardian survived.
     for (key, record) in &mut journal.records {
@@ -206,6 +217,35 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
                 if let Some(receipt) = &command.receipt {
                     command.validate_receipt(id, receipt)?;
                 }
+            }
+        }
+        anyhow::ensure!(
+            record.files.len() <= sandbox_protocol::supervisor_files::MAX_FILES
+                && record.files.values().map(|f| f.size).sum::<u64>()
+                    <= sandbox_protocol::files::MAX_RESERVED_BYTES,
+            "invalid retained file capacity"
+        );
+        for (id, file) in &record.files {
+            id.parse::<OperationId>()?;
+            file.validate()?;
+            anyhow::ensure!(
+                record.revisions.contains_key(id) && !record.commands.contains_key(id),
+                "invalid file operation ownership"
+            );
+            if let Some(context) = &file.context {
+                anyhow::ensure!(
+                    context.allocation_id.to_string() == record.owner.allocation_id
+                        && context.generation == record.owner.generation,
+                    "retained file allocation mismatch"
+                );
+                let manifest = record
+                    .manifest
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("file guest manifest missing"))?;
+                anyhow::ensure!(
+                    manifest.receipt()?.guest_boot_id.as_deref() == Some(context.boot_id.as_str()),
+                    "retained file boot mismatch"
+                );
             }
         }
         record.stopped = true;
