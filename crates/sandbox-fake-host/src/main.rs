@@ -1,8 +1,98 @@
-//! Entry point for the in-memory supervisor stand-in.
+//! Loopback-only, authenticated development supervisor. No customer code is run.
+use anyhow::{Context, bail};
+use clap::Parser;
+use sandbox_fake_host::{FakeConfig, FakeHost};
+use sandbox_protocol::{
+    HostId,
+    supervisor::{Resources, supervisor_server::SupervisorServer},
+};
+use sandbox_supervisor::transport::{ControllerIdentity, MAX_MESSAGE_BYTES, server_tls};
+use std::{collections::BTreeSet, net::SocketAddr, path::PathBuf, time::Duration};
+use tonic::transport::Server;
 
-fn main() {
-    // Deliberately not a stub server. Printing an honest line beats a process
-    // that looks like it is serving something when it is not.
-    eprintln!("sandbox-fake-host is not implemented yet; see docs/implementation/phase-1-tasks.md");
-    std::process::exit(1);
+#[derive(Debug, Parser)]
+#[command(about = "Simulated supervisor over mTLS; never starts a VM or process")]
+struct Args {
+    #[arg(long, default_value = "127.0.0.1:7443")]
+    listen: SocketAddr,
+    #[arg(long)]
+    host_id: HostId,
+    /// Obtain a new epoch from the control plane after every restart.
+    #[arg(long)]
+    supervisor_epoch: i64,
+    #[arg(long)]
+    ca_cert: PathBuf,
+    #[arg(long)]
+    server_cert: PathBuf,
+    #[arg(long)]
+    server_key: PathBuf,
+    /// SHA-256 of the DER-encoded controller leaf certificate. Repeat for rotation.
+    #[arg(long, required = true)]
+    controller_cert_sha256: Vec<String>,
+    #[arg(long, required = true)]
+    image_digest: Vec<String>,
+    #[arg(long, default_value_t = 4)]
+    vcpu: u32,
+    #[arg(long, default_value_t = 8192)]
+    memory_mib: u64,
+    #[arg(long, default_value_t = 65536)]
+    disk_mib: u64,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    if !args.listen.ip().is_loopback() {
+        bail!("the fake supervisor only listens on loopback");
+    }
+    let pins = args
+        .controller_cert_sha256
+        .iter()
+        .map(|p| {
+            let mut bytes = [0u8; 32];
+            hex::decode_to_slice(p, &mut bytes)
+                .context("invalid controller certificate fingerprint")?;
+            Ok(bytes)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let identity = ControllerIdentity::new(pins)?;
+    let host = FakeHost::new(FakeConfig {
+        host: args.host_id,
+        epoch: args.supervisor_epoch,
+        images: BTreeSet::from_iter(args.image_digest),
+        capacity: Resources {
+            vcpu: args.vcpu,
+            memory_mib: args.memory_mib,
+            disk_mib: args.disk_mib,
+        },
+    })?;
+    let service = SupervisorServer::new(host.clone())
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
+    let service = tonic::service::interceptor::InterceptedService::new(service, identity);
+    let tls = server_tls(
+        &std::fs::read(args.ca_cert)?,
+        &std::fs::read(args.server_cert)?,
+        &std::fs::read(args.server_key)?,
+    );
+    let watchdog = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            interval.tick().await;
+            host.expire_leases().await;
+        }
+    });
+    eprintln!(
+        "simulated supervisor listening on {}; no VM or process execution",
+        args.listen
+    );
+    let result = Server::builder()
+        .tls_config(tls)?
+        .add_service(service)
+        .serve_with_shutdown(args.listen, async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await;
+    watchdog.abort();
+    result.context("fake supervisor stopped with an error")
 }

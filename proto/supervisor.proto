@@ -1,0 +1,59 @@
+syntax = "proto3";
+package hudson.supervisor.v1;
+
+// Internal only. Every call requires mTLS and a configured controller identity.
+service Supervisor {
+  rpc Health(HealthRequest) returns (HostInfo);
+  rpc Create(CreateRequest) returns (Observation);
+  rpc Inspect(InspectRequest) returns (Observation);
+  rpc Stop(StopRequest) returns (Observation);
+}
+message HealthRequest {}
+message HostInfo {
+  string host_id = 1;
+  int64 supervisor_epoch = 2;
+  bool simulated = 3;
+}
+// Revisions fence ownership of an operation; generations fence VM incarnations.
+// Both deadlines are absolute Unix milliseconds, bounded by supervisor policy.
+message Ownership {
+  string host_id = 1;
+  string project_id = 2;
+  string sandbox_id = 3;
+  string allocation_id = 4;
+  string operation_id = 5;
+  int64 generation = 6;
+  int64 supervisor_epoch = 7;
+  int64 claim_revision = 8;
+  int64 claim_expires_unix_ms = 9;
+}
+message Resources {
+  uint32 vcpu = 1;
+  uint64 memory_mib = 2;
+  uint64 disk_mib = 3;
+}
+message CreateRequest {
+  Ownership ownership = 1;
+  string image_digest = 2;
+  Resources resources = 3;
+  int64 allocation_expires_unix_ms = 4;
+}
+message InspectRequest { Ownership ownership = 1; }
+message StopRequest { Ownership ownership = 1; }
+enum AllocationState {
+  ALLOCATION_STATE_UNSPECIFIED = 0;
+  // Absence is not permission to replay an uncertain command.
+  ALLOCATION_STATE_ABSENT = 1;
+  ALLOCATION_STATE_READY = 2;
+  // VM stopped and all capacity released; not merely stop requested.
+  ALLOCATION_STATE_RELEASED = 3;
+}
+message Observation {
+  Ownership ownership = 1;
+  AllocationState state = 2;
+  bool simulated = 3;
+  uint64 start_count = 4;
+  string create_operation_id = 5;
+  int64 observed_unix_ms = 6;
+  string reason = 7;
+}

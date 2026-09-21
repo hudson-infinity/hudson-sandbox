@@ -17,6 +17,14 @@ publish = false
 [workspace.dependencies]
 sandbox-protocol = { path = "crates/sandbox-protocol" }
 sandbox-store = { path = "crates/sandbox-store" }
+sandbox-supervisor = { path = "crates/sandbox-supervisor" }
+
+prost = "=0.14.3"
+tonic = { version = "=0.14.6", features = ["tls-ring"] }
+tonic-prost = "=0.14.6"
+tonic-prost-build = "=0.14.6"
+tokio-stream = { version = "0.1", features = ["net"] }
+rcgen = "=0.14.10"
 
 anyhow = "1"
 axum = "0.8"
