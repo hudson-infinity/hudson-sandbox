@@ -1,5 +1,5 @@
 {
-  "recorded_at_utc": "2026-09-21T20:04:35.317145+00:00",
+  "recorded_at_utc": "2026-09-21T20:10:14.390199+00:00",
   "source_base_commit": "1c816a991ba6be80b1a658e4d2afb60c196e7fb6",
   "scope": "Typed immutable file-upload source objects and retirement barriers against private versioned/unversioned MinIO; no public upload admission or guest dispatch.",
   "environment": {
@@ -13,7 +13,7 @@
       "9000/tcp": [
         {
           "HostIp": "127.0.0.1",
-          "HostPort": "53773"
+          "HostPort": "55407"
         }
       ]
     },
@@ -58,10 +58,10 @@
     "crates/sandbox-artifacts/src/lib.rs": "b617de0dfa6759a94d0454a936ac5248cda8511b684c4a3b5422f38509c85dec",
     "crates/sandbox-artifacts/src/retirement.rs": "e2939af13cb8f811fd7f95b2b13230e1a8b9396d9173b912a94a25327f5bf141",
     "crates/sandbox-artifacts/src/retirement/tests.rs": "96d06367992de72dee029dec0eb0d6682e0f67b550af86caaad01640be115884",
-    "crates/sandbox-artifacts/src/sources.rs": "c1e04773cfe9eb92eedf2d51525d19770701304c34461e07b93208a1a1a94f94",
-    "crates/sandbox-artifacts/src/sources/retirement.rs": "9c2c8f8b6bfc24f647687c26fe26d675f38ef009f10aa9b1b4e5c269a9ca0491",
+    "crates/sandbox-artifacts/src/sources.rs": "f0e8ae05c884673c05ed026ee894f98157ad2c66b715419ae1954d16fbe65f52",
+    "crates/sandbox-artifacts/src/sources/retirement.rs": "8103192e8c5fe2b58f11b32e51fe93ef21a6b62be1bf5480d1df8ab71219414a",
     "crates/sandbox-artifacts/src/sources/retirement/tests.rs": "3ae0fb27b0e3dd51423399d4c53ab16f51ad6c0b7bfc46f630ddd57d8151f1c8",
-    "crates/sandbox-artifacts/src/sources/tests.rs": "96bcae0257ef5e345cbfcb5faf550aa4f570d0ec933513163f114e91ac3cfc51",
+    "crates/sandbox-artifacts/src/sources/tests.rs": "9637be16bce9cc10be2b8e332c69ea21a4ec5575858f7c3632649c7bbceb13da",
     "crates/sandbox-artifacts/src/tests.rs": "73b9ed0bef6a13149e08178ed7159fc7d50edbd015aff911e46a3b86f9a95d9c",
     "crates/sandbox-cleanup/Cargo.toml": "0522176de8a56e234901d074ae856de9c8606595cd6055fe9bf0b0e4c254e79c",
     "crates/sandbox-cleanup/src/lib.rs": "fdfd165c718d82b4a0ec77e04140ed5c38fce058c39b5f58bb8157fe3539e3f9",
@@ -112,7 +112,7 @@
     "crates/sandbox-protocol/src/bootstrap.rs": "62de5415b91f5ed0799dab3ec16c2588335579b5494666bf0f5b23541ea0571c",
     "crates/sandbox-protocol/src/command.rs": "383256950cf926f8e74f3fd4efd39739e76dfb2d932952fa1190e12183e27414",
     "crates/sandbox-protocol/src/file_downloads.rs": "50c2a88e6b2cd25aa0c434369218bab07f116f710020c4d59936ef4bc8bf1685",
-    "crates/sandbox-protocol/src/file_sources.rs": "281f336ed7ec2b499c1b8c51b25ef04f1f66cac7ffccbb32289af156e9b42e13",
+    "crates/sandbox-protocol/src/file_sources.rs": "ff6d164826f48fcfabc251b35f34c24255d15da210ec2cb29dc3fe5998f05160",
     "crates/sandbox-protocol/src/file_wire.rs": "c3008147d4516eb1d3be109706fc92701b84899bee79ccc7b80eaf63c7cd278d",
     "crates/sandbox-protocol/src/files.rs": "523242d7d713dd08334b621bff2da613a76511b0c63684b355e0a805831e4a50",
     "crates/sandbox-protocol/src/guest_model.rs": "92cd31bec8f2c754e23ac250d54a0e718ef645efaf879a713c778e68e519906a",
@@ -219,8 +219,8 @@
     "strict_workspace_clippy": "passed",
     "real_minio_artifact_tests_passed": 8,
     "log_sha256": {
-      "local": "9319adf983f6463c5d21936c2ad876017b2b11164a30551cce5e9a9c756ce782",
-      "minio": "6e2b18fe2762611226164de6ef9c242cd756002b1f0e721c2542f564b9aec228"
+      "local": "586533c456b64d38eb44df14a2516df71d2c64ad5320546813e49b0692f436ae",
+      "minio": "6535de8990df35fd400359ffda934b9b9bab7009c1a161ac3c5d2297323dbd64"
     },
     "observations": [
       {
@@ -259,7 +259,7 @@
     "cases": [
       "Concurrent conditional writes and recovery after write expiry preserve the original source reference",
       "Empty, maximum-size and 65539-byte binary sources verify full SHA-256 before returning bytes",
-      "Changed ownership, path, mode, size, digest or retention metadata cannot replace an existing attempt",
+      "Independent expected operation ownership rejects another write in the same allocation; changed path, mode, size, digest or retention metadata cannot replace an existing attempt",
       "Truncated, extended and interrupted bodies never release prefixes",
       "Sources and outputs share the four-call process storage limit",
       "Conditional retirement barriers reject late create-only writes and preserve exact cleanup retries",
@@ -272,7 +272,7 @@
     "fixture_cleanup": "temporary container removed; task-created persistent test buckets removed while empty; existing development volumes preserved",
     "run_history": [
       "Local integration tests first passed against new private development buckets, then passed again against a fresh pinned-image container using the proposed CI dynamic-port setup.",
-      "The full workspace test run preceded the evidence JSON; final documentation/format/whitespace checks run after it is recorded."
+      "Review tightened the independently supplied owner to include operation ID; the final workspace and MinIO suites were repeated after that change, and evidence hashes were regenerated."
     ]
   },
   "limits": [

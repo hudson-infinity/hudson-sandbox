@@ -7,13 +7,26 @@ use sha2::{Digest, Sha256};
 #[error("invalid file source metadata")]
 pub struct InvalidSource;
 
+/// Independently resolved operation ownership, separate from a stored reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceOwner {
+    pub scope: ReadScope,
+    pub operation_id: OperationId,
+}
+impl SourceOwner {
+    pub fn validate(&self) -> Result<(), InvalidSource> {
+        self.scope.validate().map_err(|_| InvalidSource)
+    }
+}
+
 /// Persist the complete plan and reserve its byte budget before any storage PUT.
 /// A new attempt must never replace an uncertain attempt during recovery.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SourcePlan {
     pub version: u32,
-    pub owner: ReadScope,
+    pub owner: SourceOwner,
     pub upload: Upload,
     pub source_attempt: OperationId,
     pub created_unix_ms: i64,
@@ -32,9 +45,10 @@ impl std::fmt::Debug for SourcePlan {
 }
 impl SourcePlan {
     pub fn validate(&self) -> Result<(), InvalidSource> {
-        self.owner.validate().map_err(|_| InvalidSource)?;
+        self.owner.validate()?;
         self.upload.validate().map_err(|_| InvalidSource)?;
-        if self.version != 1
+        if self.owner.operation_id != self.upload.operation_id
+            || self.version != 1
             || self.created_unix_ms <= 0
             || self.write_expires_unix_ms <= self.created_unix_ms
             || self.expires_unix_ms < self.write_expires_unix_ms
@@ -48,13 +62,13 @@ impl SourcePlan {
         self.validate()?;
         Ok(format!(
             "file-source/v1/{}/{}/{}/{}/{}/{}/{}/{}",
-            self.owner.project_id,
-            self.owner.sandbox_id,
+            self.owner.scope.project_id,
+            self.owner.scope.sandbox_id,
             self.upload.operation_id,
-            self.owner.allocation_id,
-            self.owner.generation,
-            self.owner.host_id,
-            self.owner.host_epoch,
+            self.owner.scope.allocation_id,
+            self.owner.scope.generation,
+            self.owner.scope.host_id,
+            self.owner.scope.host_epoch,
             self.source_attempt
         ))
     }

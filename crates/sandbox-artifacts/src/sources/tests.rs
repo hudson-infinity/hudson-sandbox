@@ -5,23 +5,27 @@ use object_store::ObjectStoreExt;
 use sandbox_protocol::{
     AllocationId, HostId, Id, OperationId, ProjectId, SandboxId, files::Upload,
 };
-pub(crate) fn owner() -> ReadScope {
-    ReadScope {
-        version: 1,
-        project_id: ProjectId::generate(),
-        sandbox_id: SandboxId::generate(),
-        allocation_id: AllocationId::generate(),
-        host_id: HostId::generate(),
-        host_epoch: 1,
-        generation: 1,
+pub(crate) fn owner() -> SourceOwner {
+    SourceOwner {
+        operation_id: OperationId::generate(),
+        scope: sandbox_protocol::file_downloads::ReadScope {
+            version: 1,
+            project_id: ProjectId::generate(),
+            sandbox_id: SandboxId::generate(),
+            allocation_id: AllocationId::generate(),
+            host_id: HostId::generate(),
+            host_epoch: 1,
+            generation: 1,
+        },
     }
 }
 pub(crate) fn plan(bytes: &[u8]) -> SourcePlan {
+    let owner = owner();
     SourcePlan {
         version: 1,
-        owner: owner(),
+        owner: owner.clone(),
         upload: Upload {
-            operation_id: OperationId::generate(),
+            operation_id: owner.operation_id,
             path: "private-customer-path".into(),
             size: bytes.len() as u64,
             sha256: Sha256::digest(bytes).into(),
@@ -86,13 +90,16 @@ fn descriptors_bind_every_field_but_never_use_paths_as_object_keys() {
     for field in 0..16 {
         let mut changed = p.clone();
         match field {
-            0 => changed.owner.project_id = ProjectId::generate(),
-            1 => changed.owner.sandbox_id = SandboxId::generate(),
-            2 => changed.upload.operation_id = OperationId::generate(),
-            3 => changed.owner.allocation_id = AllocationId::generate(),
-            4 => changed.owner.host_id = HostId::generate(),
-            5 => changed.owner.host_epoch += 1,
-            6 => changed.owner.generation += 1,
+            0 => changed.owner.scope.project_id = ProjectId::generate(),
+            1 => changed.owner.scope.sandbox_id = SandboxId::generate(),
+            2 => {
+                changed.upload.operation_id = OperationId::generate();
+                changed.owner.operation_id = changed.upload.operation_id;
+            }
+            3 => changed.owner.scope.allocation_id = AllocationId::generate(),
+            4 => changed.owner.scope.host_id = HostId::generate(),
+            5 => changed.owner.scope.host_epoch += 1,
+            6 => changed.owner.scope.generation += 1,
             7 => changed.source_attempt = OperationId::generate(),
             8 => changed.upload.path = "other".into(),
             9 => changed.upload.size += 1,
@@ -109,8 +116,8 @@ fn descriptors_bind_every_field_but_never_use_paths_as_object_keys() {
         let mut changed = p.clone();
         match field {
             0 => changed.version = 2,
-            1 => changed.owner.version = 2,
-            2 => changed.owner.generation = 0,
+            1 => changed.owner.scope.version = 2,
+            2 => changed.owner.scope.generation = 0,
             3 => changed.upload.path = "../bad".into(),
             4 => changed.upload.size = sandbox_protocol::files::MAX_FILE_BYTES + 1,
             5 => changed.write_expires_unix_ms = 1000,
@@ -129,6 +136,19 @@ async fn changed_metadata_or_bytes_cannot_replace_a_retained_source() {
     let store = memory();
     let p = plan(b"abc");
     let original = store.upload(&p, &p.owner, 1000, b"abc").await.unwrap();
+    let mut other_operation = p.owner.clone();
+    other_operation.operation_id = OperationId::generate();
+    assert_eq!(
+        store.reconcile(&p, &other_operation, 1000).await,
+        Err(Error::OwnerMismatch)
+    );
+    assert!(matches!(
+        store.read(&original, &other_operation, 1000).await,
+        Err(Error::OwnerMismatch)
+    ));
+    let mut corrupt_plan = p.clone();
+    corrupt_plan.owner.operation_id = other_operation.operation_id;
+    assert!(corrupt_plan.validate().is_err());
     for field in 0..5 {
         let mut changed = p.clone();
         match field {

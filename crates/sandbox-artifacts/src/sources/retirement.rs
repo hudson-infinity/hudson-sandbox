@@ -6,10 +6,7 @@ use futures_util::{TryStreamExt, future::BoxFuture};
 use object_store::{
     Attribute, Attributes, GetOptions, PutMode, PutOptions, UpdateVersion, path::Path,
 };
-use sandbox_protocol::{
-    file_downloads::ReadScope,
-    file_sources::{SourcePlan, SourceRef, SourceRetirement},
-};
+use sandbox_protocol::file_sources::{SourceOwner, SourcePlan, SourceRef, SourceRetirement};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fmt, sync::Arc};
@@ -66,7 +63,7 @@ impl SourceRetirer {
     pub async fn retire(
         &self,
         plan: &SourcePlan,
-        owner: &ReadScope,
+        owner: &SourceOwner,
         selected: Option<&SourceRef>,
         now: i64,
     ) -> Result<SourceRetirement, Error> {

@@ -2,10 +2,7 @@
 use crate::{ArtifactStore, Error, TRANSFER_TIMEOUT, TRANSFERS, storage_error};
 use futures_util::TryStreamExt;
 use object_store::{Attribute, Attributes, GetOptions, PutMode, PutOptions, path::Path};
-use sandbox_protocol::{
-    file_downloads::ReadScope,
-    file_sources::{InvalidSource, SourcePlan, SourceRef},
-};
+use sandbox_protocol::file_sources::{InvalidSource, SourceOwner, SourcePlan, SourceRef};
 use sha2::{Digest, Sha256};
 
 mod retirement;
@@ -39,7 +36,7 @@ impl std::fmt::Debug for SourceBytes {
 fn metadata_key() -> Attribute {
     Attribute::Metadata("hudson-file-source-sha256".into())
 }
-fn check(plan: &SourcePlan, owner: &ReadScope, now: i64, writing: bool) -> Result<(), Error> {
+fn check(plan: &SourcePlan, owner: &SourceOwner, now: i64, writing: bool) -> Result<(), Error> {
     plan.validate()?;
     if &plan.owner != owner {
         return Err(Error::OwnerMismatch);
@@ -64,7 +61,7 @@ impl SourceStore {
     pub async fn upload(
         &self,
         plan: &SourcePlan,
-        owner: &ReadScope,
+        owner: &SourceOwner,
         now: i64,
         bytes: &[u8],
     ) -> Result<SourceRef, Error> {
@@ -121,7 +118,7 @@ impl SourceStore {
     pub async fn reconcile(
         &self,
         plan: &SourcePlan,
-        owner: &ReadScope,
+        owner: &SourceOwner,
         now: i64,
     ) -> Result<SourceRef, Error> {
         check(plan, owner, now, false)?;
@@ -135,7 +132,7 @@ impl SourceStore {
     pub async fn read(
         &self,
         reference: &SourceRef,
-        owner: &ReadScope,
+        owner: &SourceOwner,
         now: i64,
     ) -> Result<SourceBytes, Error> {
         reference.validate()?;
