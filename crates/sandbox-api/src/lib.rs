@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod destroy;
 pub mod headers;
+pub mod lists;
 pub mod problem;
 pub mod reads;
 pub mod sandboxes;
@@ -35,6 +36,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(sandboxes::routes())
         .merge(reads::routes())
+        .merge(lists::routes())
         .merge(destroy::routes())
         .with_state(state)
 }
