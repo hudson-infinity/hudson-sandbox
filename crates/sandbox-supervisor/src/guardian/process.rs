@@ -180,21 +180,6 @@ pub fn namespace_init(manifest: Manifest) -> Result<()> {
         wall_ms(),
         boot_ms(),
     )?);
-    let watchdog = deadline.clone();
-    // No journal or request mutex is taken here. PID-namespace teardown is the kill mechanism.
-    std::thread::Builder::new()
-        .name("allocation-deadline".into())
-        .spawn(move || {
-            loop {
-                if watchdog.expire(boot_ms()) {
-                    std::process::exit(124);
-                }
-                if watchdog.value() == 0 {
-                    std::process::exit(0);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        })?;
     let parent = &manifest.config.cgroup_parent;
     match fs::create_dir(parent) {
         Ok(()) => {}
@@ -210,6 +195,28 @@ pub fn namespace_init(manifest: Manifest) -> Result<()> {
     );
     fs::write(parent.join("cgroup.subtree_control"), "+cpu +memory +pids")?;
     fs::create_dir(manifest.group())?;
+    // Open the owned kill endpoint before starting the watchdog or any VMM.
+    // Namespace teardown can wait for another guardian thread stuck in host I/O;
+    // signalling this cgroup must not depend on journal paths, locks, or that exit.
+    let mut kill = OpenOptions::new()
+        .write(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(manifest.group().join("cgroup.kill"))?;
+    let watchdog = deadline.clone();
+    std::thread::Builder::new()
+        .name("allocation-deadline".into())
+        .spawn(move || {
+            loop {
+                let expired = watchdog.expire(boot_ms());
+                if expired || watchdog.value() == 0 {
+                    // No release proof is inferred from this request. Reconciliation
+                    // still requires an empty cgroup and completed disk cleanup.
+                    let _ = kill.write_all(b"1");
+                    std::process::exit(if expired { 124 } else { 0 });
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })?;
     receipt.state = State::LaunchIntent;
     receipt.cgroup_inode = Some(fs::metadata(manifest.group())?.ino());
     receipt.guardian_host_pid = Some(host_pid);

@@ -652,3 +652,122 @@ fn shared_base_image_keeps_allocation_credentials_separate() {
     assert!(first_process.wait().unwrap().success());
     first.stopped();
 }
+
+#[path = "support/frozen_fs.rs"]
+mod frozen_fs;
+
+fn cpu_usage(group: &Path) -> u64 {
+    fs::read_to_string(group.join("cpu.stat"))
+        .unwrap()
+        .lines()
+        .find_map(|s| s.strip_prefix("usage_usec "))
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+fn task_identity(pid: u32) -> Option<(String, u64, u64)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields: Vec<_> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
+    Some((
+        fields[0].into(),
+        fields[6].parse().ok()?,
+        fields[19].parse().ok()?,
+    ))
+}
+#[test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1, loopback ext4/fsfreeze and aarch64 artifacts"]
+fn journal_stall_cannot_keep_vm_executing_past_expiry() {
+    let disk = frozen_fs::Filesystem::new();
+    let mut f = Fixture::new(15000);
+    f.manifest.config.state_root = disk.path().join("s");
+    fs::write(&f.path, serde_json::to_vec(&f.manifest).unwrap()).unwrap();
+    let mut child = f.spawn();
+    let running = f.running(&mut child);
+    // The fixed init spins indefinitely; allow boot to finish before faulting metadata.
+    std::thread::sleep(Duration::from_secs(3));
+    let busy_before = cpu_usage(&f.manifest.group());
+    std::thread::sleep(Duration::from_millis(250));
+    let busy_delta = cpu_usage(&f.manifest.group()) - busy_before;
+    assert!(busy_delta > 50000, "VM must be executing before the fault");
+    let vcpus: Vec<_> = fs::read_to_string(f.manifest.group().join("cgroup.threads"))
+        .unwrap()
+        .lines()
+        .filter_map(|s| s.parse::<u32>().ok())
+        .filter_map(|pid| {
+            let name = fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+            if name.starts_with("fc_vcpu") {
+                Some((pid, task_identity(pid)?.2))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(!vcpus.is_empty());
+    let mut frozen = disk.freeze();
+    let manifest = f.manifest.clone();
+    let request = std::thread::spawn(move || {
+        guardian::control(
+            &manifest,
+            Action::Renew {
+                revision: 1,
+                expires_unix_ms: guardian::wall_ms() + 30000,
+            },
+        )
+    });
+    let guardian_pid = running.guardian_host_pid.unwrap();
+    let until = Instant::now() + Duration::from_secs(3);
+    let blocked = loop {
+        let stalled = fs::read_dir(format!("/proc/{guardian_pid}/task"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+            .find(|pid| task_identity(*pid).is_some_and(|(state, _, _)| state == "D"));
+        if let Some(pid) = stalled {
+            break pid;
+        }
+        assert!(
+            Instant::now() < until,
+            "journal write did not enter uninterruptible wait"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        request.join().unwrap().is_err(),
+        "stalled renewal must not be acknowledged"
+    );
+    let remaining = (f.manifest.start.expires_unix_ms - guardian::wall_ms() + 500).max(0) as u64;
+    std::thread::sleep(Duration::from_millis(remaining));
+    let after_start = cpu_usage(&f.manifest.group());
+    std::thread::sleep(Duration::from_millis(250));
+    let after_delta = cpu_usage(&f.manifest.group()) - after_start;
+    // PF_EXITING (Linux sched.h) means the original task cannot return to KVM.
+    // A recycled PID is not the original vCPU. Cleanup can still be pending.
+    let live_vcpus = vcpus
+        .iter()
+        .filter(|(pid, ticks)| {
+            task_identity(*pid)
+                .is_some_and(|(_, flags, current)| current == *ticks && flags & 4 == 0)
+        })
+        .count();
+    let retained = f.record();
+    eprintln!(
+        "journal_stall_observation {}",
+        serde_json::json!({
+            "blocked_guardian_thread":blocked,"busy_cpu_delta_us":busy_delta,
+            "post_expiry_cpu_delta_us":after_delta,"live_original_vcpus":live_vcpus,
+            "cleanup_confirmed_before_thaw":retained.cleanup_confirmed,
+        })
+    );
+    // Restore the exclusively owned filesystem before any assertion can unwind
+    // through allocation cleanup. The independent helper is still armed here.
+    frozen.thaw();
+    assert!(child.wait().unwrap().success());
+    f.stopped();
+    assert_eq!(f.manifest.prepare().unwrap().state, State::Stopped);
+    assert!(!retained.cleanup_confirmed);
+    assert_eq!(
+        live_vcpus, 0,
+        "vCPU survived expiry while guardian journal was blocked"
+    );
+    assert!(after_delta < 10000, "VM still consumed CPU after expiry");
+}
