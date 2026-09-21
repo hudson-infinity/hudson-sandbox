@@ -29,7 +29,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 ## API
 
 - [ ] OpenAPI document for this phase's routes only. Generate types from it.
-- [ ] Project bearer token authentication, hashed storage, constant-time comparison.
+- [x] Project bearer token authentication, hashed storage, constant-time comparison.
 - [ ] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
 - [ ] `problem+json` errors with the machine-readable code list.
 - [ ] Create, execute, get sandbox, get operation, outputs, file PUT, destroy.

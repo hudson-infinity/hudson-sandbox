@@ -4,6 +4,8 @@
 //! live here rather than in the API or controller so that the constraints in
 //! the migrations and the code that relies on them stay in one place.
 
+pub mod projects;
+
 use std::time::Duration;
 
 use sqlx::postgres::{PgPoolOptions, Postgres};
@@ -21,6 +23,16 @@ pub enum StoreError {
     /// Migrations could not be applied.
     #[error("applying migrations: {0}")]
     Migrate(#[source] sqlx::migrate::MigrateError),
+    /// A query failed.
+    #[error("querying PostgreSQL: {0}")]
+    Query(#[source] sqlx::Error),
+    /// A stored row could not be interpreted.
+    ///
+    /// Separate from a query failure on purpose: this means the data is wrong,
+    /// not that the database is unreachable, and it must never be treated as
+    /// an absent row.
+    #[error("stored data is not usable: {0}")]
+    Corrupt(String),
 }
 
 /// A connection pool to the durable store.
