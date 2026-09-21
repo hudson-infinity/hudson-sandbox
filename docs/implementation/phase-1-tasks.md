@@ -46,7 +46,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 ## Supervisor
 
-The separate [allocation guardian](../allocation-guardian.md) implements verified staging, real jailer/Firecracker ownership, cgroup limits, local deadlines and cleanup. Its controlled aarch64 tests are component evidence; the integrated RPC, partition, network and supported-host gates below remain open.
+The separate [allocation guardian](../allocation-guardian.md) implements verified staging, real jailer/Firecracker ownership, cgroup limits, local deadlines and cleanup. Its controlled aarch64 tests are component evidence; the [real lifecycle RPC adapter](../real-supervisor.md) now connects it to create/renew/destroy. Partition, network, old-epoch database recovery and supported-host gates remain open.
 
 - [ ] gRPC server over mTLS, private interface only, verifies the controller's certificate identity rather than merely a valid certificate.
 - [ ] Per-host certificate issuance and a small internal CA.
@@ -61,8 +61,8 @@ The separate [allocation guardian](../allocation-guardian.md) implements verifie
 - [x] Allocation-scoped credentials, read-only bootstrap device, guest init and durable boot binding; [component evidence](../guest-bootstrap.md).
 - [ ] Guest image: Debian slim, our init, our guest agent, `system` and `workload` cgroups, agent in its own PID namespace.
 - [ ] Guest kernel build: modules off, lockdown on, pinned and digest-published.
-- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). File transfer and lifecycle supervisor integration remain open.
-- [x] Guest-local spawn, process-tree cleanup, bounded output and exit/restart receipts; [component contract and evidence](../guest-runner.md). The command wire is implemented; lifecycle integration and host-authoritative watchdogs remain open above.
+- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). Lifecycle boot binding is integrated; public command dispatch and file transfer remain open.
+- [x] Guest-local spawn, process-tree cleanup, bounded output and exit/restart receipts; [component contract and evidence](../guest-runner.md). The command wire, lifecycle boot binding and local guardian watchdog are implemented; public command dispatch and the full host-fault gates remain open above.
 - [ ] File write into the workspace with path and size validation.
 
 ## Passing 1a

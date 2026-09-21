@@ -1,6 +1,6 @@
 # Linux runtime development
 
-Status: a dedicated nested aarch64 Linux/KVM environment and a real Firecracker/jailer boot have been verified locally. The [guest command runner](guest-runner.md) now has separate execution evidence; real supervisor integration and API-to-command execution remain unfinished. This environment makes that work testable; it does not satisfy the supported x86_64 release gates.
+Status: a dedicated nested aarch64 Linux/KVM environment and a real Firecracker/jailer boot have been verified locally. The [guest command runner](guest-runner.md) now has separate execution evidence; the [real lifecycle supervisor](real-supervisor.md) now integrates create/renew/destroy, while API-to-command execution remains unfinished. This environment makes that work testable; it does not satisfy the supported x86_64 release gates.
 
 ## Start a dedicated development host
 

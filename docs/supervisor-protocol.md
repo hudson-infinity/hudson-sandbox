@@ -1,6 +1,6 @@
 # Supervisor protocol and development fake
 
-Status: the versioned gRPC transport and an in-memory fake are implemented. The [lifecycle controller](controller.md) now uses this transport. Authenticated host registration, certificate provisioning, and the real Firecracker supervisor remain unfinished. A fake observation never establishes that a VM exists, ran code, enforced limits, or released real resources.
+Status: the versioned gRPC transport and an in-memory fake are implemented. The [lifecycle controller](controller.md) now uses this transport. The [real Linux supervisor](real-supervisor.md) now implements these lifecycle RPCs through Firecracker guardians. Authenticated host registration and certificate provisioning remain unfinished. A fake observation never establishes that a VM exists, ran code, enforced limits, or released real resources.
 
 ## Contract and identity
 
@@ -68,6 +68,6 @@ These tests establish the modeled behavior and transport checks only. Further li
 
 ## Real VM development evidence
 
-The [Linux development guide](linux-development.md#verified-boot-and-its-limits) records a real Firecracker/jailer boot in a nested aarch64 environment. It is separate from this shared transport and fake implementation; no real supervisor RPC execution driver has landed yet. The separate [guest protocol](guest-protocol.md) now provides an authenticated host client and guest listener, with real command round-trip evidence; the lifecycle supervisor still needs to own and dispatch through that client. The experiment also demonstrates why [tracking the actual Firecracker child](linux-development.md#track-the-firecracker-child-not-just-the-jailer) is necessary: the jailer parent can exit successfully while the microVM is still running.
+The [Linux development guide](linux-development.md#verified-boot-and-its-limits) records a real Firecracker/jailer boot in a nested aarch64 environment. The [real lifecycle adapter](real-supervisor.md) now uses this shared transport; public command dispatch remains unfinished. The separate [guest protocol](guest-protocol.md) now provides an authenticated host client and guest listener, with real command round-trip evidence; the lifecycle supervisor now requires authenticated boot binding, while public command dispatch remains separate work. The experiment also demonstrates why [tracking the actual Firecracker child](linux-development.md#track-the-firecracker-child-not-just-the-jailer) is necessary: the jailer parent can exit successfully while the microVM is still running.
 
-The [allocation guardian](allocation-guardian.md) now supplies a separate root-only real VM owner with independent expiry and cleanup tests. It is not yet connected to these RPC methods, and its process-presence receipt is not guest readiness or database release evidence.
+The [allocation guardian](allocation-guardian.md) now supplies a separate root-only real VM owner with independent expiry and cleanup tests. The [real RPC adapter](real-supervisor.md) connects this owner to the controller, requiring guest boot binding for readiness and completed cleanup for release; process presence alone supplies neither.

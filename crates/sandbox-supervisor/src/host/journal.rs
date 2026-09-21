@@ -1,0 +1,177 @@
+use super::*;
+use serde::{Deserialize, Serialize};
+use std::{
+    fs::File,
+    io::{Read, Write},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+};
+
+const MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_RECORDS: usize = 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Record {
+    pub owner: Ownership,
+    pub revisions: BTreeMap<String, i64>,
+    pub create: Option<CreateRequest>,
+    pub manifest: Option<Manifest>,
+    pub dispatched: bool,
+    pub stopped: bool,
+    pub released: bool,
+    pub lease_revision: i64,
+    pub lease_request: Option<(i64, i64)>,
+    #[serde(skip)]
+    pub gate: Arc<Mutex<()>>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Journal {
+    pub version: u32,
+    pub host: HostId,
+    pub epoch: i64,
+    pub records: BTreeMap<String, Record>,
+    #[serde(skip)]
+    pub poisoned: bool,
+}
+
+pub(super) fn private_dir(path: &Path) -> anyhow::Result<()> {
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e.into()),
+    }
+    let m = fs::symlink_metadata(path)?;
+    anyhow::ensure!(
+        m.is_dir() && m.uid() == 0 && m.mode() & 0o077 == 0,
+        "host state directory must be private and root-owned"
+    );
+    anyhow::ensure!(
+        fs::canonicalize(path)? == path,
+        "host state directory must be canonical"
+    );
+    Ok(())
+}
+pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
+    private_dir(&config.state_root)?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(config.state_root.join("host.lock"))?;
+    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
+    let path = config.state_root.join("host.json");
+    let mut journal = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
+        .open(&path)
+    {
+        Ok(file) => {
+            let m = file.metadata()?;
+            anyhow::ensure!(
+                m.is_file() && m.uid() == 0 && m.mode() & 0o077 == 0 && m.len() <= MAX_BYTES,
+                "invalid host journal"
+            );
+            let mut bytes = Vec::new();
+            file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() as u64 <= MAX_BYTES, "host journal too large");
+            let journal: Journal = serde_json::from_slice(&bytes)?;
+            anyhow::ensure!(
+                journal.version == 1
+                    && journal.host == config.host
+                    && config.epoch > journal.epoch
+                    && journal.records.len() <= MAX_RECORDS,
+                "host identity mismatch or epoch not advanced"
+            );
+            journal
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::ensure!(
+                fs::read_dir(&config.state_root)?.count() == 1,
+                "missing journal with retained host state"
+            );
+            Journal {
+                version: 1,
+                host: config.host,
+                epoch: config.epoch,
+                records: BTreeMap::new(),
+                poisoned: false,
+            }
+        }
+        Err(e) => return Err(e.into()),
+    };
+    journal.epoch = config.epoch;
+    // New epochs never revive an old owner, even when its guardian survived.
+    for (key, record) in &mut journal.records {
+        anyhow::ensure!(
+            key == &record.owner.allocation_id
+                && record.owner.host_id == config.host.to_string()
+                && record.owner.supervisor_epoch < config.epoch
+                && record.revisions.len() <= 64,
+            "invalid retained allocation ownership"
+        );
+        anyhow::ensure!(
+            !record.released || (record.stopped && record.manifest.is_some()),
+            "invalid release fence"
+        );
+        anyhow::ensure!(
+            record.create.is_some() == record.manifest.is_some()
+                && (!record.dispatched || record.manifest.is_some()),
+            "invalid retained launch intent"
+        );
+        if let Some(manifest) = &record.manifest {
+            anyhow::ensure!(
+                manifest.start.owner.allocation.to_string() == *key
+                    && manifest.start.owner.host == config.host
+                    && manifest.config.state_root == config.state_root.join("a"),
+                "invalid retained guardian ownership"
+            );
+        }
+        if let Some(manifest) = &record.manifest {
+            manifest.validate()?;
+            anyhow::ensure!(
+                manifest.start.owner.project.to_string() == record.owner.project_id
+                    && manifest.start.owner.sandbox.to_string() == record.owner.sandbox_id
+                    && manifest.start.owner.generation == record.owner.generation
+                    && manifest.start.owner.epoch == record.owner.supervisor_epoch,
+                "retained manifest identity mismatch"
+            );
+            if record.released {
+                let receipt = manifest.receipt()?;
+                anyhow::ensure!(
+                    receipt.cleanup_confirmed && receipt.state == GuardianState::Stopped,
+                    "retained release lacks cleanup evidence"
+                );
+            }
+        }
+        record.stopped = true;
+    }
+    save(config, &mut journal)?;
+    Ok((lock, journal))
+}
+pub(super) fn save(config: &Config, journal: &mut Journal) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !journal.poisoned,
+        "host journal requires restart after uncertain write"
+    );
+    journal.poisoned = true;
+    let bytes = serde_json::to_vec(journal)?;
+    anyhow::ensure!(bytes.len() as u64 <= MAX_BYTES, "host journal full");
+    let temp = config
+        .state_root
+        .join(format!("journal-{}.tmp", OperationId::generate()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    fs::rename(temp, config.state_root.join("host.json"))?;
+    File::open(&config.state_root)?.sync_all()?;
+    journal.poisoned = false;
+    Ok(())
+}

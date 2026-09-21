@@ -1,5 +1,4 @@
-//! Shared authenticated supervisor transport. VM execution remains unimplemented.
-//! The fake host uses this boundary on macOS; the real supervisor will use it on Linux.
+//! Authenticated supervisor transport, Linux guardian and durable lifecycle service.
 
 pub mod transport;
 
@@ -11,3 +10,6 @@ pub mod guardian;
 pub mod lease;
 
 pub mod identity;
+
+#[cfg(target_os = "linux")]
+pub mod host;

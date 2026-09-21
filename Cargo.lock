@@ -1864,22 +1864,29 @@ name = "sandbox-supervisor"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "hex",
+ "http",
  "libc",
  "prost",
  "rcgen",
  "rustix",
+ "sandbox-api",
+ "sandbox-controller",
  "sandbox-protocol",
+ "sandbox-store",
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "tempfile",
  "thiserror",
  "time",
  "tokio",
  "tokio-rustls",
  "tonic",
+ "tower",
 ]
 
 [[package]]

@@ -210,7 +210,7 @@ impl Manifest {
     fn digest(&self) -> Result<String> {
         Ok(hex::encode(Sha256::digest(serde_json::to_vec(self)?)))
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         root()?;
         ensure!(
             self.start.owner.generation > 0 && self.start.owner.epoch > 0,
@@ -287,7 +287,7 @@ impl Manifest {
         }
         Ok(file)
     }
-    fn receipt(&self) -> Result<Receipt> {
+    pub fn receipt(&self) -> Result<Receipt> {
         let r: Receipt = read_json(&self.record_path())?;
         ensure!(
             r.version == 1
@@ -557,6 +557,53 @@ impl Manifest {
                 boot_id,
             },
         )
+    }
+    /// Permanently fence a request reserved by the host but not yet staged.
+    /// A partial or unknown directory is never treated as confirmed absence.
+    pub fn fence_unstarted(&self) -> Result<Receipt> {
+        self.validate()?;
+        private_dir(&self.config.state_root)?;
+        private_dir(&self.directory())?;
+        let _lock = self.lock()?;
+        if self.record_path().exists() {
+            let mut r = self.receipt()?;
+            if r.state != State::Stopped {
+                r.state = State::Fenced;
+                r.reason = Some("host_stop_fence".into());
+                write_json(&self.record_path(), &r)?;
+                self.finish_cleanup(&mut r)?;
+            }
+            return Ok(r);
+        }
+        ensure!(
+            !self.group().exists(),
+            "unowned cgroup prevents absence proof"
+        );
+        ensure!(
+            fs::read_dir(self.directory())?.count() == 1,
+            "unknown files prevent absence proof"
+        );
+        let record = Receipt {
+            version: 1,
+            owner: self.start.owner.clone(),
+            digest: self.digest()?,
+            host_boot_id: boot_id()?,
+            state: State::Stopped,
+            cleanup_confirmed: true,
+            renewal_revision: 0,
+            expires_unix_ms: self.start.expires_unix_ms,
+            guardian_host_pid: None,
+            guardian_start_ticks: None,
+            firecracker_namespace_pid: None,
+            cgroup_inode: None,
+            reason: Some("host_stop_before_launch".into()),
+            identity_digest: None,
+            identity_expires_unix_ms: None,
+            guest_boot_id: None,
+        };
+        write_json(&self.directory().join("manifest.json"), self)?;
+        write_json(&self.record_path(), &record)?;
+        Ok(record)
     }
     /// Only a free lifecycle lock permits fencing and cleanup. Never signal a saved arbitrary PID.
     pub fn reconcile(&self, reason: &str) -> Result<Receipt> {

@@ -471,6 +471,14 @@ fn bind_guest(
             .is_none_or(|id| *id == context.boot_id),
         "guest boot changed after binding"
     );
+    // The same boot is already durable. Repeated host readiness probes still
+    // authenticate hello, but do not rewrite unchanged journal state.
+    if record.guest_boot_id.is_some() {
+        return Ok(Response {
+            receipt: Some(record.clone()),
+            error: None,
+        });
+    }
     let mut bound = record.clone();
     bound.guest_boot_id = Some(context.boot_id);
     if write_json(&manifest.record_path(), &bound).is_err() {

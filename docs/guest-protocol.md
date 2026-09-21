@@ -1,6 +1,6 @@
 # Authenticated guest protocol
 
-Status: the guest listener and supervisor client perform real command, receipt and output calls over Firecracker vsock. [Recorded aarch64 evidence](evidence/2026-09-21-aarch64-vsock.json) covers that boundary. The [allocation guardian](allocation-guardian.md) now provides independent host expiry and [guest bootstrap/binding](guest-bootstrap.md). Public execute admission, controller dispatch, the real lifecycle RPC driver and file transfer remain unfinished. Guest reports do not prove host isolation or allocation release.
+Status: the guest listener and supervisor client perform real command, receipt and output calls over Firecracker vsock. [Recorded aarch64 evidence](evidence/2026-09-21-aarch64-vsock.json) covers that boundary. The [allocation guardian](allocation-guardian.md) now provides independent host expiry and [guest bootstrap/binding](guest-bootstrap.md). The [real lifecycle RPC driver](real-supervisor.md) now requires authenticated boot binding. Public execute admission/dispatch and file transfer remain unfinished. Guest reports do not prove host isolation or allocation release.
 
 ## Transport and peer identity
 
