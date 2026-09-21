@@ -1,8 +1,10 @@
 # Data models, IDs, and storage
 
-Status: selected logical design; migrations and tests pending. This document owns fields, relationships, identity formats, database constraints, and object-storage references. [Auth design](auth-design.md) owns credential/session enforcement; [API contract](api-contract.md) owns retry behavior; [lifecycle](lifecycle.md) owns transitions and completion evidence.
+Status: partially implemented; the initial PostgreSQL schema and storage operations have tests. This document owns fields, relationships, identity formats, database constraints, and object-storage references. [Auth design](auth-design.md) owns credential/session enforcement; [API contract](api-contract.md) owns retry behavior; [lifecycle](lifecycle.md) owns transitions and completion evidence.
 
-There are **six sandbox resource tables** plus **two supporting UI security tables**, not a user/role directory. All schemas below are proposals, not executable migrations.
+Implementation evidence: [the initial migration](../migrations/0001_initial.sql) creates projects, hosts, sandboxes, operations, and allocations. [Schema tests](../crates/sandbox-store/tests/schema.rs), [claims](../crates/sandbox-store/tests/claims.rs), and [single-host reservation tests](../crates/sandbox-store/tests/placement.rs) exercise PostgreSQL constraints and concurrency. Snapshot and UI security schemas remain planned; database reservations are not proof that a VM exists or is isolated.
+
+There are **six sandbox resource tables** plus **two supporting UI security tables**, not a user/role directory. The schemas below define the target design; the migration implements the current subset.
 
 ## ID format and identity
 
@@ -221,6 +223,16 @@ No SQLx dependency, migration files, or database access code exists yet. Pin the
 
 Snapshot contents are immutable after publication; retention/deletion metadata may change. Controller receipts cannot overwrite confirmed outcomes under stale ownership. IDs and UUID timestamps never substitute for explicit revisions and transactional comparisons. All references to source allocations and producing operations must remain in the same project and sandbox.
 
+## Implemented single-host reservation
+
+[Reservation storage](../crates/sandbox-store/src/placement.rs) locks the current operation, project, sandbox, and selected host in that order. It counts all unreleased allocations, including uncertain allocations and allocations with expired leases. Two controllers cannot overbook a host or a project through this path. A lease expiring during lock acquisition rolls back the entire reservation.
+
+Initial project allocation quota keys are `sandboxes`, `vcpu`, `memory_mib`, and `disk_mib`. Omitted keys default to 25, 100, 204800, and 1638400 respectively: 25 sandboxes at the current per-sandbox ceiling. Zero denies new reservations; negative or malformed values fail closed. These are allocation limits, not admission limits on queued sandboxes or pending operations; those admission checks remain to be implemented.
+
+Fresh reservations require the persisted project credential to remain active, unexpired, and unrevoked, with an active project and unexpired operation/sandbox deadlines. The selected host must be ready, have the expected positive supervisor epoch, and have an observation within 30 seconds. Host registration, heartbeat authentication, and image/host compatibility validation remain caller prerequisites for the future controller transport; this storage primitive does not authenticate a host or verify an image.
+
+Reservation publishes the allocation pointer, generation, and a `reserved` receipt atomically. It never reports guest readiness or increments dispatch attempts. Existing allocations return their identity for reconciliation instead of creating replacements, even when new execution is no longer authorized. A successful reservation does not authorize later dispatch without a fresh check, and no release operation is implemented here.
+
 ## Object-storage layout
 
 Store raw snapshot components under one snapshot. Outputs, logs, and file exports are referenced by their producing operation; they have no separate public artifact ID initially. The full prefixed IDs below are represented by placeholders for readability.
@@ -245,7 +257,7 @@ Image digests resolve to verified, allowed immutable manifests with compatibilit
 
 ## Acceptance checks and open decisions
 
-No migrations or database tests exist yet. Verify typed UUIDv7 parsing and collision handling; cross-project/sandbox foreign-key constraints; one unreleased allocation; monotonic generations/epochs/claim revisions; unique pause snapshot and retry identities; disk/upload reservation accounting; and immutable verified snapshot/object references. Test that stale upload attempts cannot overwrite a publication or cause live bytes to be garbage-collected.
+The initial schema, admission, claims, and reservation tests linked above cover a subset of these checks. Remaining coverage must verify typed UUIDv7 collision handling, supervisor epoch registration, replacement generations, unique pause snapshots, snapshot staging/upload accounting, and immutable verified snapshot/object references. Test that stale upload attempts cannot overwrite a publication or cause live bytes to be garbage-collected. No hardware isolation is established by storage tests.
 
 UI session/credential constraints and audit admission must satisfy [auth acceptance](auth-design.md#acceptance-checks). Use [lifecycle](lifecycle.md) for release evidence and [API contract](api-contract.md) for retry response behavior. The session's stable-ID example lives in [lifecycle](lifecycle.md#identity-through-a-sandbox-session).
 

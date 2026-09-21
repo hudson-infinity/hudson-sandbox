@@ -2,7 +2,7 @@
 
 Status: selected contract; implementation and tests pending. This document owns state transitions, completion evidence, pause/resume, deadlines, cancellation, and recovery. [API contract](api-contract.md) owns client retries and HTTP behavior; [data models](data-models.md) owns persisted fields and constraints.
 
-Implemented so far: [controller claim storage](../crates/sandbox-store/src/claims.rs) and its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs). Claiming is not dispatch or VM readiness; placement, host communication, and lifecycle completion remain unimplemented.
+Implemented so far: [controller claim storage](../crates/sandbox-store/src/claims.rs), its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs), and [single-host reservation storage](data-models.md#implemented-single-host-reservation). Claims and reservations are not dispatch or VM readiness; controller scheduling, host communication, and lifecycle completion remain unimplemented.
 
 ## Identity through a sandbox session
 
