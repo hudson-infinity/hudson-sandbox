@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use sandbox_api::{
     AppState,
     provision::provision,
-    router,
+    router_with_output,
     server::{ServerLimits, serve, tls_acceptor},
 };
 use sandbox_protocol::images::ImageAllowlist;
@@ -29,6 +29,9 @@ enum Command {
         tls_key: PathBuf,
         #[arg(long, required = true)]
         image_digest: Vec<String>,
+        /// Private service-owned S3 JSON configuration; provision read-only credentials.
+        #[arg(long)]
+        output_config: Option<PathBuf>,
     },
     /// Create or resume one project via a private credential file. Requires direct DATABASE_URL access.
     ProvisionProject {
@@ -68,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
             tls_cert,
             tls_key,
             image_digest,
+            output_config,
         } => {
             let images = ImageAllowlist::new(image_digest)?;
             let acceptor = tls_acceptor(
@@ -76,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
             let shutdown = shutdown_signal()?;
             let store = store().await?;
+            let output = load_output(output_config.as_deref())?;
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .context("binding HTTPS listener")?;
@@ -83,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             serve(
                 listener,
                 acceptor,
-                router(AppState { store, images }),
+                router_with_output(AppState { store, images }, output),
                 ServerLimits::default(),
                 shutdown,
             )
@@ -121,4 +126,23 @@ fn shutdown_signal() -> anyhow::Result<impl Future<Output = ()>> {
     Ok(async {
         let _ = tokio::signal::ctrl_c().await;
     })
+}
+
+fn load_output(
+    path: Option<&std::path::Path>,
+) -> anyhow::Result<Option<std::sync::Arc<dyn sandbox_api::outputs::OutputReader>>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    #[cfg(unix)]
+    {
+        Ok(Some(std::sync::Arc::new(
+            sandbox_artifacts::S3Config::read_private(path)?.build()?,
+        )))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        anyhow::bail!("private output configuration requires Unix")
+    }
 }

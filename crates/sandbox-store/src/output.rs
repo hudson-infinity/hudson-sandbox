@@ -63,6 +63,7 @@ impl std::fmt::Debug for OutputWork {
 /// Internal lookup result. API responses must not expose private references.
 #[derive(Debug)]
 pub struct OutputView {
+    pub simulated: Option<bool>,
     pub status: String,
     pub owner: Option<OutputOwner>,
     pub references: Option<OutputRefs>,
@@ -478,9 +479,19 @@ impl Store {
             return Ok(None);
         };
         let mut status: String = row.try_get("output_status")?;
-        let expires_at: Option<OffsetDateTime> = row.try_get("output_expires_at")?;
+        let output_expires: Option<OffsetDateTime> = row.try_get("output_expires_at")?;
+        let response_expires: Option<OffsetDateTime> = row.try_get("response_expires_at")?;
+        let expires_at = match (output_expires, response_expires) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let now: OffsetDateTime = row.try_get("read_now")?;
         if status == "none" {
+            if expires_at.is_some_and(|at| at <= now) {
+                status = "expired".into();
+            }
             return Ok(Some(OutputView {
+                simulated: None,
                 status,
                 owner: None,
                 references: None,
@@ -511,15 +522,11 @@ impl Store {
         } else {
             None
         };
-        let now: OffsetDateTime = row.try_get("read_now")?;
-        if expires_at.is_some_and(|at| at <= now)
-            || row
-                .try_get::<Option<OffsetDateTime>, _>("response_expires_at")?
-                .is_some_and(|at| at <= now)
-        {
+        if expires_at.is_some_and(|at| at <= now) {
             status = "expired".into();
         }
         Ok(Some(OutputView {
+            simulated: Some(e.simulated),
             references: if status == "published" {
                 references
             } else {

@@ -97,6 +97,7 @@ jobs:
         run: |
           cargo test -p sandbox-artifacts output_minio -- --ignored
           cargo test -p sandbox-controller output_minio -- --ignored --test-threads=1
+          cargo test -p sandbox-api output_minio -- --ignored --test-threads=1
 
       - name: Remove test object storage
         if: always()

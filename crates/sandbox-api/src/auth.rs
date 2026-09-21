@@ -27,6 +27,8 @@ pub struct Authenticated {
     pub project_id: ProjectId,
     /// Which credential was used. Recorded on every admitted operation.
     pub key_id: TokenKeyId,
+    // Retain only the verified hash, never the bearer secret.
+    hash: sandbox_protocol::TokenHash,
 }
 
 /// Why authentication failed. Never sent to the caller — only logged.
@@ -55,7 +57,14 @@ fn verify(
     // The secret is compared first and in constant time. Checking expiry or
     // status before the secret would let a caller learn which key identifiers
     // exist by timing or by response latency alone.
-    if !token.hash().verify(&record.hash) {
+    verify_hash(&token.hash(), record, now)
+}
+fn verify_hash(
+    hash: &sandbox_protocol::TokenHash,
+    record: &TokenRecord,
+    now: OffsetDateTime,
+) -> Result<(), Rejection> {
+    if !hash.verify(&record.hash) {
         return Err(Rejection::WrongSecret);
     }
     if record.revoked_at.is_some_and(|at| at <= now) {
@@ -68,6 +77,23 @@ fn verify(
         ProjectStatus::Active => Ok(()),
         ProjectStatus::Suspended => Err(Rejection::ProjectSuspended),
         ProjectStatus::Deleting => Err(Rejection::ProjectDeleting),
+    }
+}
+
+impl Authenticated {
+    /// Reauthorize after slow I/O. Key identifiers alone cannot validate a
+    /// credential that was removed, revoked, rotated or moved to another project.
+    pub async fn revalidate(&self, store: &Store) -> Result<(), Problem> {
+        let record = store
+            .token_by_key_id(&self.key_id)
+            .await
+            .map_err(|_| Problem::Unavailable)?
+            .ok_or(Problem::Unauthenticated)?;
+        if record.project_id != self.project_id || record.key_id != self.key_id {
+            return Err(Problem::Unauthenticated);
+        }
+        verify_hash(&self.hash, &record, OffsetDateTime::now_utc())
+            .map_err(|_| Problem::Unauthenticated)
     }
 }
 
@@ -98,6 +124,7 @@ where
                     verify(&token, &record, OffsetDateTime::now_utc()).map(|()| Authenticated {
                         project_id: record.project_id,
                         key_id: record.key_id.clone(),
+                        hash: token.hash(),
                     })
                 }
             },

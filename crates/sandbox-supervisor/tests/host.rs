@@ -657,10 +657,21 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
         .bind(f.config.host.uuid()).execute(&pool).await.unwrap();
     let store = sandbox_store::Store::from_pool(pool.clone());
     let image = f.config.images.keys().next().unwrap().clone();
-    let app = sandbox_api::router(sandbox_api::AppState {
-        store: store.clone(),
-        images: sandbox_protocol::images::ImageAllowlist::new([image.clone()]).unwrap(),
+    let artifacts = output.then(|| {
+        sandbox_artifacts::S3Config::read_private(&f.vm.temp.path().join("output.json"))
+            .unwrap()
+            .build()
+            .unwrap()
     });
+    let app = sandbox_api::router_with_output(
+        sandbox_api::AppState {
+            store: store.clone(),
+            images: sandbox_protocol::images::ImageAllowlist::new([image.clone()]).unwrap(),
+        },
+        artifacts.clone().map(|s| {
+            std::sync::Arc::new(s) as std::sync::Arc<dyn sandbox_api::outputs::OutputReader>
+        }),
+    );
     let mut controller = sandbox_controller::Controller::connect(
         store.clone(),
         sandbox_controller::ControllerConfig {
@@ -755,12 +766,6 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let artifacts = output.then(|| {
-        sandbox_artifacts::S3Config::read_private(&f.vm.temp.path().join("output.json"))
-            .unwrap()
-            .build()
-            .unwrap()
-    });
     let mut archived = Vec::new();
     // Authenticated public execute is owned by the runtime after admission.
     for (argv, expected_status, expected_exit) in [
@@ -873,6 +878,12 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
                 }
             );
             assert!(stdout.eof && stderr.eof);
+            for (name, expected) in [
+                ("stdout", stdout.bytes.as_slice()),
+                ("stderr", stderr.bytes.as_slice()),
+            ] {
+                public_output(&app, &token, id, name, expected).await;
+            }
             let (ticket,plans,revision):(Value,Value,i64) = sqlx::query_as("SELECT output_ticket,output_plan,output_claim_revision FROM operations WHERE id=$1").bind(owner.operation_id.uuid()).fetch_one(&pool).await.unwrap();
             archived.push((refs, owner, ticket, plans, revision));
         }
@@ -997,15 +1008,23 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
                 refs
             );
             assert_eq!(owner.host_epoch, 1);
-            artifacts
+            let retained = artifacts
                 .read(&refs.stdout, &owner, guardian::wall_ms(), 0, 1024)
                 .await
                 .unwrap();
+            public_output(
+                &app,
+                &token,
+                &owner.operation_id.to_string(),
+                "stdout",
+                &retained.bytes,
+            )
+            .await;
         }
         assert!(!m.group().exists());
         eprintln!(
             "real_output_archive_observation {}",
-            json!({"binary_stdout_stderr_verified":true,"empty_streams_verified":true,"controller_published":true,"execution_marker_once":true,"destroy_confirmed":true,"epoch_2_reconciles_epoch_1_objects_without_guest":true})
+            json!({"public_binary_output_verified":true,"public_output_after_destroy_and_epoch_restart":true,"binary_stdout_stderr_verified":true,"empty_streams_verified":true,"controller_published":true,"execution_marker_once":true,"destroy_confirmed":true,"epoch_2_reconciles_epoch_1_objects_without_guest":true})
         );
     }
     eprintln!(
@@ -1195,4 +1214,30 @@ async fn real_command_rpc_retains_results_fences_absence_and_survives_request_en
         .unwrap()
         .into_inner();
     assert_eq!(completed.receipt.unwrap().exit_code, Some(7));
+}
+
+async fn public_output(
+    app: &axum::Router,
+    token: &str,
+    operation: &str,
+    name: &str,
+    expected: &[u8],
+) {
+    use tower::ServiceExt;
+    let request = http::Request::builder()
+        .uri(format!("/v1/operations/{operation}/outputs/{name}"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.headers()["x-output-simulated"], "false");
+    assert_eq!(response.headers()["x-output-eof"], "true");
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap()
+            .as_ref(),
+        expected
+    );
 }

@@ -1,6 +1,6 @@
 # Private output storage
 
-Status: shared output metadata, the S3 transport library, independently fenced PostgreSQL publication, and the supervisor archival worker are implemented. Operation status responses expose output progress. Public byte retrieval/streaming and cleanup are not yet connected. [Issue #46](https://github.com/hudson-infinity/hudson-sandbox/issues/46) tracks that integration and authenticated streaming. Upload success alone is neither execution success nor publication.
+Status: shared output metadata, the S3 transport library, independently fenced PostgreSQL publication, and the supervisor archival worker are implemented. Operation status responses expose output progress. Authenticated retained-byte retrieval is connected. Live streaming and cleanup remain unfinished. [Issue #46](https://github.com/hudson-infinity/hudson-sandbox/issues/46) tracks that integration and authenticated streaming. Upload success alone is neither execution success nor publication.
 
 ## Object identity and integrity
 
@@ -60,7 +60,7 @@ Two supervisor archive slots bound concurrency separately from lifecycle workers
 
 ## Integration still required
 
-Authenticated byte retrieval and SSE must consume selected references or pinned live-guest reads, revalidate credentials after slow reads and periodically during streams, and provide explicit gaps on reconnect. Neither public output endpoint exists yet.
+The [retained-output endpoint](api-contract.md#implemented-retained-output-reads) consumes selected references and rechecks credentials after storage and metadata lookups. SSE still needs pinned live-guest reads, periodic credential rechecks, cursor/resumption semantics and explicit gaps on reconnect.
 
 `expires_unix_ms` stops reads; `delete_after_unix_ms` is an earliest eligibility timestamp, not a deletion receipt. Cleanup must retain compact operation tombstones and reconcile selected and orphaned attempts without deleting a referenced object early. That worker and its deletion authority are unfinished. Destroy remains independent of publication; explicit user-facing loss status, streaming credential revalidation and cursor/resumption semantics remain integration work.
 
@@ -90,4 +90,13 @@ cargo test -p sandbox-controller output_minio -- --ignored --test-threads=1
 
 These credentials are the repository's synthetic local fixture, not production credentials. The ignored test requires its configuration and fails if storage is unavailable; CI invokes it explicitly rather than treating a skip as evidence.
 
-[Controlled archival evidence](evidence/2026-09-21-aarch64-output-archive.json) records eight passing real-host tests, source/artifact hashes, binary stdout/stderr and empty-stream verification, one execution marker, and object reconciliation after VM destruction and host epoch advancement. This is nested aarch64 development evidence; public byte retrieval and supported-release isolation gates remain unfinished.
+[Controlled archival evidence](evidence/2026-09-21-aarch64-output-archive.json) records eight passing real-host tests, source/artifact hashes, binary stdout/stderr and empty-stream verification, one execution marker, and object reconciliation after VM destruction and host epoch advancement. This is nested aarch64 development evidence; that recording predates the public read endpoint and does not satisfy supported-release isolation gates.
+
+
+## API reader configuration and evidence
+
+`sandbox-api serve --output-config /absolute/path/output.json` enables retained-byte reads using the same private configuration-file format above. Use separate read-only credentials with access to the same endpoint, bucket and object namespace as the supervisor. File ownership is checked against the API service UID. Without configuration the route still authenticates and checks ownership, then returns `503` for a published output read. No public object URL or client storage credential is issued.
+
+The API exposes a trusted read-only adapter interface; the production adapter is `ArtifactStore`, which verifies full object integrity and pinned identity. Database references and API selectors remain independent of provider credentials. [API tests](../crates/sandbox-api/tests/outputs.rs) use controlled adapters to pause storage and test revocation, secret replacement, project suspension/deletion, retention, changing references, backend failures, concurrency and timeout behavior. The explicit `cargo test -p sandbox-api output_minio -- --ignored` case uses real HTTPS and MinIO with binary ranges, removal and corruption of only its own random test objects. CI supplies its configuration alongside the existing artifact/controller MinIO tests.
+
+[Public retrieval evidence](evidence/2026-09-21-aarch64-output-read.json) verifies authenticated final stdout/stderr reads from real microVM output, including binary and empty streams and reads after destruction/host epoch advancement. Separate HTTPS/MinIO tests cover wire transport and missing/corrupt objects. Controlled delayed-reader and database-lock tests verify post-read authorization, including revocation during final metadata lookup. Live streaming and the broader release gates remain unfinished.
