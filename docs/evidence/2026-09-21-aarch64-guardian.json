@@ -1,0 +1,67 @@
+{
+  "recorded_at_utc": "2026-09-21T08:40:05.352413+00:00",
+  "scope": "Allocation guardian component on the isolated nested aarch64 development VM; not an end-to-end API or supported x86_64 release validation.",
+  "source_base_commit": "3f9ab731dd0e73254e8842980613672774f4ecc3",
+  "source_hashes_match_mac_and_linux": true,
+  "environment": {
+    "kernel": "6.8.0-134-generic",
+    "architecture": "aarch64",
+    "source_sha256": {
+      "Cargo.toml": "41a092120d13e8d5f47bac373be780b59501ba88f5ceef87d1787308b1c17c77",
+      "Cargo.lock": "805123ce419d5a1616494c01a6750545874a896019e9d00d2e5e1b74e789349c",
+      "crates/sandbox-supervisor/Cargo.toml": "6af6e239425f17f6705265f8855b660449d57968591c24653298b0327f4d042f",
+      "crates/sandbox-supervisor/src/lib.rs": "b7db2c41a0c4dc26754f2f8a9e2d9346419a7f16ca855a02e2311ce0d60d22d9",
+      "crates/sandbox-supervisor/src/main.rs": "300aff92907b7ea437fe08aa9b2a11aaa2d3e8bef265ddd895574f72449448dc",
+      "crates/sandbox-supervisor/src/lease.rs": "196cc102e0f6562c547cab9a3643a9057c6327d96d40b78fc7e0d56434252982",
+      "crates/sandbox-supervisor/src/guardian/mod.rs": "b3e2f55cb844b57e785125ecf84614796cbda033dbc4f0ad605d58befa3377ba",
+      "crates/sandbox-supervisor/src/guardian/process.rs": "7caf26ce7d25c0bb5a2f51fe892f108ac27c290fa6ef53f5952ef3e61726444d",
+      "crates/sandbox-supervisor/tests/guardian.rs": "d47424807dfb56842560e380d26e0c467577b600d15de530c2b737df8d163e48"
+    },
+    "artifact_sha256": {
+      "/tmp/hudson-fc-artifacts/release-v1.17.0-aarch64/firecracker-v1.17.0-aarch64": "fe726e0b43c04363ac07e358be4dee982c3947c65ed3ae10c770fef5e1cd756c",
+      "/tmp/hudson-fc-artifacts/release-v1.17.0-aarch64/jailer-v1.17.0-aarch64": "4d8d2dd4dfc1d47932b2bd261479181dd0c54f0a2f32714421a7e7f9f07ddec8",
+      "/tmp/hudson-fc-artifacts/vmlinux-6.1.186": "0913a93462f1762581e3b25c434212aeadc06084e97f2e9c21ec4fca3fc54b42"
+    },
+    "supervisor_binary_sha256": "b61b535d5b550663316397923fba68d9460c00e24e5041da3a0b9f870c02929e",
+    "remaining_allocation_cgroups": [],
+    "cgroup_events": "populated 0\nfrozen 0\n"
+  },
+  "checks": {
+    "mac_make_check": {
+      "passed": true,
+      "tests_passed": 211
+    },
+    "linux_supervisor_clippy_all_targets": {
+      "passed": true
+    },
+    "linux_supervisor_unit_tests": {
+      "passed": 5,
+      "failed": 0
+    },
+    "linux_privileged_vm_tests": {
+      "passed": 7,
+      "failed": 0,
+      "seconds": 47.92,
+      "cases": [
+        "concurrent_stop_and_renewal_never_revive_the_vm",
+        "killing_namespace_guardian_kills_vm_without_a_surviving_supervisor",
+        "real_vm_stop_renewal_fences_and_exact_retry",
+        "recovery_of_launch_intent_fences_before_any_new_spawn",
+        "staging_digest_failure_and_recovery_fence_prevent_delayed_launch",
+        "stalled_control_clients_do_not_disable_expiry",
+        "supervisor_loss_does_not_disable_lease_expiry"
+      ]
+    },
+    "logs_sha256": {
+      "hudson-guardian-full-check.log": "f5ba4245498d04e95c472ebacefcbc796395df4be5ddf6254d1281f1cbdd3ad1",
+      "hudson-guardian-linux-final.log": "de805d152cdce5a35aafdc93a5966eebf453d7b23976f277870566c00bae2058"
+    }
+  },
+  "remaining": [
+    "real supervisor RPC and controller integration",
+    "guest image and certificate bootstrap",
+    "public execute, files and output storage",
+    "network policy and host-wide resource admission",
+    "x86_64 and adversarial security release gates"
+  ]
+}

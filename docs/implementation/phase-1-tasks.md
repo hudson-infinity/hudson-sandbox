@@ -46,6 +46,8 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 ## Supervisor
 
+The separate [allocation guardian](../allocation-guardian.md) implements verified staging, real jailer/Firecracker ownership, cgroup limits, local deadlines and cleanup. Its controlled aarch64 tests are component evidence; the integrated RPC, partition, network and supported-host gates below remain open.
+
 - [ ] gRPC server over mTLS, private interface only, verifies the controller's certificate identity rather than merely a valid certificate.
 - [ ] Per-host certificate issuance and a small internal CA.
 - [ ] Jailer, per-VM cgroups and namespaces, Firecracker boot from our kernel plus an allowlisted rootfs.

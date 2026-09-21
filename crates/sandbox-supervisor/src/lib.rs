@@ -5,3 +5,7 @@ pub mod transport;
 
 #[cfg(unix)]
 pub mod guest;
+
+#[cfg(target_os = "linux")]
+pub mod guardian;
+pub mod lease;
