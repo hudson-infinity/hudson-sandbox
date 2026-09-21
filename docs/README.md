@@ -1,6 +1,6 @@
 # Documentation guide
 
-The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. Real workload execution, the UI, and an installer remain unfinished. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
+The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. API-to-guest execution, the UI, and an installer remain unfinished; the guest command component has local Linux and microVM evidence. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
 
 ## Reading order and ownership
 
@@ -11,6 +11,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [Data models](data-models.md) | Fields, relationships, IDs, database constraints, storage layout | What we persist and how records connect |
 | [Authentication](auth-design.md) | Project/Admin permissions, credentials, sessions, CSRF, revocation, audit semantics | Who can do what and how access is enforced |
 | [Lifecycle](lifecycle.md) | State transitions, completion evidence, deadlines, cancellation, recovery | How create/pause/resume/destroy actually work |
+| [Guest runner](guest-runner.md) | Guest process execution, bounded output and local recovery receipts | What the command component implements and what host protections remain |
 | [Linux development](linux-development.md) | Nested Linux/KVM setup and real boot evidence | How to develop the guest and real supervisor |
 | [API server](api-server.md) | HTTPS transport, offline provisioning, and runnable local setup | How to start and call the implemented API |
 | [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |

@@ -59,7 +59,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [ ] Guest image: Debian slim, our init, our guest agent, `system` and `workload` cgroups, agent in its own PID namespace.
 - [ ] Guest kernel build: modules off, lockdown on, pinned and digest-published.
 - [ ] vsock protocol with length-prefixed protobuf, shared `.proto` files with the supervisor.
-- [ ] Spawn, process-tree tracking, bounded output capture, exit reporting.
+- [x] Guest-local spawn, process-tree cleanup, bounded output and exit/restart receipts; [component contract and evidence](../guest-runner.md). Wire integration and host-authoritative watchdogs remain open above.
 - [ ] File write into the workspace with path and size validation.
 
 ## Passing 1a

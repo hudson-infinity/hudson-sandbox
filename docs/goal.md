@@ -1,6 +1,6 @@
 # Product goal
 
-Status: selected product direction; design only. No runtime or security guarantees have been implemented or verified. This document owns product scope and priorities; the [roadmap](roadmap.md) owns delivery gates and evidence, [threat model](threat-model.md) owns the security contract this scope requires, [performance](performance.md) owns the budgets it must meet, and [alternatives](alternatives.md) owns why we build it rather than adopt it.
+Status: selected product direction; early implementation. The [documentation guide](README.md) identifies implemented components and evidence. The complete runtime and its security release gates remain unfinished. This document owns product scope and priorities; the [roadmap](roadmap.md) owns delivery gates and evidence, [threat model](threat-model.md) owns the security contract this scope requires, [performance](performance.md) owns the budgets it must meet, and [alternatives](alternatives.md) owns why we build it rather than adopt it.
 
 ## What we are building
 

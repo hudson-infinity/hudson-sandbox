@@ -1748,6 +1748,17 @@ dependencies = [
 [[package]]
 name = "sandbox-guest"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rustix",
+ "sandbox-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "sandbox-protocol"
