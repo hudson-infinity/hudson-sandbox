@@ -167,6 +167,28 @@ Stored output is retrieved by authorized operation and output name. The service 
 
 The implemented SSE wire format is specified below. Authentication and periodic rechecks remain authoritative in [auth design](auth-design.md#live-output-and-revocation).
 
+## Implemented file downloads
+
+The authenticated route `/v1/sandboxes/{sandbox_id}/files/captures` exposes short-lived captured reads from the current running allocation. Configure the API's separate [file-reader connection](api-server.md#file-reader-configuration) first. Public uploads and their durable controller orchestration remain unfinished under [issue #62](https://github.com/hudson-infinity/hudson-sandbox/issues/62).
+
+| Method | Request | Successful response |
+| --- | --- | --- |
+| `POST` | JSON `{"path":"relative/file.bin"}`; no query fields, capture header or HTTP Range | `201` with `capture`, `size`, hex `sha256`, `expires_unix_ms`, `chunk_size`, `simulated`, `guest_reported` |
+| `GET` | Exactly one `X-File-Capture` header; optional `offset` (default 0), `limit` (default 32768, range 1–32768) | `200 application/octet-stream`, bounded to the requested chunk |
+| `DELETE` | Exactly one `X-File-Capture` header; no query fields | `204`; an exact release retry acknowledges the retained host tombstone until expiry |
+
+Every call also requires `Authorization: Bearer ...`. Treat `capture` as opaque and return it only in the header, never a URL. It is a versioned unsigned descriptor of the original allocation, boot and complete host capture handle, not an authorization credential. The API rechecks project credentials and current allocation; the supervisor compares every handle field with its retained registry. Editing the descriptor cannot select a host endpoint, retarget a capture or extend the retained ticket lifetime. API replicas can serve the same descriptor when configured for its host; host restart or expiry invalidates it. Unknown future descriptor versions are rejected.
+
+Chunk responses include `X-File-Offset`, `X-File-Next-Offset`, `X-File-Size`, `X-File-SHA256`, `X-File-EOF`, `X-File-Simulated` and `X-File-Guest-Reported: true`. They use `Content-Disposition: attachment; filename=file.bin` and `X-Content-Type-Options: nosniff`. All success/problem responses use `Cache-Control: no-store`. HTTP Range is unsupported; these are application-level offset reads, not `206` responses. Offset equal to file size returns an empty final chunk. Verify the full SHA-256 after assembling all chunks; the digest describes guest-reported captured bytes, not guest honesty or an atomic filesystem snapshot.
+
+Paths use the [workspace path rules](file-transfer.md#workspace-and-path-contract). Capture JSON is limited to 16 KiB and the capture header value to 16 KiB. Unknown request fields, duplicate query fields and duplicate capture headers are rejected. File size, ticket count and lifetime follow the [supervisor download bounds](file-transfer.md#supervisor-download-service): at most 8 MiB, eight tickets per allocation, 64 per host and 60 seconds from host reservation. The API permits four concurrent file calls per process with a ten-second backend wait, within the HTTPS server's overall request deadline. This is not a per-project fairness quota.
+
+Missing, foreign-project, expired, stopped or otherwise unreadable sandboxes return nonrevealing `404 not_found`. Invalid credentials return `401 unauthenticated`. Malformed descriptors/requests return `400 bad_request`; an oversized JSON body returns `413 payload_too_large`. An expired, released or missing capture returns `410 file_capture_missing`; offset beyond the descriptor's file size returns `416 file_range_invalid`. Invalid backend identity, provenance or chunk metadata returns `502 file_response_invalid`. Disabled reader configuration, capacity exhaustion, unavailable dependencies or timeout returns `503 unavailable`.
+
+Authorization and current allocation are checked before and after every backend call, including error replies. A short database transaction locks project, sandbox, allocation and host metadata before its final credential/scope projections, then commits before the response is constructed. Host I/O holds none of those locks. Revocation or allocation changes committed before that final check suppress the response; checks delayed by row locks reread current values. No system can revoke bytes already released to the client, and changes after the final authorization point do not retract queued response bytes.
+
+A capture retry is a **fresh read**, may see different bytes and consumes another bounded ticket. A lost capture response can leave an unseen ticket until expiry. The API never silently recaptures or combines bytes from different captures; retry a range/release only with the same descriptor, and explicitly restart a download after `410`. No durable file mutation operation is created by these routes.
+
 ## Versioning and deprecation
 
 The `/v1` and `/admin/v1` prefixes are a compatibility promise, and the promise needs stating before anything ships against it.

@@ -35,6 +35,9 @@ pub enum Problem {
     OutputMissing,
     OutputCorrupt,
     OutputRange,
+    FileMissing,
+    FileCorrupt,
+    FileRange,
     CommandInProgress(sandbox_protocol::OperationId),
     ExecutionCapacityExhausted,
     /// The same key was used for a different request, or a conflicting
@@ -68,6 +71,9 @@ impl Problem {
             Self::Gone | Self::ResponseExpired(_) | Self::OutputExpired | Self::OutputMissing => {
                 StatusCode::GONE
             }
+            Self::FileMissing => StatusCode::GONE,
+            Self::FileCorrupt => StatusCode::BAD_GATEWAY,
+            Self::FileRange => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::OutputNotReady => StatusCode::CONFLICT,
             Self::OutputCorrupt => StatusCode::BAD_GATEWAY,
             Self::OutputRange => StatusCode::RANGE_NOT_SATISFIABLE,
@@ -96,6 +102,9 @@ impl Problem {
             Self::OutputMissing => "output_missing",
             Self::OutputCorrupt => "output_corrupt",
             Self::OutputRange => "output_range_invalid",
+            Self::FileMissing => "file_capture_missing",
+            Self::FileCorrupt => "file_response_invalid",
+            Self::FileRange => "file_range_invalid",
             Self::CommandInProgress(_) => "command_in_progress",
             Self::ExecutionCapacityExhausted => "execution_capacity_exhausted",
             Self::Conflict(_) | Self::TransitionInProgress(_) => "conflict",
@@ -121,6 +130,9 @@ impl Problem {
             Self::OutputMissing => "The requested output history is unavailable",
             Self::OutputCorrupt => "Output integrity verification failed",
             Self::OutputRange => "The offset exceeds the captured output size",
+            Self::FileMissing => "The captured file is unavailable or expired",
+            Self::FileCorrupt => "The file service returned an invalid response",
+            Self::FileRange => "The offset exceeds the captured file size",
             Self::CommandInProgress(_) => "Another operation is still active or unresolved",
             Self::ExecutionCapacityExhausted => {
                 "Retained command capacity is exhausted; use a smaller output limit or a new sandbox"

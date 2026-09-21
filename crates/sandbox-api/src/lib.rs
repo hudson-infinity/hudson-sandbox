@@ -8,6 +8,7 @@ pub mod auth;
 pub mod cancel;
 pub mod destroy;
 pub mod execute;
+pub mod files;
 pub mod headers;
 pub mod lists;
 pub mod outputs;
@@ -55,6 +56,16 @@ pub fn router_with_streams(
     reader: Option<std::sync::Arc<dyn outputs::OutputReader>>,
     live: Option<std::sync::Arc<dyn streams::live::LiveReader>>,
 ) -> Router {
+    router_with_files(state, reader, live, None)
+}
+
+pub fn router_with_files(
+    state: AppState,
+    reader: Option<std::sync::Arc<dyn outputs::OutputReader>>,
+    live: Option<std::sync::Arc<dyn streams::live::LiveReader>>,
+    files: Option<std::sync::Arc<dyn files::client::FileReader>>,
+) -> Router {
+    let files = files::routes(state.store.clone(), files);
     let streams = streams::routes(state.store.clone(), live, reader.clone());
     let outputs = outputs::routes(state.store.clone(), reader);
     Router::new()
@@ -67,4 +78,5 @@ pub fn router_with_streams(
         .with_state(state)
         .merge(outputs)
         .merge(streams)
+        .merge(files)
 }

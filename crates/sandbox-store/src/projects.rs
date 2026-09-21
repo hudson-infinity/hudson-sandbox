@@ -86,24 +86,28 @@ impl Store {
 
         let Some(row) = row else { return Ok(None) };
 
-        let status: String = row.try_get("project_status").map_err(StoreError::Query)?;
-        let project_status = ProjectStatus::from_column(&status)
-            .ok_or_else(|| StoreError::Corrupt(format!("unknown project status {status:?}")))?;
-
-        let hash: Vec<u8> = row.try_get("hash").map_err(StoreError::Query)?;
-        let hash: [u8; 32] = hash
-            .try_into()
-            .map_err(|_| StoreError::Corrupt("stored token hash is not 32 bytes".to_owned()))?;
-
-        let stored_key_id: String = row.try_get("key_id").map_err(StoreError::Query)?;
-
-        Ok(Some(TokenRecord {
-            project_id: ProjectId::from_uuid(row.try_get("project_id").map_err(StoreError::Query)?),
-            project_status,
-            key_id: TokenKeyId::from_stored(stored_key_id),
-            hash: TokenHash::from_bytes(hash),
-            expires_at: row.try_get("expires_at").map_err(StoreError::Query)?,
-            revoked_at: row.try_get("revoked_at").map_err(StoreError::Query)?,
-        }))
+        token_record(&row).map(Some)
     }
+}
+
+pub(crate) fn token_record(row: &sqlx::postgres::PgRow) -> Result<TokenRecord, StoreError> {
+    let status: String = row.try_get("project_status").map_err(StoreError::Query)?;
+    let project_status = ProjectStatus::from_column(&status)
+        .ok_or_else(|| StoreError::Corrupt(format!("unknown project status {status:?}")))?;
+
+    let hash: Vec<u8> = row.try_get("hash").map_err(StoreError::Query)?;
+    let hash: [u8; 32] = hash
+        .try_into()
+        .map_err(|_| StoreError::Corrupt("stored token hash is not 32 bytes".to_owned()))?;
+
+    let stored_key_id: String = row.try_get("key_id").map_err(StoreError::Query)?;
+
+    Ok(TokenRecord {
+        project_id: ProjectId::from_uuid(row.try_get("project_id").map_err(StoreError::Query)?),
+        project_status,
+        key_id: TokenKeyId::from_stored(stored_key_id),
+        hash: TokenHash::from_bytes(hash),
+        expires_at: row.try_get("expires_at").map_err(StoreError::Query)?,
+        revoked_at: row.try_get("revoked_at").map_err(StoreError::Query)?,
+    })
 }
