@@ -13,7 +13,8 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
 - [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
 - [ ] Extend the integrated [create controller and fake](../controller.md) for execute, files, and outputs.
-- [ ] Self-hosted runner for VM tests, once a host exists. Fork pull requests never run on it.
+- [x] Dedicated nested aarch64 Linux/KVM development host and real boot evidence; [development guide](../linux-development.md). This does not pass the release gates.
+- [ ] Self-hosted x86_64 runner for VM tests, once a supported host exists. Fork pull requests never run on it.
 
 ---
 

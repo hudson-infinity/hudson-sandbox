@@ -1,0 +1,121 @@
+{
+  "date": "2026-09-21",
+  "scope": "Local nested aarch64 development boot, not release or isolation-gate evidence",
+  "mac_host": {
+    "cpu": "Apple M4 Pro",
+    "macos": "26.3.1",
+    "memory_bytes": 51539607552
+  },
+  "linux_host": {
+    "lima": "2.2.0",
+    "driver": "vz",
+    "architecture": "aarch64",
+    "kernel": "6.8.0-134-generic",
+    "vcpus": 4,
+    "memory_mib": 4096,
+    "disk_gib": 24,
+    "plain": true,
+    "host_mounts": [],
+    "ssh_agent_forwarding": false,
+    "proxy_environment_forwarding": false,
+    "kvm_api_version": 12,
+    "cgroup_controllers": [
+      "cpu",
+      "cpuset",
+      "hugetlb",
+      "io",
+      "memory",
+      "misc",
+      "pids",
+      "rdma"
+    ],
+    "rustc": "1.92.0 (ded5c06cf 2025-12-08)",
+    "protoc": "3.21.12"
+  },
+  "artifacts": {
+    "ubuntu_image": {
+      "url": "https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-arm64.img",
+      "sha256": "7df0201546f75b8bcc1044594c806c35749421ad3c9bc1be2a3ab806cfae39cc",
+      "verification": "Lima verified its pinned template digest"
+    },
+    "firecracker_archive": {
+      "url": "https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-aarch64.tgz",
+      "sha256": "e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a93e2256",
+      "verification": "Matched the release's published sha256.txt on both macOS and Linux"
+    },
+    "guest_kernel": {
+      "url": "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260916-dcfc69b625d0-0/aarch64/vmlinux-6.1.186",
+      "sha256": "0913a93462f1762581e3b25c434212aeadc06084e97f2e9c21ec4fca3fc54b42",
+      "verification": "Observed digest of bytes downloaded over HTTPS from the upstream CI source, not a Hudson image attestation"
+    },
+    "rootfs": {
+      "kind": "Disposable 64 MiB ext4 with BusyBox and a local init script",
+      "busybox_package": "1:1.36.1-6ubuntu3.1",
+      "production_image": false
+    }
+  },
+  "microvm": {
+    "firecracker": "1.17.0",
+    "jailer": "1.17.0",
+    "guest_kernel": "6.1.186",
+    "vcpus": 1,
+    "memory_mib": 128,
+    "configured_network_interfaces": 0,
+    "guest_network_devices": [
+      "lo"
+    ],
+    "guest_cgroup_controllers": [
+      "cpuset",
+      "cpu",
+      "io",
+      "memory",
+      "hugetlb",
+      "pids"
+    ]
+  },
+  "observed_firecracker_process": {
+    "uid": [
+      65534,
+      65534,
+      65534,
+      65534
+    ],
+    "gid": [
+      65534,
+      65534,
+      65534,
+      65534
+    ],
+    "pid_namespace_depth": 2,
+    "no_new_privileges": 1,
+    "seccomp_mode": 2
+  },
+  "observed_cgroup_configuration": {
+    "cpu.max": "100000 100000",
+    "memory.max": "268435456",
+    "pids.max": "64"
+  },
+  "outcome": {
+    "guest_init_ran": true,
+    "guest_poweroff_observed": true,
+    "actual_firecracker_child_exit_code": 0,
+    "cgroup_populated_during_boot": 1,
+    "cgroup_populated_after_exit": 0,
+    "test_cgroup_removed": true,
+    "temporary_rootfs_removed": true
+  },
+  "limits": [
+    "No customer code ran through the API",
+    "No guest command runner or vsock protocol implemented",
+    "No hostile-workload resource, network, or cross-tenant acceptance tests",
+    "No supported x86_64 release validation",
+    "No performance claim",
+    "No production image or installer produced"
+  ],
+  "native_linux_build": {
+    "source_commit": "e46182dea027e283e5b3fc6722bf05e2469c02ca",
+    "command": "cargo test -p sandbox-protocol --lib",
+    "passed": 29,
+    "failed": 0
+  }
+}

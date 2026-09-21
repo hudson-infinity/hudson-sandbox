@@ -65,3 +65,7 @@ The default listen address is `127.0.0.1:7443`; non-loopback addresses are rejec
 [State-machine tests](../crates/sandbox-fake-host/tests/state.rs) cover concurrent duplicates, changed retries, lost acknowledgements, stale claims after absence, stop-before-create, cross-project/allocation identity, generation replacement, limits, deadlines, and monotonic lease expiry. [Loopback TLS tests](../crates/sandbox-fake-host/tests/tls.rs) exercise actual gRPC calls, configured certificate rotation, same-CA unauthorized peers, missing/untrusted client certificates, wrong host identities, plaintext rejection, and server message bounds.
 
 These tests establish the modeled behavior and transport checks only. Further lifecycle integration, real certificate lifecycle, host watchdog fencing under partitions, Firecracker/jailer, image-byte verification, filesystem isolation, resource enforcement, and network policy require their own evidence. [Phase 1](roadmap.md#scope-discipline-for-phase-1) cannot pass on fake-host tests.
+
+## Real VM development evidence
+
+The [Linux development guide](linux-development.md#verified-boot-and-its-limits) records a real Firecracker/jailer boot in a nested aarch64 environment. It is separate from this shared transport and fake implementation; no real supervisor RPC execution driver has landed yet. The experiment also demonstrates why [tracking the actual Firecracker child](linux-development.md#track-the-firecracker-child-not-just-the-jailer) is necessary: the jailer parent can exit successfully while the microVM is still running.
