@@ -4,9 +4,9 @@ Status: proposed targets. Nothing here is measured; no implementation exists to 
 
 ## Why targets exist before code
 
-A secure runtime that is correct but slow is not a usable runtime. Create latency decides whether short workloads are worth running at all, and resume latency decides whether pause/resume is worth shipping when it arrives in Phase 4. Neither number is visible in a correctness document.
+A secure runtime that is correct but slow is not a usable runtime. Create latency decides whether short workloads are worth running at all, and resume latency decides whether pause/resume is worth shipping when it arrives in Phase 3. Neither number is visible in a correctness document.
 
-Writing targets now makes two things explicit: which numbers decide whether the design works, and which deferred optimizations the current format choices must not block. The create and execute budgets apply to the first usable milestone; the snapshot budgets apply at the pause/resume gate but constrain the format from the moment it is designed.
+Writing targets now makes two things explicit: which numbers decide whether the design works, and which deferred optimizations the current format choices must not block. The create and execute budgets apply at gate 1a; the snapshot budgets apply at the Phase 3 pause/resume gate but constrain the format from the moment it is designed.
 
 These numbers are opening positions for the first spike, not commitments to callers. Replace each target with a measured value and a recorded host configuration as evidence arrives, or change the target and say why.
 
@@ -30,7 +30,7 @@ Scale each memory-dependent target with configured memory rather than treating t
 
 A pause writes the sandbox's full memory to object storage, and a cross-host resume reads it back before any customer process runs. At 1 GB/s of usable throughput, a 4 GiB sandbox spends roughly four seconds moving bytes in each direction with everything else perfect. Real throughput to an S3-compatible endpoint is frequently lower.
 
-[Lifecycle](lifecycle.md#pause) selects full snapshots as the initial format, and [roadmap](roadmap.md#implementation-phases) defers differential snapshots, lazy loading, and warm pools to Phase 6. That sequencing is reasonable. The risk is not the deferral itself: it is publishing a snapshot format and object layout that makes the deferred work impossible without breaking every existing snapshot.
+[Lifecycle](lifecycle.md#pause) selects full snapshots as the initial format, and [roadmap](roadmap.md#implementation-phases) defers differential snapshots, lazy loading, and warm pools to Phase 5. That sequencing is reasonable. The risk is not the deferral itself: it is publishing a snapshot format and object layout that makes the deferred work impossible without breaking every existing snapshot.
 
 ## Constraints on designs we are choosing now
 

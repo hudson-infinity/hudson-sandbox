@@ -11,7 +11,7 @@ Existing products already run untrusted code for agents. Nothing else in this re
 | Self-hostable by us and by our users | The service must run in an operator's own infrastructure, with their storage and their credentials |
 | Direct control of the isolation and data boundary | We answer for the isolation claim, so we must be able to test and change it |
 | General-purpose workloads, not an agent-shaped product | [Product goal](goal.md) commits to scripts, applications, build jobs, automation, and services through the same interfaces |
-| Pause and resume with live process continuity, later | A running process survives the pause and continues afterward; a fresh container with the same files is a different product. Phase 4, but it shapes the architecture from the start |
+| Pause and resume with live process continuity, later | A running process survives the pause and continues afterward; a fresh container with the same files is a different product. Phase 3, but it shapes the architecture from the start |
 | One identity across pause and resume | Callers and operators track a sandbox, not a sequence of unrelated environments |
 | Honest uncertain outcomes | An interrupted operation reports `unknown` and reconciles, rather than being retried silently |
 | No dependency on our own harness | Hudson is one client. The service must be usable without it |
@@ -52,4 +52,4 @@ Reopen this decision if any of these becomes true.
 
 ## Open decisions
 
-Self-hosting comes first, and a hosted offering stays possible rather than planned; usage is therefore derived from allocations and operations rather than metered in the schema, and that must be revisited before anything is billed from it. The project is released under Apache-2.0 ([decision 0004](decisions/0004-apache-2-0-license.md)). The first public release is a 0.1 once the Phase 3 recovery and isolation gate passes.
+Self-hosting comes first, and a hosted offering stays possible rather than planned; usage is therefore derived from allocations and operations rather than metered in the schema, and that must be revisited before anything is billed from it. The project is released under Apache-2.0 ([decision 0004](decisions/0004-apache-2-0-license.md)). The first public release is a 0.1 once the Phase 2 distribution gate passes — that is, once someone other than us can install it and run a workload.

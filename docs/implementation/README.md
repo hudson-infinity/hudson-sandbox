@@ -30,4 +30,4 @@ A note surviving past its work is a bug. If half of one is done, delete the done
 | Note | Covers | Delete when |
 | --- | --- | --- |
 | [Phase 0 spikes](phase-0-spikes.md) | The eight hardware questions | All eight have written findings and the durable ones have moved into the contracts |
-| [Phase 1 tasks](phase-1-tasks.md) | The walking skeleton | Create, execute and destroy work end to end on a real host |
+| [Phase 1 tasks](phase-1-tasks.md) | The walking skeleton, then proving it does not lie | Both gates pass: it works, and it reports honestly under injected failure |

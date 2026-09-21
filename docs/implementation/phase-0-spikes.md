@@ -26,7 +26,7 @@ Each one needs a written answer, the commands that produced it, and a verdict: d
 - [ ] Time create-to-guest-ready, warm image cache, twenty runs. Record p50 and p95 against the [create budget](../performance.md#proposed-budgets).
 - [ ] Same, cold cache.
 
-### 3. Does a frozen cgroup stay frozen across snapshot and restore? — gates Phase 4
+### 3. Does a frozen cgroup stay frozen across snapshot and restore? — gates Phase 3
 
 The single most important question in this sheet. The entire controlled-resume contract assumes yes.
 
@@ -35,32 +35,32 @@ The single most important question in this sheet. The entire controlled-resume c
 - [ ] Inspect the file: is there a gap, and did anything get written between restore and the explicit thaw?
 - [ ] Repeat with the restore on a different host.
 
-### 4. Can the guest agent reconnect over vsock after restore? — gates Phase 4
+### 4. Can the guest agent reconnect over vsock after restore? — gates Phase 3
 
 - [ ] Confirm the vsock connection resets on restore, as Firecracker documents.
 - [ ] Re-establish it from inside the restored guest and complete a handshake.
 - [ ] Measure how long the reconnect takes; it sits on the critical path of every resume.
 
-### 5. What happens to guest time, timers and TCP across a long pause? — gates Phase 4
+### 5. What happens to guest time, timers and TCP across a long pause? — gates Phase 3
 
 - [ ] Pause for an hour. On restore, check `CLOCK_REALTIME` and `CLOCK_MONOTONIC` inside the guest.
 - [ ] Check whether a sleeping timer fires immediately, late, or correctly.
 - [ ] Check an open TCP connection: does it error, hang, or silently misbehave.
 - [ ] Decide what the guest agent must do about each before releasing customer processes.
 
-### 6. Can expired process groups be killed before any thaw? — gates Phase 4
+### 6. Can expired process groups be killed before any thaw? — gates Phase 3
 
 - [ ] With the workload still frozen, kill a process group from the guest agent. Confirm it dies without ever being scheduled.
 - [ ] Confirm the kill is observable to the agent, so the outcome can be recorded honestly.
 
-### 7. What do pause and cold cross-host restore actually cost? — gates Phase 4
+### 7. What do pause and cold cross-host restore actually cost? — gates Phase 3
 
 - [ ] Pause a 1 GiB sandbox: time the freeze, the capture, the upload, and the confirmed release separately.
 - [ ] Record the published snapshot size against the [size budget](../performance.md#proposed-budgets).
 - [ ] Restore on a second host with no cached bytes. Time the fetch, disk restore, memory load, handshake, and release separately — a single total hides which stage needs the optimization.
 - [ ] Repeat at 8 GiB, the [supported ceiling](../compatibility.md#sandbox).
 
-### 8. How well can the guest agent be shielded from a root customer? — gates Phases 1 and 4
+### 8. How well can the guest agent be shielded from a root customer? — gates Phases 1 and 3
 
 [Decision 0003](../decisions/0003-guest-root-with-our-kernel.md) grants root deliberately and calls this hardening rather than a boundary. Measure how much hardening there actually is.
 
@@ -75,5 +75,5 @@ The single most important question in this sheet. The entire controlled-resume c
 - [ ] Eight written answers, with commands and host configuration.
 - [ ] Measurements moved into [performance](../performance.md), replacing the proposed targets.
 - [ ] Any design change written as a new decision record, not as an edit to this file.
-- [ ] If process-continuous resume proved unreachable, reopen [alternatives](../alternatives.md#revisit-triggers) before starting Phase 4.
+- [ ] If process-continuous resume proved unreachable, reopen [alternatives](../alternatives.md#revisit-triggers) before starting Phase 3.
 - [ ] Delete this file.
