@@ -1,0 +1,27 @@
+[package]
+name = "sandbox-cleanup"
+description = "Independent, fenced retirement of expired output objects."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+sandbox-protocol.workspace = true
+sandbox-store.workspace = true
+sandbox-artifacts.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+sqlx.workspace = true
+tempfile.workspace = true
+url.workspace = true
+tokio = { workspace = true, features = ["process"] }
+
+[lints]
+workspace = true
