@@ -10,6 +10,7 @@
 //! one loses on the constraint, and the loser reads the winner's row — which
 //! is the only arrangement that is correct without a lock.
 
+use sandbox_protocol::images::ImageAllowlist;
 use sandbox_protocol::{
     DIGEST_VERSION, Id, IdempotencyKey, OperationId, ProjectId, RequestDigest, SandboxId,
     TokenKeyId,
@@ -41,7 +42,7 @@ pub struct CreateSandbox {
     pub idempotency_key: IdempotencyKey,
     /// Digest of the normalized request.
     pub request_digest: RequestDigest,
-    /// Verified, allowlisted image.
+    /// Requested immutable image. Membership is checked after retry resolution.
     pub image_digest: String,
     /// Optional display name. Never a lookup key.
     pub name: Option<String>,
@@ -54,6 +55,8 @@ pub struct CreateSandbox {
 /// What admission decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
+    /// New work is not permitted by the current operator image policy.
+    ImageDenied,
     /// A new operation was inserted.
     Admitted {
         /// The sandbox this created.
@@ -95,11 +98,12 @@ impl Store {
     pub async fn admit_create_sandbox(
         &self,
         request: &CreateSandbox,
+        images: &ImageAllowlist,
     ) -> Result<Admission, StoreError> {
         // A concurrent identical request may win the unique constraint while
         // this one is mid-transaction. That is not an error: re-read and
         // return what the winner admitted.
-        match self.try_admit_create_sandbox(request).await {
+        match self.try_admit_create_sandbox(request, images).await {
             Err(StoreError::Query(error)) if is_unique_violation(&error) => self
                 .resolve_existing(request)
                 .await?
@@ -111,6 +115,7 @@ impl Store {
     async fn try_admit_create_sandbox(
         &self,
         request: &CreateSandbox,
+        images: &ImageAllowlist,
     ) -> Result<Admission, StoreError> {
         let mut tx = self.pool().begin().await.map_err(StoreError::Query)?;
 
@@ -119,6 +124,12 @@ impl Store {
         if let Some(existing) = existing_operation(&mut tx, request).await? {
             tx.commit().await.map_err(StoreError::Query)?;
             return Ok(existing);
+        }
+
+        // Policy changes cannot erase a caller's existing retry handle. New
+        // work must pass this check before any resource or operation is written.
+        if !images.allows(&request.image_digest) {
+            return Ok(Admission::ImageDenied);
         }
 
         let sandbox_id = SandboxId::generate();

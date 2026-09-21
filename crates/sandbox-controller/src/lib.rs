@@ -73,13 +73,10 @@ impl Controller {
     ) -> Result<Self, ControllerError> {
         if config.epoch <= 0
             || config.allowed_images.is_empty()
-            || config.allowed_images.iter().any(|digest| {
-                !digest.strip_prefix("sha256:").is_some_and(|s| {
-                    s.len() == 64
-                        && s.bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                })
-            })
+            || config
+                .allowed_images
+                .iter()
+                .any(|digest| !sandbox_protocol::images::valid_image_digest(digest))
         {
             return Err(ControllerError::InvalidConfig);
         }

@@ -60,6 +60,11 @@ async fn fixture(count: usize) -> Option<Fixture> {
 
     Some(Fixture {
         app: router(AppState {
+            images: sandbox_protocol::images::ImageAllowlist::new([format!(
+                "sha256:{}",
+                "a".repeat(64)
+            )])
+            .unwrap(),
             store: store.clone(),
         }),
         store,
