@@ -23,6 +23,27 @@ jobs:
     name: rust-check
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+
+    # The schema tests skip when DATABASE_URL is unset, so CI must provide one
+    # or the constraints this repository relies on would go unverified.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sandbox
+          POSTGRES_PASSWORD: sandbox
+          POSTGRES_DB: sandbox
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sandbox -d sandbox"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      DATABASE_URL: postgres://sandbox:sandbox@127.0.0.1:5432/sandbox
+
     steps:
       - name: Check out proposed changes
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

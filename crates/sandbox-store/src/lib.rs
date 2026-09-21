@@ -1,5 +1,61 @@
-//! PostgreSQL transactions and the object-storage interface.
+//! PostgreSQL access and the object-storage interface.
 //!
-//! Not implemented. The schema this crate will own is specified in
-//! `docs/data-models.md`; the first migration covers projects, sandboxes,
-//! operations, allocations, and hosts.
+//! The schema this crate owns is specified in `docs/data-models.md`. Queries
+//! live here rather than in the API or controller so that the constraints in
+//! the migrations and the code that relies on them stay in one place.
+
+use std::time::Duration;
+
+use sqlx::postgres::{PgPoolOptions, Postgres};
+use sqlx::{Pool, migrate::Migrator};
+
+/// Migrations, embedded at compile time from the workspace root.
+pub static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
+
+/// Why the store could not be reached or prepared.
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    /// The connection pool could not be established.
+    #[error("connecting to PostgreSQL: {0}")]
+    Connect(#[source] sqlx::Error),
+    /// Migrations could not be applied.
+    #[error("applying migrations: {0}")]
+    Migrate(#[source] sqlx::migrate::MigrateError),
+}
+
+/// A connection pool to the durable store.
+#[derive(Debug, Clone)]
+pub struct Store {
+    pool: Pool<Postgres>,
+}
+
+impl Store {
+    /// Connect, without touching the schema.
+    ///
+    /// Connections are established lazily, so this succeeding does not prove
+    /// PostgreSQL is reachable. Call [`Store::migrate`] or issue a query to
+    /// find that out.
+    pub async fn connect(database_url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        let pool = PgPoolOptions::new()
+            .max_connections(max_connections)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_lazy(database_url)
+            .map_err(StoreError::Connect)?;
+
+        Ok(Self { pool })
+    }
+
+    /// Apply any migrations this binary carries that the database lacks.
+    ///
+    /// Idempotent: sqlx records what it has applied, so running it on every
+    /// start is the intended use.
+    pub async fn migrate(&self) -> Result<(), StoreError> {
+        MIGRATOR.run(&self.pool).await.map_err(StoreError::Migrate)
+    }
+
+    /// The underlying pool, for queries elsewhere in this crate's callers.
+    #[must_use]
+    pub fn pool(&self) -> &Pool<Postgres> {
+        &self.pool
+    }
+}
