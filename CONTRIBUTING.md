@@ -2,7 +2,7 @@
 
 Hudson Sandbox is being designed in public by Hudson Labs. Start with the [README](README.md) and [documentation guide](docs/README.md). The runtime is not implemented yet; documentation checks work today, while VM integration tests and installation commands will arrive with the code.
 
-License selection is pending. Resolve licensing with the maintainers before submitting substantial implementation contributions; public visibility alone does not grant an open-source license. Asking each contributor to negotiate this individually is a stopgap, and selecting a license is tracked as a [blocking decision](docs/roadmap.md#blocking-non-engineering-decisions). No CLA or commit-signoff requirement is currently configured.
+The project is released under [Apache-2.0](LICENSE); contributions are accepted under the same terms, as its section 5 provides. No CLA or commit-signoff requirement is currently configured.
 
 ## From idea to pull request
 

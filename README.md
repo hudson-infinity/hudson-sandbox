@@ -22,7 +22,7 @@ Your application      → Sandbox API → Controller → Firecracker microVM
 
 [Hudson](https://github.com/hudson-infinity/hudson) is the agent harness. Hudson Sandbox supplies the execution environment and works with other applications and harnesses too. Agent workflows and Temporal stay with the caller. Authentication is required everywhere, including local development.
 
-The selected stack is **Rust, Firecracker/Linux KVM, PostgreSQL with SQLx, and S3-compatible object storage**, with HTTP/JSON APIs. We start with one Linux compute host; Kubernetes deployment and multiple hosts follow a verified lifecycle.
+The selected stack is **Rust, Firecracker/Linux KVM, PostgreSQL with SQLx, and S3-compatible object storage**, with HTTP/JSON APIs. Customers get root inside their own sandbox, on a kernel and init that stay ours. We start with one x86_64 Linux compute host; Kubernetes deployment and multiple hosts follow a verified lifecycle.
 
 ## Ways to use it
 
@@ -38,7 +38,7 @@ Output streaming and file transfers are API capabilities. We are not adding MCP 
 
 ## Follow the build
 
-Start with the [product goal](docs/goal.md), [documentation guide](docs/README.md), [architecture](docs/architecture.md), and [roadmap](docs/roadmap.md). [Alternatives](docs/alternatives.md) explains why we build this rather than adopt an existing product, [threat model](docs/threat-model.md) states what it must withstand, and [performance](docs/performance.md) states the budgets it has to meet.
+Start with the [product goal](docs/goal.md), [documentation guide](docs/README.md), [architecture](docs/architecture.md), and [roadmap](docs/roadmap.md). [Supported configuration](docs/compatibility.md) states what a sandbox is and what it may contain, [networking](docs/networking.md) states what it may reach, [threat model](docs/threat-model.md) states what it must withstand, [alternatives](docs/alternatives.md) explains why we build this rather than adopt an existing product, and [performance](docs/performance.md) states the budgets it has to meet.
 
 Our first usable milestone is **create → execute and transfer files → enforce isolation and limits → destroy**, including failure recovery and a reproducible installation on one supported host. Pause/resume follows. Hudson, Temporal, and Kubernetes are not required.
 
@@ -52,4 +52,4 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for commits, PRs, local checks, and rele
 
 ## License
 
-An open-source release is intended; license selection is pending. This repository currently has no license granting reuse or redistribution rights. That is a blocking decision, not a formality: it prevents outside contribution and any reuse. See [roadmap](docs/roadmap.md#blocking-non-engineering-decisions).
+[Apache-2.0](LICENSE). See [decision 0004](docs/decisions/0004-apache-2-0-license.md) for why.

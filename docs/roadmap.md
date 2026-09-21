@@ -22,7 +22,7 @@ The first milestone requires phases 1–3 below. Pause/resume follows as a separ
 | 5. Management UI and platform packaging | Session migrations, shared Project/Admin policy, UI flows and acceptance checks, and Hudson using ordinary APIs; Kubernetes packaging follows the standalone proof | Planned |
 | 6. Multiple hosts and optimization | Compatible cross-host restore, placement, draining, provider autoscaling, and measured cache/snapshot optimizations including differential and lazily loaded snapshots | Planned |
 
-API contracts come first; implement the CLI against working endpoints and add SDKs against the same versioned schemas. A minimal CLI supports the single-host milestone; client packaging and conformance checks belong to the distribution phase. SDK languages remain undecided. Existing UI designs remain available for later implementation, which shares the same admission and lifecycle services instead of creating a second control path. Define generic authenticated service connectivity before exposing guest services. Exact work breakdown can be split into issues once each phase has concrete interfaces.
+API contracts come first; implement the CLI against working endpoints and add SDKs against the same versioned schemas. A minimal CLI supports the single-host milestone; client packaging and conformance checks belong to the distribution phase, and cover all three SDKs. Existing UI designs remain available for later implementation, which shares the same admission and lifecycle services instead of creating a second control path. Define generic authenticated service connectivity before exposing guest services. Exact work breakdown can be split into issues once each phase has concrete interfaces.
 
 ## Feasibility spikes (Phase 0)
 
@@ -41,7 +41,7 @@ Spike on a real Linux/KVM host, with throwaway code that is not intended to merg
 | What happens to guest time, timers, and TCP connections across a long pause? | Phase 4 | Deadline enforcement and "credentials are not valid after restore" depend on the answer |
 | Can expired or cancelled process groups be terminated before any thaw? | Phase 4 | [Lifecycle](lifecycle.md#deadlines-and-cancellation) requires it |
 | What do a pause and a cold cross-host restore actually cost in seconds and bytes? | Phase 4 | Sets whether the [performance](performance.md) resume budgets are reachable |
-| Does the guest image keep customer privilege away from the management agent? | Phases 1 and 4 | A resumable image that cannot enforce this must be rejected, and [product goal](goal.md) makes the guest-root decision explicit |
+| How well can the guest agent be shielded from a root customer in the same VM? | Phases 1 and 4 | [Decision 0003](decisions/0003-guest-root-with-our-kernel.md) grants root deliberately. Measure what a hostile root can actually do to the agent: kill sweeps, reaching its control socket, forging a handshake |
 
 Exit gate: a written findings document per question, with the commands run and the host configuration recorded. A negative answer is a successful spike; it redirects the design before the dependent phase rather than during it. If process-continuous resume proves unreachable on this stack, reopen [alternatives](alternatives.md#revisit-triggers).
 
@@ -67,24 +67,43 @@ Migrations cover the records those operations touch and nothing further. Snapsho
 
 Add links to actual test files, CI runs, supported-host evidence, and releases as each gate is demonstrated. A document, successful process start, or passing unit test alone does not establish snapshot or isolation correctness.
 
-## Blocking non-engineering decisions
+## Settled decisions
 
-These are owner decisions. Each one blocks work that is otherwise ready to start, and none of them is resolved by writing more design.
+The pre-implementation decisions were worked through on 2026-09-21 and now live in their owning documents. Summarised here so the delivery picture is readable in one place:
+
+| Area | Settled | Owning document |
+| --- | --- | --- |
+| Customer privilege | Root in guest userspace; our kernel, init and guest agent | [Decision 0003](decisions/0003-guest-root-with-our-kernel.md) |
+| Freeze boundary | In-guest agent, outside the frozen workload cgroup | [Lifecycle](lifecycle.md#resume) |
+| Snapshot encryption | One installation-wide key from the operator's KMS, key ID in the manifest | [Threat model](threat-model.md#open-decisions) |
+| Host and guest envelope | x86_64, Ubuntu 24.04 host, Debian userland, 4 vCPU / 8 GiB ceiling, services supported | [Supported configuration](compatibility.md) |
+| Networking | Deny-by-default egress on CIDR and port, host-side resolver, no ingress in v1, per-sandbox bandwidth cap | [Networking](networking.md) |
+| Images | Operator allowlist only; per-project images named as the next capability | [Data models](data-models.md#what-we-keep-inside-these-models) |
+| Clients | CLI plus Python, TypeScript and Rust SDKs, generated from one OpenAPI document with a shared conformance suite | [API contract](api-contract.md#sdk-and-cli-behavior) |
+| API shape | RFC 9457 problem+json, server-sent events, opaque cursors, single-PUT file upload | [API contract](api-contract.md) |
+| Storage | PostgreSQL 16, `sqlx migrate`, MinIO in development and CI, 7-day snapshot retention, tombstones for the project's lifetime | [Data models](data-models.md) |
+| Internal protocols | gRPC over mTLS to the supervisor, vsock with length-prefixed protobuf to the guest | [Architecture](architecture.md#selected-stack) |
+| Policy numbers | 15-minute default and 6-hour maximum deadline, 1-hour idle, 10 MiB retained output, 25 sandboxes per project | [Lifecycle](lifecycle.md#deadlines-and-cancellation) |
+| Observability | OpenTelemetry into Prometheus and Tempo; JSON logs everywhere | [Architecture](architecture.md#selected-stack) |
+| License | Apache-2.0 | [Decision 0004](decisions/0004-apache-2-0-license.md) |
+| Delivery | Self-host first, hosted possible later; usage derived rather than metered; public 0.1 once Phase 3 passes | [Alternatives](alternatives.md) |
+
+## Still blocking
+
+Two decisions remain, and both are procurement rather than design. Phase 0 cannot start without the first.
 
 | Decision | What it blocks | Owner action |
 | --- | --- | --- |
-| License selection | Substantial outside contribution, and any reuse of this repository. [CONTRIBUTING](../CONTRIBUTING.md) currently asks contributors to resolve licensing individually, which is not a workable ask | Choose a license and add the file |
-| Hosted offering, or self-hosting only | Whether usage metering belongs in the data model before it has customers in it | Decide, then record it in [alternatives](alternatives.md) |
-| Custom guest images | Whether users can bring their own dependencies. Today only an operator-configured digest allowlist is designed, which is unlikely to be enough for the general-purpose workloads in [product goal](goal.md) | Decide whether per-project images ship before or after the first release |
-| Supported host baseline | Which kernel, CPU, and Firecracker versions the first release claims | Pick one configuration before Phase 1 hardware work |
+| Hardware for the spikes | Every Phase 0 question, and therefore Phase 1. None of this work runs on macOS | Rent a bare-metal x86_64 host with KVM |
+| CI for tests that need a real VM | Whether snapshot and isolation tests run on every pull request or only when someone remembers | Decide once the host exists; a self-hosted runner on it is the obvious answer, with fork pull requests excluded |
 
 ## Work breakdown
 
-Phase 0 and Phase 1 are concrete enough to become issues now; waiting for every interface to be settled is what produced a documentation-only repository. Open one issue per spike question and one per Phase 1 scope item, and keep later phases as planning documents until their predecessor's gate passes.
+Phase 0 and Phase 1 are concrete enough to become issues now, and the decisions above remove the remaining excuse for not writing them. Open one issue per spike question and one per Phase 1 scope item, and keep later phases as planning documents until their predecessor's gate passes.
 
 ## Development and operational prerequisites
 
-Begin with one Linux compute host exposing KVM and one supported architecture. A standalone development setup needs the API/controller, PostgreSQL, object storage, and that host. It must run without the Hudson harness or a Temporal service. Kubernetes is the intended platform deployment, not a requirement for every developer unit test.
+Begin with one Linux compute host matching [supported configuration](compatibility.md#host): x86_64, Ubuntu 24.04, KVM available. A standalone development setup needs the API/controller, PostgreSQL, object storage, and that host. It must run without the Hudson harness or a Temporal service. Kubernetes is the intended platform deployment, not a requirement for every developer unit test.
 
 Local admin setup creates the installation's first admin credential. The Admin UI/API or authenticated tooling then creates projects and issues project tokens once; contributors and self-hosters use the same authenticated setup contract as Hudson deployments. Keep the raw token in the calling backend's secret configuration and only its hash in PostgreSQL. Setup requires installation-administrator authority; no unprotected public bootstrap endpoint is provided. Local development does not disable authentication. This tooling is planned, not implemented yet.
 
@@ -108,4 +127,4 @@ Differential snapshots, lazy loading, and warm pools are deferred to Phase 6, bu
 - `self-hosting.md`: actual installation, first Admin credential, TLS, storage, upgrades, and rollback.
 - `operations.md`: backup recovery, monitoring, host drains, and incident procedures.
 
-These future guides are intentionally not empty placeholders today. [CONTRIBUTING.md](../CONTRIBUTING.md) defines the PR/release process and documentation checks; [SECURITY.md](../SECURITY.md) provides the private reporting channel; [decisions](decisions/README.md) records significant choices as they are made. License selection remains an owner decision and is listed above as blocking; the repository currently has no license file. Version pins, frontend framework, provider integration, and concrete test locations remain open.
+These future guides are intentionally not empty placeholders today. [CONTRIBUTING.md](../CONTRIBUTING.md) defines the PR/release process and documentation checks; [SECURITY.md](../SECURITY.md) provides the private reporting channel; [decisions](decisions/README.md) records significant choices as they are made. The repository is released under Apache-2.0. Version pins, frontend framework, provider integration, and concrete test locations remain open.

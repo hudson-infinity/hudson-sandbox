@@ -10,7 +10,7 @@ The product promise is: run untrusted code in isolated environments, with contro
 
 Applications use an authenticated API to create environments, run processes, transfer files, observe results, and reclaim resources. Workloads may include scripts, applications, build jobs, automation, and long-running services. AI agents are one possible client; no agent framework, programming language, business workflow, or Hudson harness is required.
 
-“Run anything” means any workload within a published compatibility envelope. Start with one supported Linux/KVM host configuration and CPU architecture. Document the supported image format, kernel features, devices, networking, and customer privileges. Broader compatibility must not silently weaken isolation.
+“Run anything” means any workload within a published compatibility envelope. That envelope is now written down in [supported configuration](compatibility.md): x86_64, an Ubuntu 24.04 host, our pinned guest kernel, a Debian userland, sandboxes up to 4 vCPU and 8 GiB, and root for the customer inside their own VM. Broader compatibility must not silently weaken isolation.
 
 ## Core capabilities
 
@@ -19,7 +19,7 @@ Applications use an authenticated API to create environments, run processes, tra
 | Create | Start an isolated environment from an authorized immutable image with explicit limits |
 | Execute | Run finite commands and long-running processes with arguments, environment, working directory, deadlines, and cancellation |
 | Files | Safely transfer files and maintain the sandbox's private writable filesystem during its lifetime |
-| Network | Enforce ingress/egress policy; define authenticated service access before exposing guest services |
+| Network | Deny-by-default egress against an allowlist of address ranges and ports, a host-side resolver, and no inbound path in the first release ([networking](networking.md)) |
 | Lifecycle | Inspect state, terminate processes, destroy the environment, and confirm resource reclamation |
 | Observe | Stream bounded output and report process results, resource usage, and infrastructure failures |
 
@@ -29,7 +29,7 @@ Customization initially comes through supported images and configuration. Specia
 
 ## Immediate engineering priorities
 
-1. **Define the security and workload contract.** [Threat model](threat-model.md) states the trusted components, attacker capabilities, tenant boundaries, and unsupported privileges; turning it into enforced behavior is Phase 1 work. Decide guest-root support explicitly; a customer-controlled guest kernel cannot be assumed to protect the management agent or its process-freeze boundary.
+1. **Define the security and workload contract.** [Threat model](threat-model.md) states the trusted components, attacker capabilities, and tenant boundaries; turning it into enforced behavior is Phase 1 work. Guest root is settled: customers are root in their own sandbox, on our kernel and our init ([decision 0003](decisions/0003-guest-root-with-our-kernel.md)). Decide guest-root support explicitly; a customer-controlled guest kernel cannot be assumed to protect the management agent or its process-freeze boundary.
 2. **Build the execution boundary.** Use Firecracker/jailer with isolated storage and networking. Enforce resource and connectivity limits outside customer control; protect host services, platform credentials, cloud metadata, and other sandboxes.
 3. **Provide a small, useful API.** Mandatory authentication, durable operation handles, execution, files, output, cancellation, and destruction come first. Define generic service connectivity without coupling it to an application framework.
 4. **Make failure and cleanup correct.** Preserve ownership across crashes and lost acknowledgements. Never blindly repeat an uncertain command or free a reservation without evidence. Bound resource exhaustion and account for cleanup that is still pending.

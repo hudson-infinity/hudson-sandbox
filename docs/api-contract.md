@@ -12,11 +12,13 @@ Admin sandbox mutations explicitly select a target project and call the same adm
 
 [Architecture](architecture.md#client-interfaces-and-agent-integration) defines the interface boundaries. SDKs and the CLI call the HTTP API; they do not contact PostgreSQL, host control sockets, or Firecracker. Their source packages, installation commands, and exact public signatures are not implemented yet.
 
+The first release ships the CLI and three SDKs — Python, TypeScript, and Rust. Models and the request layer are generated from the same OpenAPI document for all three; only the retry, wait, and stream-reconnect behavior below is written by hand. The Rust SDK is the client crate the CLI already depends on, published rather than written twice. One conformance suite, defined as data, runs against all three in CI so they stay genuinely equivalent rather than nominally equivalent, and all three carry the same version as the API they target.
+
 - **Configuration and auth:** resolve a configured API URL and the appropriate project/admin credential. Use trusted credential configuration outside model tool arguments and avoid raw tokens in command-line flags, prompts, logs, or output. Ordinary agent sandbox work uses Project access. Browser session behavior remains separate and is defined in [auth design](auth-design.md).
 - **Requests and retries:** preserve the same idempotency key and payload for retries of one logical mutation. Expose a way for a caller to retain/reuse that key across separate CLI invocations or process restarts; a fresh invocation must not silently retry uncertain work with a new key. The server's [admission rules](#retries-and-admission) remain authoritative.
 - **Long operations:** return the admitted operation ID promptly. Provide explicit status/wait and cancellation actions; an optional wait follows the same operation without resubmission. Distinguish request acceptance from execution success. A client wait timeout or disconnection does not cancel the server operation.
 - **Results:** provide readable CLI output for people and a structured JSON mode for scripts/agents. Keep diagnostics separate from structured stdout. Preserve API error categories and distinguish command exit, pending work, cancellation, and unknown outcomes; exact CLI exit codes are still to be specified.
-- **Output and files:** return bounded output with truncation/cursor information and let callers request additional retained output. Streaming reconnects use the existing operation. Explicit file transfers use the API's ownership/path/size checks; a local file path is not automatically available in the remote guest.
+- **Output and files:** return bounded output with truncation/cursor information and let callers request additional retained output. Retained output is capped at 10 MiB per operation; beyond that, callers get truncation markers and the operation's stored artifacts. Streaming reconnects use the existing operation. Explicit file transfers use the API's ownership/path/size checks; a local file path is not automatically available in the remote guest.
 
 For example, this is a proposed mapping, not a working command:
 
@@ -34,7 +36,7 @@ The CLI displays the operation handle or waits when explicitly requested. It rep
 
 | Operation | Contract |
 | --- | --- |
-| Create | Accept an authorized immutable image digest and limits; pin verified template compatibility at admission; identical retries return the original operation. Only operator-allowlisted digests are accepted, so a project cannot supply its own image today |
+| Create | Accept an authorized immutable image digest and limits; pin verified template compatibility at admission; identical retries return the original operation. Only operator-allowlisted digests are accepted, so a project cannot supply its own image today, and limits are bounded by the [supported configuration](compatibility.md#sandbox) ceiling of 4 vCPU and 8 GiB |
 | Execute | Accept executable, argument array, working directory, nonsecret environment, deadline, and output bounds; return an operation handle |
 | Pause | Save guest memory and matching disk state, publish the snapshot, release compute, and report completion only after those stages are confirmed |
 | Resume | Restore a completed snapshot into one authorized allocation and report ready after guest communication is reestablished |
@@ -113,11 +115,17 @@ GET  /v1/operations/{operation_id}/outputs/{output_name}
 GET  /v1/operations/{operation_id}/stream
 ```
 
+Live output is delivered as server-sent events. Each event carries a monotonic sequence number, and a client reconnects by presenting the last sequence it saw; the server resumes from there or signals an explicit gap when that history has expired. SSE was chosen over a WebSocket because the traffic is one-directional and resumption is part of the format rather than something each client reimplements.
+
 The read-only stream authenticates with the same project token from a backend client. It checks current ownership/allocation and forwards output through the API streaming endpoint, bypassing the controller for bytes. Reconnect uses a cursor on the original operation; it does not create an operation or dispatch another command. Apply the connection/expiry/revocation checks from [auth design](auth-design.md#live-output-and-revocation). The same-origin management UI uses a validated Project/Admin session with Origin, ownership, and expiry checks. Dedicated tokens for third-party browser streams remain deferred.
 
 Cancellation is itself an idempotent operation referencing the target operation; a requested cancel does not change the target to cancelled until confirmed. Pause's completed result includes the published snapshot ID. Ordinary resume resolves the sandbox's current pause snapshot on admission and pins that reference in the operation. It does not accept an arbitrary old snapshot to silently rewind history. A future explicit recovery/fork API must address repeated external effects separately.
 
-The example image digest is illustrative, not an available image. List pagination, file import/export routes, session/admin wire schemas, and exact response objects remain OpenAPI design work; this route list is not a working endpoint inventory.
+The example image digest is illustrative, not an available image. List endpoints paginate with an opaque cursor: a response carries `next_cursor`, and the client passes it back unchanged. The cursor's contents are not part of the contract, which keeps sort order and index strategy changeable without a version bump. Offset-and-page pagination is deliberately not offered, because concurrent creates make it skip and duplicate rows.
+
+File import is a single `PUT` carrying the whole body, bounded by a published size cap and requiring an idempotency key. Resumable multipart staging is deferred to a separate route so adding it later is additive rather than a breaking change to this one.
+
+Session/admin wire schemas and exact response objects remain OpenAPI design work; this route list is not a working endpoint inventory.
 
 ## Output, files, and reconnects
 
@@ -140,6 +148,8 @@ Before 1.0, releases are `0.x` and breaking changes are possible between them, b
 When a deprecation eventually happens, publish the replacement first, keep the old surface working through a stated window, and announce the removal in release notes. The window length, any deprecation response headers, and whether server and client versions are checked at handshake are open decisions; pick them before the first release, not after callers depend on the current behavior.
 
 ## Errors and retention
+
+Error responses use RFC 9457 `application/problem+json`. The standard members carry the human-readable parts, and a stable machine-readable code travels in an extension member so clients branch on the code rather than on status alone or on prose. The exact code list ships with the OpenAPI document.
 
 | Condition | HTTP behavior |
 | --- | --- |
@@ -164,4 +174,4 @@ No API tests exist yet. Test concurrent same-key admission, changed-payload conf
 
 Client acceptance must also cover equivalent API/SDK/CLI outcomes, key reuse across client restarts, no resubmission after a wait timeout, structured output without credential leakage, output truncation/reconnects, and explicit file transfer. These checks require implemented clients and are not available today.
 
-Before implementation, define initial SDK languages/distribution, CLI syntax/credential configuration/exit codes, OpenAPI schemas, list pagination/filtering, error envelopes, request-size limits, stream encoding/cursor semantics, file commit routes, and the deprecation window in [versioning](#versioning-and-deprecation). Whether projects can register their own guest images, and what that adds to this surface, is an owner decision tracked in [roadmap](roadmap.md#blocking-non-engineering-decisions). Examples remain proposals until validated against those schemas.
+Before implementation, define SDK distribution per registry, CLI syntax, credential configuration and exit codes, the OpenAPI schemas themselves, list filtering, the machine-readable error code list, the file size cap, SSE cursor encoding, and the deprecation window in [versioning](#versioning-and-deprecation). Projects cannot register their own guest images in the first release; that capability, and what it adds to this surface, follows the operator allowlist described in [data models](data-models.md#what-we-keep-inside-these-models). Examples remain proposals until validated against those schemas.

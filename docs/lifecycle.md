@@ -64,7 +64,7 @@ Operation statuses are `queued`, `running`, `succeeded`, `failed`, `cancelled`, 
 7. **Guest → supervisor → storage/controller:** run the command, capture bounded output, upload stored outputs, and report receipts. The controller persists result metadata and output references on the operation.
 8. **Client → API:** inspect the operation and retrieve authorized output bytes by operation and output name. Large output bytes remain in object storage, not database rows.
 
-The public API is HTTP/JSON. Internal controller-to-supervisor transport remains an implementation decision; the host-to-guest channel is initially proposed as vsock. Customer code runs inside the guest, and the guest receives no PostgreSQL or object-storage credentials from this design.
+The public API is HTTP/JSON. The controller reaches the supervisor over gRPC with mutual TLS, and the supervisor reaches the guest agent over vsock with length-prefixed protobuf. Customer code runs inside the guest, and the guest receives no PostgreSQL or object-storage credentials from this design.
 
 A disconnected client does not cancel admitted work or extend sandbox lifetime. Do not dispatch again just because acknowledgement was lost. Record process exit code, signal, timeout, cancellation, infrastructure failure, or unknown outcome separately; a zero exit code does not establish business success.
 
@@ -91,7 +91,9 @@ A failed upload leaves the operation incomplete and the original VM's actual pha
 5. Refresh management credentials, synchronize time as required, apply current project/network policy, and reconcile original command deadlines/cancellation. Arrange termination of expired or cancelled process groups before they can execute again. No customer process is released until the handshake is acknowledged; if the gate cannot be proven, stop/fence the partial restore and report failure or uncertainty.
 6. With the current controller claim, supervisor epoch, and allocation generation validated, release only eligible customer process groups. Persist the release acknowledgement and record readiness and successful resume. A lost acknowledgement requires reconciliation, never another restore running alongside this one.
 
-The guest image must enforce separation between the agent and customer processes: customer privileges cannot control the management agent or bypass its process-freeze boundary. Reject resumable images that cannot meet this contract. A frozen whole VM cannot run the reconnect handshake; the separate guest process gate is what makes that handshake possible.
+The guest image must separate the agent from customer processes: the agent runs in its own PID namespace and `system` cgroup, and its control socket is unreachable from the workload namespace. Reject resumable images that cannot meet this contract. A frozen whole VM cannot run the reconnect handshake; the separate guest process gate is what makes that handshake possible.
+
+That separation is hardening, not a boundary. [Decision 0003](decisions/0003-guest-root-with-our-kernel.md) gives customers root in their own sandbox, so a hostile customer can attempt to kill or impersonate the agent. Two rules follow, and both are requirements rather than best effort. A resume whose handshake cannot be proven — no agent, no response, or a response that fails validation — stops and fences the restore and reports failure; it never releases customer processes on the assumption that silence is benign. And a sandbox whose agent disappears mid-execution is failed and reported as failed, never recorded as a sandbox that completed or that ran without consuming its deadline.
 
 ```text
 Before pause: Sandbox S → Allocation A → Host 1
@@ -107,7 +109,7 @@ Publish and test a compatibility matrix covering CPU architecture/model, host an
 
 ## Deadlines and cancellation
 
-Persist sandbox and command wall-clock deadlines outside snapshots. Pause does not extend them. Separate active-compute/idle limits from paused-snapshot retention; select explicit defaults during implementation. Apply current access/network policy and terminate expired/cancelled processes before any customer execution is released on restore.
+Persist sandbox and command wall-clock deadlines outside snapshots. Pause does not extend them. Separate active-compute/idle limits from paused-snapshot retention. Initial defaults: an execute operation deadlines at 15 minutes unless the caller supplies one, the maximum any caller may request is 6 hours, and a sandbox with no activity for 1 hour is acted on by the idle policy below. Apply current access/network policy and terminate expired/cancelled processes before any customer execution is released on restore.
 
 Cancellation is an idempotent operation referencing its target. A request to cancel is not confirmed cancellation. A running process must have confirmed process-tree termination; a lifecycle operation must reach a safe stop or rollback boundary. If a snapshot is already published, resolve stop/cleanup ownership before reporting cancellation. Cancellation while paused must durably record the decision for enforcement before thaw; do not claim physical process termination without evidence.
 
@@ -117,7 +119,7 @@ Timeout or cancellation does not roll back external side effects. Revoking a cre
 
 This section applies once pause ships; [roadmap](roadmap.md#implementation-phases) places that in Phase 4. Paused sandboxes cost storage; running idle sandboxes cost a host's CPU, memory, and disk. Reclaiming idle compute automatically is the point of having pause at all, so the policy belongs in this contract rather than arriving later as operational improvisation. Until pause exists, an idle sandbox can only be destroyed, and that outcome is reported as destruction rather than dressed up as saved state.
 
-Define idleness explicitly before implementing it. A proposed definition: no running execute operation, no attached output stream, and no client request against the sandbox for a configured interval. Guest-internal activity is not observable to the service and must not be assumed either way; say which signal is authoritative rather than inferring liveness.
+Idle means: no running execute operation, no attached output stream, and no client request against the sandbox, for one hour. Those three signals are authoritative. Guest-internal activity is deliberately excluded — a sandbox busy-looping with no operation attached is idle by this definition, because the service cannot observe intent inside the guest and must not infer liveness from CPU use.
 
 An automatic pause is an ordinary pause operation with `initiator_kind` `service`. It takes the same snapshot verification, publication, and release evidence path as a caller's pause, appears in the sandbox's operation history, and is visible to the owning project. A policy-driven transition that skipped those checks would be a second control path, which [architecture](architecture.md#purpose-and-ownership) rules out.
 
@@ -125,7 +127,7 @@ Automatic pause never implies automatic resume. The next authorized resume reque
 
 Separate the timers. An active-compute idle timeout decides when a running sandbox is paused. A paused-retention timeout decides when its snapshot expires and resume becomes impossible. A sandbox lifetime deadline decides when the identity is destroyed regardless of state. Each needs its own configured default and its own project-visible value, and expiry of the second must be distinguishable in the API from expiry of the third.
 
-Where policy destroys rather than pauses, or where a hard limit forces termination without saving state, that outcome is reported as such. Failure to save state is never presented as a completed pause.
+Until pause ships, the idle policy destroys the sandbox and reports it plainly as destruction. There is nothing to pause to, and a sandbox that was thrown away must never appear in the API as one that was saved. Where a hard limit forces termination without saving state, that outcome is reported as such. Failure to save state is never presented as a completed pause.
 
 ## Destroy and recovery
 
@@ -174,4 +176,4 @@ No executable tests exist yet. Implement tests for:
 
 ## Open decisions
 
-Choose supported host/guest versions, filesystem quiescing and process-freeze implementation, lease-watchdog timing and proof, resource/retention defaults, and a precise cancellation outcome for each phase. Validate those mechanisms on Linux/KVM before claiming these contracts are implemented. See [roadmap](roadmap.md) for delivery gates.
+Supported host and guest versions are in [supported configuration](compatibility.md); deadline, idle, and output defaults are settled above. Still open: filesystem quiescing and the process-freeze implementation, lease-watchdog timing and proof, and a precise cancellation outcome for each phase. Validate those mechanisms on Linux/KVM before claiming these contracts are implemented. See [roadmap](roadmap.md) for delivery gates.
