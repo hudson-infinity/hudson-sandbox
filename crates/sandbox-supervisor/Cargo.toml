@@ -9,6 +9,10 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util", "time"] }
 tokio-rustls = { workspace = true }
@@ -17,6 +21,10 @@ sandbox-protocol = { workspace = true }
 sha2 = { workspace = true }
 tonic = { workspace = true }
 thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 rcgen = { workspace = true }
