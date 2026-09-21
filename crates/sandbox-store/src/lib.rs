@@ -6,6 +6,7 @@
 
 pub mod admission;
 pub mod projects;
+pub mod reads;
 
 use std::time::Duration;
 
