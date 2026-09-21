@@ -30,9 +30,9 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 - [ ] OpenAPI document for this phase's routes only. Generate types from it.
 - [x] Project bearer token authentication, hashed storage, constant-time comparison.
-- [ ] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
-- [ ] `problem+json` errors with the machine-readable code list.
-- [ ] Create, execute, get sandbox, get operation, outputs, file PUT, destroy.
+- [x] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
+- [x] `problem+json` errors with the machine-readable code list. Codes are added as routes need them.
+- [ ] Create (done), execute, get sandbox, get operation, outputs, file PUT, destroy.
 - [ ] SSE output stream with sequence cursors and resume.
 
 ## Controller
