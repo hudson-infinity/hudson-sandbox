@@ -29,6 +29,13 @@ rustix = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+sandbox-controller = { path = "../sandbox-controller" }
+sandbox-api = { path = "../sandbox-api" }
+sandbox-store = { workspace = true }
+axum = { workspace = true }
+http = { workspace = true }
+sqlx = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 tempfile = { workspace = true }
 
 [lints]

@@ -1,6 +1,6 @@
 # Documentation guide
 
-The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. API-to-guest execution, the UI, and an installer remain unfinished; the guest command component has local Linux and microVM evidence. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
+The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. A real Linux lifecycle supervisor now connects create, renewal and destroy to Firecracker. API-to-guest execution, the UI, and an installer remain unfinished; the guest command component has local Linux and microVM evidence. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
 
 ## Reading order and ownership
 
@@ -11,6 +11,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [Data models](data-models.md) | Fields, relationships, IDs, database constraints, storage layout | What we persist and how records connect |
 | [Authentication](auth-design.md) | Project/Admin permissions, credentials, sessions, CSRF, revocation, audit semantics | Who can do what and how access is enforced |
 | [Lifecycle](lifecycle.md) | State transitions, completion evidence, deadlines, cancellation, recovery | How create/pause/resume/destroy actually work |
+| [Real lifecycle supervisor](real-supervisor.md) | Durable host RPCs, admission, epochs and guardian integration | How API-created allocations become real VMs |
 | [Allocation guardian](allocation-guardian.md) | Real VM ownership, independent deadlines, staging and cleanup | How the host component fences and reclaims an allocation |
 | [Guest bootstrap](guest-bootstrap.md) | Allocation credentials, guest init and durable boot binding | How one reusable image becomes an authenticated allocation |
 | [Guest protocol](guest-protocol.md) | Authenticated vsock framing, host client and guest listener | How commands, receipts and bounded output cross the VM boundary |

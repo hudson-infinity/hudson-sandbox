@@ -1,8 +1,8 @@
 # Linux allocation guardian
 
-Status: implemented component, with controlled aarch64 Linux/KVM evidence. The root-only `sandbox-supervisor` CLI stages and owns a real Firecracker allocation. It is not yet the real gRPC lifecycle driver: controller dispatch, public execute, files, and network policy remain separate work. [Guest bootstrap and durable boot binding](guest-bootstrap.md) now connect the guest channel to this owner. The supported x86_64 release gates remain open.
+Status: implemented component, with controlled aarch64 Linux/KVM evidence. The root-only `sandbox-supervisor` CLI stages and owns a real Firecracker allocation. The [real lifecycle supervisor](real-supervisor.md) now connects it to controller dispatch; public execute, files, and network policy remain separate work. [Guest bootstrap and durable boot binding](guest-bootstrap.md) now connect the guest channel to this owner. The supported x86_64 release gates remain open.
 
-The implementation is in [guardian](../crates/sandbox-supervisor/src/guardian/mod.rs), [process ownership and control](../crates/sandbox-supervisor/src/guardian/process.rs), and [the irrevocable deadline](../crates/sandbox-supervisor/src/lease.rs). The existing [supervisor RPC](supervisor-protocol.md) still uses the development fake. The authenticated [guest protocol](guest-protocol.md) is a separate component to integrate with this owner.
+The implementation is in [guardian](../crates/sandbox-supervisor/src/guardian/mod.rs), [process ownership and control](../crates/sandbox-supervisor/src/guardian/process.rs), and [the irrevocable deadline](../crates/sandbox-supervisor/src/lease.rs). The existing [supervisor RPC](supervisor-protocol.md) supports both the development fake and the real host adapter. The authenticated [guest protocol](guest-protocol.md) is a separate component to integrate with this owner.
 
 ## Ownership and process lifetime
 
@@ -21,7 +21,7 @@ staging -> prepared -> launch_intent -> running -> stopping
     any recoverable unfinished state -> fenced -> stopped
 ```
 
-Only `stopped` has `cleanup_confirmed=true`. Cleanup verifies the owned cgroup, kills remaining owned processes if necessary, waits for it to become empty, removes the cgroup and staged runtime files, and durably records completion. It retains the manifest and receipt for reconciliation. An unknown populated cgroup is not killed or reported released: cleanup requires the matching host boot and recorded cgroup inode. These receipts do not themselves release PostgreSQL reservations; the real supervisor/controller adapter remains to be built.
+Only `stopped` has `cleanup_confirmed=true`. Cleanup verifies the owned cgroup, kills remaining owned processes if necessary, waits for it to become empty, removes the cgroup and staged runtime files, and durably records completion. It retains the manifest and receipt for reconciliation. An unknown populated cgroup is not killed or reported released: cleanup requires the matching host boot and recorded cgroup inode. These receipts do not themselves release PostgreSQL reservations; the [host adapter and controller](real-supervisor.md) validate ownership and cleanup before committing database release.
 
 ## Independent deadlines
 

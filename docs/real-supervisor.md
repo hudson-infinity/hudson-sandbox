@@ -1,0 +1,64 @@
+# Real Linux lifecycle supervisor
+
+Status: the root-operated `sandbox-host` service connects authenticated lifecycle RPCs to the real [allocation guardian](allocation-guardian.md). It supports create, inspection, stop, renewal and lease inspection. Public command execution, output and file routes remain unfinished. This is a development component with controlled nested aarch64 evidence, not a production or x86_64 release.
+
+[The host adapter](../crates/sandbox-supervisor/src/host/mod.rs), [durable journal](../crates/sandbox-supervisor/src/host/journal.rs), and [server entry point](../crates/sandbox-supervisor/src/bin/sandbox-host.rs) use the existing [supervisor protocol](supervisor-protocol.md). The controller needs no simulation opt-in for these observations: they carry `simulated=false`.
+
+## Request to VM
+
+1. The controller connects using mutual TLS. The host also checks the exact configured controller leaf fingerprint. Requests must identify this host and current epoch with canonical project, sandbox, allocation and operation IDs, positive revisions/generations, and a claim deadline at most 300 seconds away.
+2. Before effects, the host persists the allocation identity, operation revision fence, immutable create request, artifact manifest and capacity reservation. Image digests select an operator-owned mapping to kernel/rootfs artifacts; RPC fields never supply host paths or executable names. The guardian hashes staged artifact bytes against those configured digests.
+3. The guardian stages the allocation. The host then persists dispatch intent and spawns the separately installed `sandbox-supervisor` executable. Namespace setup occurs in that single-threaded executable, outside the async server. A lost RPC caller does not cancel admitted work.
+4. Create or subsequent inspection authenticates the guest and durably binds its boot ID. Only a live guardian, a live allocation lease and a matching guest handshake produce `ready`. A VMM process without the guest agent cannot become ready.
+5. Stop is persisted before contacting the guardian. A stopped record cannot admit a delayed create or renewal. `released` requires the guardian's completed cgroup and runtime-file cleanup; elapsed time, an absent socket or a stop acknowledgement is insufficient.
+
+Create retains its original operation, image, resources and deadline. An exact retry observes the same allocation; changed input conflicts. An unconfirmed dispatched create is inspected or fenced, never launched again by recovery. A stop before create retains a durable `fenced_absent` tombstone only when no unowned allocation directory or cgroup contradicts absence. Inspection also retains revision fences when it finds no allocation.
+
+Allocation locks serialize requests for that allocation. Slow staging or a guest handshake does not hold the host journal mutex throughout the operation. The server permits eight blocking workers, retaining a worker slot after client cancellation until its work ends. Maintenance rotates through allocations and never starts a VM.
+
+## Durable state and capacity
+
+The private root-owned state directory contains `host.lock`, an atomically replaced/fsynced `host.json`, and an `a` directory containing guardian allocations. An exclusive process lock prevents two servers owning the same journal. Any uncertain journal write disables further service operations until restart/recovery; old VM watchdogs remain independent.
+
+The current journal retains at most 1,024 allocation/fence records and 64 operation revisions per allocation, with a 16 MiB serialized bound. It refuses excess work and does not evict deduplication evidence. Receipt archival and long-running fleet operation need further work.
+
+Host capacity includes each unreleased allocation's requested vCPU, guest RAM plus 128 MiB of VMM allowance, and writable disk plus 401 MiB of staged-artifact allowance. This conservative artifact allowance covers the guardian's bounded Firecracker, jailer, kernel and bootstrap copies. Reservations persist during preparation, uncertain dispatch, stop and restart recovery. Only verified cleanup makes them available again. A sandbox's replacement generation must be greater than the retained generation and follow confirmed prior release or a durable absence fence.
+
+These configured budgets do not measure all host overhead, reserve storage at the filesystem/quota level, account for the operator's source image cache, or protect unrelated processes on a shared host. Provision a dedicated development host with additional system, journal and image-cache headroom. Database scheduling capacity must be chosen consistently with these host budgets; host admission can still reject a request that the database reserved.
+
+## Restart and epoch ownership
+
+Every server start requires an externally issued epoch strictly greater than the retained journal epoch. Reusing the previous epoch, supplying another host ID, or starting a second server against the same state directory is rejected. A missing journal with retained state is not accepted as an empty host.
+
+Startup durably stop-fences old records. Maintenance stops/reconciles their original guardians using the retained manifests and ownership locks, keeping their capacity reserved until cleanup. Old-epoch RPCs are rejected. Changing only an old request's epoch cannot reuse its allocation identity. A delayed guardian wrapper sees a stopped guardian receipt instead of launching another incarnation.
+
+Authenticated registration and epoch issuance are still operator responsibilities. **Automatic database reconciliation of allocations from an earlier host epoch is not implemented.** The controller marks that work unknown; an empty/new host or locally completed cleanup must not be used to erase old database reservations without matching recovery evidence. This component does not close that release gate.
+
+## Configuration and operation
+
+Build both binaries on Linux. Install the reviewed guardian executable as root-owned and not group/world writable; its absolute path belongs in the host configuration. `sandbox-host --help` lists the required config, CA certificate, server certificate/key and one or two controller fingerprints. The server uses the shared mTLS identity/message limits and listens on `127.0.0.1:7443` by default. No plaintext or anonymous mode exists.
+
+The JSON configuration has these fields:
+
+| Field | Purpose |
+| --- | --- |
+| `host`, `epoch` | Operator-provisioned typed host ID and fresh positive supervisor epoch |
+| `state_root` | Short canonical private root-owned directory, under trusted ancestors; guardian socket paths must fit Unix limits |
+| `cgroup_parent` | Dedicated empty delegated cgroup-v2 parent under `/sys/fs/cgroup` |
+| `guardian_binary` | Absolute path to the reviewed `sandbox-supervisor` binary |
+| `firecracker`, `jailer` | Each has an absolute `path` and lowercase SHA-256 hex `sha256` |
+| `images` | Map from allowlisted `sha256:` image identifiers to `kernel` and `rootfs` artifacts, each with `path`/`sha256` |
+| `jail_uid`, `jail_gid` | Unprivileged jailer IDs, each at least 65534 |
+| `capacity` | `vcpu`, `memory_mib`, `disk_mib`, including the allowances above |
+
+The real host accepts 1–4 vCPU, 128–8192 MiB of guest memory and 64–65536 MiB of writable disk. The API currently admits smaller positive sizes, so use these host bounds: an undersized request is rejected after dispatch and remains unknown until explicit destroy obtains a durable absence fence. Aligning API/placement minimums remains a follow-up. The image must boot the [guest init and agent](guest-bootstrap.md); an arbitrary disk image without that agent cannot pass readiness. Guest userspace stays writable and workloads retain the [guest-root contract](decisions/0003-guest-root-with-our-kernel.md). The current guardian has no NIC, so this integration does not implement the network policy or claim internet access.
+
+Start the API/controller as documented in [API server](api-server.md) and [controller](controller.md), using this host's mTLS endpoint, ID, epoch and image allowlist. Keep simulation disabled. Host registration, certificate issuance, source image preparation and fleet rollout are not automated by this command.
+
+## Verification and limits
+
+[Controlled host tests](../crates/sandbox-supervisor/tests/host.rs) run the actual server binary over loopback mTLS, real guardians and bootstrapped Firecracker VMs. They cover duplicate/conflicting creates, revision fences, durable stop-before-create, lease retries, a lost caller, unauthorized controller certificates, capacity reuse after cleanup, epoch advancement and old-owner cleanup, and VMM presence without guest readiness.
+
+The API integration case uses PostgreSQL and the actual authenticated HTTP router, then the controller's real gRPC client. It checks identical admission handles, non-simulated running state, authenticated guest boot, scheduled lease renewal, destroy completion, database release evidence and removal of cgroup/runtime files. HTTP TCP/TLS itself is covered separately by the API server tests. The host tests are root-only opt-in tests in the isolated [Linux development VM](linux-development.md); ordinary CI does not run them.
+
+The [recorded evidence](evidence/2026-09-21-aarch64-host-rpc.json) identifies source/artifact hashes and measured outcomes. It does not prove public command/file/output delivery, production Debian/kernel builds, host registration or old-epoch database recovery, adversarial isolation, network policy, snapshots, sustained fleet load, or supported x86_64 release gates.
