@@ -36,7 +36,8 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 ## Controller
 
-- [ ] Extend the implemented create/destroy loop with lease renewal, expired-allocation reconciliation, and the remaining operation kinds.
+- [x] Extend create/destroy with allocation lease renewal and same-epoch expiry reconciliation against the fake; [maintenance evidence](../controller.md#allocation-maintenance).
+- [ ] Add the remaining operation kinds and validate watchdog/old-epoch fencing on real Linux/KVM hosts.
 - [ ] Add authenticated host registration and verified image/host compatibility to the initial operator-provisioned create path.
 - [ ] Extend the implemented [create intent and evidence transactions](../controller.md#completion-and-uncertainty) to the remaining lifecycle actions.
 

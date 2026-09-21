@@ -4,7 +4,7 @@
 use sandbox_protocol::{
     HostId,
     supervisor::{
-        AllocationState, HealthRequest, InspectRequest, StopRequest,
+        AllocationState, HealthRequest, InspectRequest, LeaseInspection, StopRequest,
         supervisor_client::SupervisorClient,
     },
 };
@@ -13,6 +13,7 @@ use sandbox_store::{
     claims::{Claim, ClaimError, OperationKind},
     destroy::DestroyAction,
     dispatch::{CreateAction, CreateRejection, DispatchError},
+    leases::{AllocationClaim, LeaseAction, LeaseResult},
     placement::{PlacementError, Reservation},
 };
 use sandbox_supervisor::transport::{self, TransportError};
@@ -54,6 +55,7 @@ pub enum Tick {
     Confirmed,
     Unknown,
     LostOwnership,
+    Maintained,
 }
 
 #[derive(Debug)]
@@ -61,6 +63,7 @@ pub struct Controller {
     store: Store,
     config: ControllerConfig,
     client: SupervisorClient<Channel>,
+    prefer_destroy: bool,
 }
 
 impl Controller {
@@ -85,6 +88,7 @@ impl Controller {
             store,
             config,
             client,
+            prefer_destroy: true,
         };
         controller.check_host().await?;
         Ok(controller)
@@ -228,34 +232,116 @@ impl Controller {
         }
     }
 
-    /// At most one claimed operation per tick. Cancellation after durable intent
-    /// leaves work reclaimable; the next owner inspects instead of replaying it.
-    pub async fn tick(&mut self) -> Result<Tick, ControllerError> {
-        self.check_host().await?;
-        if let Some(claim) = self.store.claim_next(OperationKind::Destroy, 30).await? {
-            return self.destroy_tick(&claim).await;
+    async fn lease_error(
+        &self,
+        claim: &AllocationClaim,
+        error: DispatchError,
+    ) -> Result<Tick, ControllerError> {
+        match error {
+            DispatchError::LostClaim => Ok(Tick::LostOwnership),
+            DispatchError::Conflict => match self.store.defer_allocation(claim).await {
+                Ok(()) => Ok(Tick::Deferred),
+                Err(DispatchError::LostClaim) => Ok(Tick::LostOwnership),
+                Err(error) => Err(error.into()),
+            },
+            other => Err(other.into()),
         }
-        let Some(claim) = self.store.claim_next(OperationKind::Create, 30).await? else {
+    }
+
+    async fn lease_unknown(&self, claim: &AllocationClaim) -> Result<Tick, ControllerError> {
+        match self.store.record_lease_unknown(claim).await {
+            Ok(()) => Ok(Tick::Unknown),
+            Err(error) => self.lease_error(claim, error).await,
+        }
+    }
+
+    /// One due allocation per tick, independently of operation queue pressure.
+    async fn maintenance_tick(&mut self) -> Result<Tick, ControllerError> {
+        let Some(claim) = self
+            .store
+            .claim_allocation(self.config.host, self.config.epoch, 10)
+            .await?
+        else {
             return Ok(Tick::Idle);
         };
+        let action = match self.store.prepare_lease(&claim).await {
+            Ok(action) => action,
+            Err(error) => return self.lease_error(&claim, error).await,
+        };
+        let response = match action {
+            LeaseAction::Cleanup(_) => return Ok(Tick::Maintained),
+            LeaseAction::Renew(request) => self.client.renew_lease(request).await,
+            LeaseAction::Inspect(owner) => {
+                self.client
+                    .inspect_lease(LeaseInspection {
+                        ownership: Some(owner),
+                    })
+                    .await
+            }
+        };
+        let observation = match response {
+            Ok(response) => response.into_inner(),
+            Err(_) => return self.lease_unknown(&claim).await,
+        };
+        match self
+            .store
+            .record_lease_observation(&claim, &observation, self.config.allow_simulated)
+            .await
+        {
+            Ok(LeaseResult::Renewed | LeaseResult::Cleanup(_)) => Ok(Tick::Maintained),
+            Err(DispatchError::BadEvidence | DispatchError::SimulationDenied) => {
+                self.lease_unknown(&claim).await
+            }
+            Err(error) => self.lease_error(&claim, error).await,
+        }
+    }
+
+    /// Maintain at most one due allocation and process at most one operation.
+    /// Alternating preference prevents create/destroy queues starving each other.
+    pub async fn tick(&mut self) -> Result<Tick, ControllerError> {
+        if let Err(error) = self.check_host().await {
+            self.store
+                .mark_host_runtime_unknown(self.config.host, self.config.epoch)
+                .await?;
+            return Err(error);
+        }
+        let maintenance = self.maintenance_tick().await?;
+        let kinds = if self.prefer_destroy {
+            [OperationKind::Destroy, OperationKind::Create]
+        } else {
+            [OperationKind::Create, OperationKind::Destroy]
+        };
+        self.prefer_destroy = !self.prefer_destroy;
+        for kind in kinds {
+            if let Some(claim) = self.store.claim_next(kind, 30).await? {
+                return match kind {
+                    OperationKind::Destroy => self.destroy_tick(&claim).await,
+                    _ => self.create_tick(&claim).await,
+                };
+            }
+        }
+        Ok(maintenance)
+    }
+
+    async fn create_tick(&mut self, claim: &Claim) -> Result<Tick, ControllerError> {
         let reservation = match self
             .store
-            .reserve_create(&claim, self.config.host, self.config.epoch)
+            .reserve_create(claim, self.config.host, self.config.epoch)
             .await
         {
             Ok(value) => value,
             Err(PlacementError::Unauthorized) => {
-                return self.reject(&claim, CreateRejection::Unauthorized).await;
+                return self.reject(claim, CreateRejection::Unauthorized).await;
             }
             Err(PlacementError::InvalidResources) => {
-                return self.reject(&claim, CreateRejection::InvalidResources).await;
+                return self.reject(claim, CreateRejection::InvalidResources).await;
             }
             Err(
                 PlacementError::Capacity
                 | PlacementError::Quota
                 | PlacementError::HostUnavailable
                 | PlacementError::Reconcile,
-            ) => return self.defer(&claim).await,
+            ) => return self.defer(claim).await,
             Err(PlacementError::LostClaim) => return Ok(Tick::LostOwnership),
             Err(error) => return Err(error.into()),
         };
@@ -265,22 +351,22 @@ impl Controller {
         if allocation.host_id != self.config.host
             || allocation.supervisor_epoch != self.config.epoch
         {
-            return self.defer(&claim).await;
+            return self.defer(claim).await;
         }
         let action = match self
             .store
-            .prepare_create_dispatch(&claim, &self.config.allowed_images)
+            .prepare_create_dispatch(claim, &self.config.allowed_images)
             .await
         {
             Ok(action) => action,
             Err(DispatchError::Unauthorized) => {
-                return self.reject(&claim, CreateRejection::Unauthorized).await;
+                return self.reject(claim, CreateRejection::Unauthorized).await;
             }
             Err(DispatchError::ImageDenied) => {
-                return self.reject(&claim, CreateRejection::ImageDenied).await;
+                return self.reject(claim, CreateRejection::ImageDenied).await;
             }
             Err(DispatchError::HostUnavailable | DispatchError::Conflict) => {
-                return self.defer(&claim).await;
+                return self.defer(claim).await;
             }
             Err(DispatchError::LostClaim) => return Ok(Tick::LostOwnership),
             Err(error) => return Err(error.into()),
@@ -297,19 +383,19 @@ impl Controller {
         };
         let observation = match response {
             Ok(response) => response.into_inner(),
-            Err(_) => return self.unknown(&claim).await,
+            Err(_) => return self.unknown(claim).await,
         };
         match self
             .store
-            .record_create_observation(&claim, &observation, self.config.allow_simulated)
+            .record_create_observation(claim, &observation, self.config.allow_simulated)
             .await
         {
             Ok(()) => Ok(Tick::Confirmed),
             Err(DispatchError::BadEvidence | DispatchError::SimulationDenied) => {
-                self.unknown(&claim).await
+                self.unknown(claim).await
             }
             Err(DispatchError::LostClaim) => Ok(Tick::LostOwnership),
-            Err(DispatchError::Conflict) => self.defer(&claim).await,
+            Err(DispatchError::Conflict) => self.defer(claim).await,
             Err(error) => Err(error.into()),
         }
     }

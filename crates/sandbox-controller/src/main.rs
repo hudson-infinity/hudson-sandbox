@@ -26,7 +26,7 @@ struct Args {
     /// Development only. Persist and expose simulated evidence; never run against production data.
     #[arg(long, default_value_t = false)]
     allow_simulated: bool,
-    /// Process at most one operation and exit; useful for controlled diagnostics.
+    /// Run one maintenance/operation tick and exit; useful for controlled diagnostics.
     #[arg(long)]
     once: bool,
 }
