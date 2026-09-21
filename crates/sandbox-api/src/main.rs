@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use sandbox_api::{
     AppState,
     provision::provision,
-    router_with_streams,
+    router_with_files,
     server::{ServerLimits, serve, tls_acceptor},
 };
 use sandbox_protocol::images::ImageAllowlist;
@@ -20,33 +20,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Command {
     /// Serve existing routes. Requires DATABASE_URL in the environment.
-    Serve {
-        #[arg(long, default_value = "127.0.0.1:8443")]
-        bind: SocketAddr,
-        #[arg(long)]
-        tls_cert: PathBuf,
-        #[arg(long)]
-        tls_key: PathBuf,
-        #[arg(long, required = true)]
-        image_digest: Vec<String>,
-        /// Private service-owned S3 JSON configuration; provision read-only credentials.
-        #[arg(long)]
-        output_config: Option<PathBuf>,
-        /// Operator-selected live-output host; never accepted from API callers.
-        #[arg(long, requires_all = ["live_endpoint", "live_ca_cert", "live_client_cert", "live_client_key"])]
-        live_host_id: Option<sandbox_protocol::HostId>,
-        #[arg(long, requires = "live_host_id")]
-        live_endpoint: Option<String>,
-        #[arg(long, requires = "live_host_id")]
-        live_ca_cert: Option<PathBuf>,
-        #[arg(long, requires = "live_host_id")]
-        live_client_cert: Option<PathBuf>,
-        #[arg(long, requires = "live_host_id")]
-        live_client_key: Option<PathBuf>,
-        /// Explicit development opt-in for a configured fake reader host.
-        #[arg(long, requires = "live_host_id")]
-        allow_simulated_live: bool,
-    },
+    Serve(Box<ServeArgs>),
     /// Create or resume one project via a private credential file. Requires direct DATABASE_URL access.
     ProvisionProject {
         #[arg(long)]
@@ -56,6 +30,36 @@ enum Command {
     },
     /// Apply embedded migrations without opening an HTTP listener.
     Migrate,
+}
+#[derive(clap::Args)]
+struct ServeArgs {
+    #[arg(long, default_value = "127.0.0.1:8443")]
+    bind: SocketAddr,
+    #[arg(long)]
+    tls_cert: PathBuf,
+    #[arg(long)]
+    tls_key: PathBuf,
+    #[arg(long, required = true)]
+    image_digest: Vec<String>,
+    /// Private service-owned S3 JSON configuration; provision read-only credentials.
+    #[arg(long)]
+    output_config: Option<PathBuf>,
+    /// Operator-selected live-output host; never accepted from API callers.
+    #[arg(long, requires_all = ["live_endpoint", "live_ca_cert", "live_client_cert", "live_client_key"])]
+    live_host_id: Option<sandbox_protocol::HostId>,
+    #[arg(long, requires = "live_host_id")]
+    live_endpoint: Option<String>,
+    #[arg(long, requires = "live_host_id")]
+    live_ca_cert: Option<PathBuf>,
+    #[arg(long, requires = "live_host_id")]
+    live_client_cert: Option<PathBuf>,
+    #[arg(long, requires = "live_host_id")]
+    live_client_key: Option<PathBuf>,
+    /// Explicit development opt-in for a configured fake reader host.
+    #[arg(long, requires = "live_host_id")]
+    allow_simulated_live: bool,
+    #[command(flatten)]
+    files: Box<sandbox_api::files::client::FileReaderArgs>,
 }
 async fn store() -> anyhow::Result<Store> {
     let database_url =
@@ -80,19 +84,21 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match args.command {
-        Command::Serve {
-            bind,
-            tls_cert,
-            tls_key,
-            image_digest,
-            output_config,
-            live_host_id,
-            live_endpoint,
-            live_ca_cert,
-            live_client_cert,
-            live_client_key,
-            allow_simulated_live,
-        } => {
+        Command::Serve(args) => {
+            let ServeArgs {
+                bind,
+                tls_cert,
+                tls_key,
+                image_digest,
+                output_config,
+                live_host_id,
+                live_endpoint,
+                live_ca_cert,
+                live_client_cert,
+                live_client_key,
+                allow_simulated_live,
+                files,
+            } = *args;
             let images = ImageAllowlist::new(image_digest)?;
             let acceptor = tls_acceptor(
                 &std::fs::read(tls_cert).context("reading TLS certificate")?,
@@ -129,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
                     )
                 }
             };
+            let files = (*files).build()?;
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .context("binding HTTPS listener")?;
@@ -136,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
             serve(
                 listener,
                 acceptor,
-                router_with_streams(AppState { store, images }, output, live),
+                router_with_files(AppState { store, images }, output, live, files),
                 ServerLimits::default(),
                 shutdown,
             )

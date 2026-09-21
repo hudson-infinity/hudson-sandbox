@@ -137,3 +137,9 @@ The [API server guide](api-server.md#offline-project-provisioning) owns the comm
 ## Retained-output authorization
 
 The [implemented output read](api-contract.md#implemented-retained-output-reads) checks project ownership before accessing storage. Its request-local credential proof retains the verified hash, not the raw bearer secret. After storage and final metadata lookup it reloads the credential and verifies the same project/key/hash, expiry, revocation and active project state before releasing bytes. A failed database check denies delivery. Checking credentials before the final metadata lookup is insufficient because that query can block; a regression test covers revocation during that wait. Retention is checked again after the last awaited credential check. This applies to bounded archived chunks; live streams still require the periodic rechecks above.
+
+## Captured file authorization
+
+[Public file downloads](api-contract.md#implemented-file-downloads) use project bearer authentication on capture, every chunk and release. The capture descriptor does not grant access. The API resolves a live allocation within that project and uses fixed operator file-reader credentials, with no controller mutation authority.
+
+Before and after host I/O, the [store check](../crates/sandbox-store/src/files.rs) locks project, sandbox, allocation and host rows for a short transaction, then rereads token hash/status/expiry/revocation and the current scope. Commit or lock failures fail closed. Host I/O never holds these locks. Changes committed before the final authorization check discard the response, including backend error replies; already-released bytes and changes after the final authorization point cannot be retroactively revoked. The [race tests](../crates/sandbox-api/tests/files.rs) exercise credential/allocation changes during host I/O and while final checks wait on database row locks.

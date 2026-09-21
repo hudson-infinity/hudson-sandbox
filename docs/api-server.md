@@ -1,6 +1,6 @@
 # Running the HTTPS API
 
-Status: implemented for the existing create, destroy, status, and collection routes. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. No workload execution, installer, SDK, public client CLI, management API/UI, or production isolation guarantee is implied by this setup.
+Status: implemented for create, execute, cancel, destroy, status, collections, outputs, streams and captured file downloads. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. An installer, SDK, public client CLI and management API/UI remain unfinished. This setup is not a production isolation guarantee.
 
 ## Transport contract
 
@@ -115,3 +115,11 @@ To enable live guest reads, add all of `--live-host-id`, `--live-endpoint`, `--l
 Pin the API's **dedicated reader leaf certificate** with `--output-reader-cert-sha256` on `sandbox-host` or `sandbox-fake-host`. It must differ from every controller certificate, including rotation pins. This API client calls only the [read-only service](supervisor-protocol.md#read-only-live-output). It reconnects using normal CA/host-name verification; no controller credential, mutation method, plaintext fallback or guest endpoint is exposed to customers.
 
 Simulated host observations are rejected by default. `--allow-simulated-live` is an explicit development opt-in and requires live-host configuration; it never turns simulated evidence into a real VM claim. All frames retain the provenance checked against the execution record. Configure `--output-config` as well to serve published history after guest destruction. File transfer, fleet provisioning, browser sessions and production release packaging remain separate work.
+
+## File-reader configuration
+
+Enable the [public capture/download/release routes](api-contract.md#implemented-file-downloads) with all five flags: `--file-host-id`, `--file-endpoint`, `--file-ca-cert`, `--file-client-cert`, `--file-client-key`. The endpoint must be a fixed HTTPS authority with no user information, query or non-root path. The host ID selects the expected TLS server identity. Each PEM input is bounded to 64 KiB. Configure the matching certificate fingerprint on the supervisor with `--file-reader-cert-sha256`; controller and output-reader certificates do not implicitly grant file access.
+
+This single-host mapping is operator configuration. Customer IDs, paths and capture descriptors never choose an endpoint or credential file. A different allocation host returns unavailable until an operator configures a reader for it. The service cannot upload files or dispatch commands. No file-reader configuration means file requests for an otherwise readable sandbox return `503 unavailable`.
+
+Simulated replies require explicit `--allow-simulated-files` and must also match the current sandbox's recorded simulation provenance. Leave it disabled for real hosts. Capture descriptors, bearer headers, workspace paths and file contents must not be added to access logs. The default server logging policy already excludes request headers, query strings and bodies.

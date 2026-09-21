@@ -687,7 +687,7 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
             .build()
             .unwrap()
     });
-    let app = sandbox_api::router_with_streams(
+    let app = sandbox_api::router_with_files(
         sandbox_api::AppState {
             store: store.clone(),
             images: sandbox_protocol::images::ImageAllowlist::new([image.clone()]).unwrap(),
@@ -702,6 +702,17 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
                 f.tls.ca.pem().into_bytes(),
                 f.reader.cert.pem().into_bytes(),
                 f.reader.key.serialize_pem().into_bytes(),
+                false,
+            )
+            .unwrap(),
+        )),
+        Some(std::sync::Arc::new(
+            sandbox_api::files::client::FileClient::new(
+                f.config.host,
+                f.url.clone(),
+                f.tls.ca.pem().into_bytes(),
+                f.file_reader.cert.pem().into_bytes(),
+                f.file_reader.key.serialize_pem().into_bytes(),
                 false,
             )
             .unwrap(),
@@ -1001,6 +1012,7 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
         }
     }
     public_cancel_case(&pool, &app, &token, &mut controller, sandbox, &m).await;
+    let file_capture = public_files::round_trip(&app, &token, &mut controller, sandbox).await;
     if output {
         // Archive retries may not replay a command with side effects.
         let guest = m.guest_client().unwrap();
@@ -1082,6 +1094,7 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
         Value::Null,
     )
     .await;
+    public_files::after_destroy(&app, &token, sandbox, &file_capture).await;
     assert_eq!(state["observed_state"], "destroyed");
     assert_eq!(state["observation_simulated"], false);
     assert!(!m.group().exists());
@@ -1909,3 +1922,6 @@ mod supervisor_files;
 
 #[path = "support/file_downloads.rs"]
 mod file_downloads;
+
+#[path = "support/public_files.rs"]
+mod public_files;

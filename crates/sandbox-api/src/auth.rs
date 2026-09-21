@@ -81,6 +81,23 @@ fn verify_hash(
 }
 
 impl Authenticated {
+    pub(crate) async fn file_view(
+        &self,
+        store: &Store,
+        sandbox: sandbox_protocol::SandboxId,
+    ) -> Result<sandbox_store::files::FileView, Problem> {
+        use sandbox_store::files::FileAccess;
+        match store
+            .authorized_file_view(self.project_id, sandbox, &self.key_id, &self.hash)
+            .await
+            .map_err(|_| Problem::Unavailable)?
+        {
+            FileAccess::Unauthorized => Err(Problem::Unauthenticated),
+            FileAccess::NotFound => Err(Problem::NotFound),
+            FileAccess::Ready(view) => Ok(view),
+        }
+    }
+
     /// Reauthorize after slow I/O. Key identifiers alone cannot validate a
     /// credential that was removed, revoked, rotated or moved to another project.
     pub async fn revalidate(&self, store: &Store) -> Result<(), Problem> {
