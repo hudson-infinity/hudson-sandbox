@@ -20,6 +20,7 @@ tokio = { workspace = true, features = ["net", "io-util", "time"] }
 tokio-rustls = { workspace = true }
 prost = { workspace = true }
 sandbox-protocol = { workspace = true }
+sandbox-artifacts = { workspace = true }
 sha2 = { workspace = true }
 tonic = { workspace = true }
 thiserror = { workspace = true }
@@ -29,6 +30,7 @@ rustix = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 sandbox-controller = { path = "../sandbox-controller" }
 sandbox-api = { path = "../sandbox-api" }
 sandbox-store = { workspace = true }

@@ -30,6 +30,9 @@ async fn main() -> anyhow::Result<()> {
         /// SHA-256 of an authorized controller's DER leaf certificate. Repeat for rotation.
         #[arg(long, required = true)]
         controller_cert_sha256: Vec<String>,
+        /// Private service-owned JSON file with operator S3 credentials/configuration.
+        #[arg(long)]
+        output_config: Option<PathBuf>,
     }
     let args = Args::parse();
     let pins = args
@@ -48,7 +51,14 @@ async fn main() -> anyhow::Result<()> {
         &std::fs::read(args.server_key)?,
     );
     let config: Config = guardian::read_json(&args.config)?;
-    let host = Host::open(config)?;
+    let artifacts = args
+        .output_config
+        .as_deref()
+        .map(sandbox_artifacts::S3Config::read_private)
+        .transpose()?
+        .map(sandbox_artifacts::S3Config::build)
+        .transpose()?;
+    let host = Host::open_with_artifacts(config, artifacts)?;
     let service = SupervisorServer::new(host.clone())
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);

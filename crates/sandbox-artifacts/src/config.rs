@@ -9,13 +9,17 @@ use url::{Host, Url};
 
 /// Operator configuration. Never deserialize this from a customer request.
 /// Credentials must be scoped to a private output bucket by the operator.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct S3Config {
     pub endpoint: String,
     pub region: String,
     pub bucket: String,
     pub access_key: String,
     pub secret_key: String,
+    #[serde(default)]
     pub session_token: Option<String>,
+    #[serde(default)]
     pub allow_loopback_http: bool,
 }
 impl fmt::Debug for S3Config {
@@ -36,6 +40,38 @@ impl HttpConnector for Connector {
 }
 
 impl S3Config {
+    /// Bounded, no-follow operator credential file owned by this service's UID.
+    /// Values never appear in errors; this is not a customer configuration API.
+    #[cfg(unix)]
+    pub fn read_private(path: &std::path::Path) -> Result<Self, Error> {
+        use std::{
+            io::Read,
+            os::unix::fs::{MetadataExt, OpenOptionsExt},
+        };
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+            )
+            .open(path)
+            .map_err(|_| Error::InvalidConfig)?;
+        let meta = file.metadata().map_err(|_| Error::InvalidConfig)?;
+        if !meta.is_file()
+            || meta.uid() != rustix::process::geteuid().as_raw()
+            || meta.mode() & 0o077 != 0
+            || meta.len() > 65536
+        {
+            return Err(Error::InvalidConfig);
+        }
+        let mut bytes = Vec::new();
+        file.take(65537)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::InvalidConfig)?;
+        if bytes.len() > 65536 {
+            return Err(Error::InvalidConfig);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| Error::InvalidConfig)
+    }
     fn validate(&self) -> Result<Url, Error> {
         let url = Url::parse(&self.endpoint).map_err(|_| Error::InvalidConfig)?;
         let loopback = match url.host() {
@@ -159,5 +195,40 @@ mod tests {
         assert_eq!(format!("{c:?}"), "S3Config { .. }");
         c.secret_key = String::new();
         assert!(matches!(c.build(), Err(Error::InvalidConfig)));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn config_files_are_private_regular_bounded_and_not_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap_or_else(|_| panic!("temp dir"));
+        let path = dir.path().join("config.json");
+        let bytes=br#"{"endpoint":"https://objects.example.test","region":"us-east-1","bucket":"output-test","access_key":"private-access","secret_key":"private-secret"}"#;
+        std::fs::write(&path, bytes).unwrap_or_else(|_| panic!("write"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .unwrap_or_else(|_| panic!("mode"));
+        assert!(S3Config::read_private(&path).is_ok());
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap_or_else(|_| panic!("symlink"));
+        assert!(matches!(
+            S3Config::read_private(&link),
+            Err(Error::InvalidConfig)
+        ));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .unwrap_or_else(|_| panic!("mode"));
+        assert!(matches!(
+            S3Config::read_private(&path),
+            Err(Error::InvalidConfig)
+        ));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .unwrap_or_else(|_| panic!("mode"));
+        std::fs::write(&path, vec![0; 65537]).unwrap_or_else(|_| panic!("write"));
+        assert!(matches!(
+            S3Config::read_private(&path),
+            Err(Error::InvalidConfig)
+        ));
+        assert!(matches!(
+            S3Config::read_private(dir.path()),
+            Err(Error::InvalidConfig)
+        ));
     }
 }

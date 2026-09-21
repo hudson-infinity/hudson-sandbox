@@ -103,6 +103,23 @@ fn check_owner(plan: &OutputPlan, expected: &OutputOwner, now: i64) -> Result<()
 }
 
 impl ArtifactStore {
+    /// Reconcile an upload from its persisted plan without access to the guest
+    /// or original bytes. Missing is distinct from corrupt/uncertain; only a
+    /// verified object yields a reference. This never creates or overwrites it.
+    pub async fn reconcile(
+        &self,
+        plan: &OutputPlan,
+        owner: &OutputOwner,
+        now: i64,
+    ) -> Result<OutputRef, Error> {
+        check_owner(plan, owner, now)?;
+        let _permit = TRANSFERS.try_acquire().map_err(|_| Error::Busy)?;
+        tokio::time::timeout(TRANSFER_TIMEOUT, self.fetch(plan, None))
+            .await
+            .map_err(|_| Error::Unavailable)?
+            .map(|(reference, _)| reference)
+    }
+
     /// Create-only write. The expected owner must come from trusted operation
     /// and allocation state, never from the same untrusted reference being read.
     /// Caller must persist the plan before invoking this method. A returned ref

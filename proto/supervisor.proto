@@ -4,6 +4,8 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc PrepareOutput(OutputRequest) returns (OutputObservation);
+  rpc ArchiveOutput(OutputRequest) returns (OutputObservation);
   rpc ExecuteCommand(CommandRequest) returns (CommandObservation);
   rpc InspectCommand(CommandInspection) returns (CommandObservation);
   rpc Health(HealthRequest) returns (HostInfo);
@@ -12,6 +14,25 @@ service Supervisor {
   rpc Stop(StopRequest) returns (Observation);
   rpc RenewLease(LeaseRequest) returns (LeaseObservation);
   rpc InspectLease(LeaseInspection) returns (LeaseObservation);
+}
+
+// Independent publication ownership, never an execution revision. JSON fields
+// contain only bounded versioned OutputTicket/OutputPlans/OutputRefs metadata.
+// Output bytes and credentials never cross this interface.
+message OutputRequest {
+  bytes ticket_json = 1;
+  int64 publication_revision = 2;
+  int64 claim_expires_unix_ms = 3;
+  bytes plans_json = 4;
+}
+message OutputObservation {
+  OutputRequest request = 1;
+  string host_id = 2;
+  int64 supervisor_epoch = 3;
+  bool simulated = 4;
+  int64 observed_unix_ms = 5;
+  bytes plans_json = 6;
+  bytes references_json = 7;
 }
 message HealthRequest {}
 message HostInfo {

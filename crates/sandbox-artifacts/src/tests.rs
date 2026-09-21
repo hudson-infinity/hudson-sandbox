@@ -93,6 +93,10 @@ async fn lost_ack_retry_verifies_existing_bytes_and_rejects_changed_plan() {
     // persisted plan and bytes; no receipt or ETag from the first upload.
     store.upload(&p, &p.owner, 1000, b"first").await.unwrap();
     let recovered = store.upload(&p, &p.owner, 1001, b"first").await.unwrap();
+    assert_eq!(
+        store.reconcile(&p, &p.owner, 1001).await.unwrap(),
+        recovered
+    );
     let mut changed = p.clone();
     changed.sha256 = hex::encode(Sha256::digest(b"other"));
     assert_eq!(
@@ -202,6 +206,10 @@ async fn pinned_owner_retention_missing_and_corrupt_are_distinct() {
         Err(Error::Corrupt)
     ));
     store.inner.delete(&path).await.unwrap();
+    assert_eq!(
+        store.reconcile(&p, &p.owner, 1000).await,
+        Err(Error::Missing)
+    );
     assert!(matches!(
         store.read(&r, &p.owner, 1000, 0, 10).await,
         Err(Error::Missing)

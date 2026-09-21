@@ -21,6 +21,8 @@ pub(super) struct Record {
     pub released: bool,
     #[serde(default)]
     pub commands: BTreeMap<String, sandbox_protocol::command::CommandRecord>,
+    #[serde(default)]
+    pub archives: BTreeMap<String, crate::archive::ArchiveRecord>,
     pub lease_revision: i64,
     pub lease_request: Option<(i64, i64)>,
     #[serde(skip)]
@@ -153,6 +155,30 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
             record.commands.len() <= sandbox_protocol::command::MAX_COMMANDS,
             "retained command journal too large"
         );
+        anyhow::ensure!(
+            record.archives.len() <= record.commands.len(),
+            "invalid archive journal count"
+        );
+        for (id, archive) in &record.archives {
+            let command = record
+                .commands
+                .get(id)
+                .ok_or_else(|| anyhow::anyhow!("archive command missing"))?;
+            archive.ticket.validate()?;
+            anyhow::ensure!(
+                archive.revision > 0 && archive.ticket.owner.operation_id.to_string() == *id,
+                "invalid archive revision or operation"
+            );
+            super::archive::validate_owner(&record.owner, &archive.ticket)?;
+            let receipt = command
+                .receipt
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("archive receipt missing"))?;
+            crate::archive::validate_receipt(&archive.ticket, receipt)?;
+            if let Some(plans) = &archive.plans {
+                crate::archive::validate_plans(&archive.ticket, plans, receipt)?;
+            }
+        }
         for (id, command) in &record.commands {
             let id: OperationId = id.parse()?;
             if command.not_started {

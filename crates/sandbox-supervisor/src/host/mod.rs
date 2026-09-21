@@ -1,4 +1,5 @@
 //! Durable, root-operated lifecycle adapter. Guest readiness and cleanup remain observations.
+mod archive;
 mod commands;
 mod journal;
 use crate::guardian::{self, Action, Artifact, Manifest, Receipt, State as GuardianState};
@@ -76,6 +77,8 @@ struct Inner {
     // Never inherited by exec children; one service owns this state directory.
     _lock: fs::File,
     workers: Arc<tokio::sync::Semaphore>,
+    artifacts: Option<sandbox_artifacts::ArtifactStore>,
+    archive_workers: tokio::sync::Semaphore,
     cursor: AtomicUsize,
 }
 #[derive(Debug, Clone)]
@@ -107,6 +110,12 @@ fn same_allocation(a: &Ownership, b: &Ownership) -> bool {
 }
 impl Host {
     pub fn open(config: Config) -> anyhow::Result<Self> {
+        Self::open_with_artifacts(config, None)
+    }
+    pub fn open_with_artifacts(
+        config: Config,
+        artifacts: Option<sandbox_artifacts::ArtifactStore>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             rustix::process::geteuid().is_root(),
             "real supervisor requires root"
@@ -160,6 +169,8 @@ impl Host {
                 journal: Mutex::new(journal),
                 _lock: file,
                 workers: Arc::new(tokio::sync::Semaphore::new(8)),
+                artifacts,
+                archive_workers: tokio::sync::Semaphore::new(2),
                 cursor: AtomicUsize::new(0),
             }),
         })
@@ -224,6 +235,7 @@ impl Host {
                 stopped: false,
                 released: false,
                 commands: BTreeMap::new(),
+                archives: BTreeMap::new(),
                 lease_revision: 0,
                 lease_request: None,
                 gate: gate.clone(),
@@ -682,6 +694,22 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn prepare_output(
+        &self,
+        r: Request<sandbox_protocol::supervisor::OutputRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::OutputObservation>, Status> {
+        self.prepare_output_inner(r.into_inner())
+            .await
+            .map(Response::new)
+    }
+    async fn archive_output(
+        &self,
+        r: Request<sandbox_protocol::supervisor::OutputRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::OutputObservation>, Status> {
+        self.archive_output_inner(r.into_inner())
+            .await
+            .map(Response::new)
+    }
     async fn execute_command(
         &self,
         r: Request<sandbox_protocol::supervisor::CommandRequest>,

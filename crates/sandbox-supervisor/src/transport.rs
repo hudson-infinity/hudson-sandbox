@@ -80,13 +80,50 @@ pub async fn connect(
     cert_pem: &[u8],
     key_pem: &[u8],
 ) -> Result<SupervisorClient<Channel>, TransportError> {
+    connect_with_timeout(
+        endpoint,
+        host,
+        ca_pem,
+        cert_pem,
+        key_pem,
+        Duration::from_secs(5),
+    )
+    .await
+}
+
+/// Separate output connection; lifecycle RPCs retain their five-second bound.
+pub async fn connect_archiver(
+    endpoint: &str,
+    host: HostId,
+    ca_pem: &[u8],
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> Result<SupervisorClient<Channel>, TransportError> {
+    connect_with_timeout(
+        endpoint,
+        host,
+        ca_pem,
+        cert_pem,
+        key_pem,
+        Duration::from_secs(80),
+    )
+    .await
+}
+async fn connect_with_timeout(
+    endpoint: &str,
+    host: HostId,
+    ca_pem: &[u8],
+    cert_pem: &[u8],
+    key_pem: &[u8],
+    timeout: Duration,
+) -> Result<SupervisorClient<Channel>, TransportError> {
     let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(TransportError::InsecureEndpoint);
     }
     let channel = endpoint
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(5))
+        .timeout(timeout)
         .tls_config(
             ClientTlsConfig::new()
                 .ca_certificate(Certificate::from_pem(ca_pem))

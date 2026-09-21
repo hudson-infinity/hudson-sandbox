@@ -37,6 +37,8 @@ struct Args {
     memory_mib: u64,
     #[arg(long, default_value_t = 65536)]
     disk_mib: u64,
+    #[arg(long)]
+    output_config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -56,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let identity = ControllerIdentity::new(pins)?;
-    let host = FakeHost::new(FakeConfig {
+    let mut host = FakeHost::new(FakeConfig {
         host: args.host_id,
         epoch: args.supervisor_epoch,
         images: BTreeSet::from_iter(args.image_digest),
@@ -66,6 +68,9 @@ async fn main() -> anyhow::Result<()> {
             disk_mib: args.disk_mib,
         },
     })?;
+    if let Some(path) = args.output_config {
+        host = host.with_artifacts(sandbox_artifacts::S3Config::read_private(&path)?.build()?);
+    }
     let service = SupervisorServer::new(host.clone())
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);

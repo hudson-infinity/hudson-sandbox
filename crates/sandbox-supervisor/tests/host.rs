@@ -41,6 +41,9 @@ impl Fixture {
         Self::with_agent(true).await
     }
     async fn with_agent(agent: bool) -> Self {
+        Self::configured(agent, false).await
+    }
+    async fn configured(agent: bool, output: bool) -> Self {
         let vm = vm::Fixture::build(60000, agent);
         let c = &vm.manifest.config;
         let config = Config {
@@ -82,6 +85,24 @@ impl Fixture {
             .local_addr()
             .unwrap()
             .to_string();
+        if output {
+            use std::os::unix::fs::PermissionsExt;
+            let path = vm.temp.path().join("output.json");
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "endpoint":std::env::var("HUDSON_TEST_S3_ENDPOINT").unwrap(),
+                    "region":"us-east-1",
+                    "bucket":std::env::var("HUDSON_TEST_S3_BUCKET").unwrap(),
+                    "access_key":std::env::var("HUDSON_TEST_S3_ACCESS_KEY").unwrap(),
+                    "secret_key":std::env::var("HUDSON_TEST_S3_SECRET_KEY").unwrap(),
+                    "allow_loopback_http":true
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let child = Self::spawn(&vm, &config_path, &address, &tls);
         let f = Self {
             vm,
@@ -96,7 +117,12 @@ impl Fixture {
         f
     }
     fn spawn(vm: &vm::Fixture, config: &PathBuf, address: &str, tls: &tls::Fixture) -> Child {
-        Command::new(env!("CARGO_BIN_EXE_sandbox-host"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sandbox-host"));
+        let output = vm.temp.path().join("output.json");
+        if output.exists() {
+            command.arg("--output-config").arg(output);
+        }
+        command
             .arg("--config")
             .arg(config)
             .arg("--listen")
@@ -610,9 +636,19 @@ async fn http(
 #[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
 #[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1, local PostgreSQL and aarch64 KVM artifacts"]
 async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: sqlx::PgPool) {
+    api_lifecycle(pool, false).await;
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+#[ignore = "requires root, KVM artifacts, PostgreSQL and HUDSON_TEST_S3_* MinIO"]
+async fn real_output_minio_archives_binary_bytes_and_reconciles_after_epoch_restart(
+    pool: sqlx::PgPool,
+) {
+    api_lifecycle(pool, true).await;
+}
+async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     use sandbox_protocol::{ProjectId, ProjectToken};
     use serde_json::{Value, json};
-    let f = Fixture::new().await;
+    let mut f = Fixture::configured(true, output).await;
     let project = ProjectId::generate();
     let token = ProjectToken::generate().unwrap();
     sqlx::query("INSERT INTO projects(id,name,status,limits,api_tokens) VALUES($1,'real-vm-test','active','{}',$2)")
@@ -626,7 +662,7 @@ async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: 
         images: sandbox_protocol::images::ImageAllowlist::new([image.clone()]).unwrap(),
     });
     let mut controller = sandbox_controller::Controller::connect(
-        store,
+        store.clone(),
         sandbox_controller::ControllerConfig {
             endpoint: f.url.clone(),
             host: f.config.host,
@@ -719,6 +755,13 @@ async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: 
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    let artifacts = output.then(|| {
+        sandbox_artifacts::S3Config::read_private(&f.vm.temp.path().join("output.json"))
+            .unwrap()
+            .build()
+            .unwrap()
+    });
+    let mut archived = Vec::new();
     // Authenticated public execute is owned by the runtime after admission.
     for (argv, expected_status, expected_exit) in [
         (
@@ -726,7 +769,7 @@ async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: 
                 "/bin/busybox",
                 "sh",
                 "-c",
-                "echo public-result; /bin/busybox sleep 1; exit 0",
+                "echo once >> /execution-marker; /bin/busybox printf 'a\\000b\\377'; /bin/busybox printf 'err\\000' >&2; /bin/busybox sleep 1; exit 0",
             ],
             "succeeded",
             Some(0),
@@ -787,6 +830,92 @@ async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: 
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        if let Some(artifacts) = &artifacts {
+            assert_eq!(
+                controller
+                    .output_archiver(3600, 60)
+                    .unwrap()
+                    .tick()
+                    .await
+                    .unwrap(),
+                sandbox_controller::archive::ArchiveTick::Published
+            );
+            let view = store
+                .output_for_project(project, id.parse().unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(view.status, "published");
+            let refs = view.references.unwrap();
+            let owner = view.owner.unwrap();
+            let stdout = artifacts
+                .read(&refs.stdout, &owner, guardian::wall_ms(), 0, 1024)
+                .await
+                .unwrap();
+            let stderr = artifacts
+                .read(&refs.stderr, &owner, guardian::wall_ms(), 0, 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                stdout.bytes,
+                if expected_exit == Some(0) {
+                    b"a\x00b\xff".as_slice()
+                } else {
+                    b""
+                }
+            );
+            assert_eq!(
+                stderr.bytes,
+                if expected_exit == Some(0) {
+                    b"err\x00".as_slice()
+                } else {
+                    b""
+                }
+            );
+            assert!(stdout.eof && stderr.eof);
+            let (ticket,plans,revision):(Value,Value,i64) = sqlx::query_as("SELECT output_ticket,output_plan,output_claim_revision FROM operations WHERE id=$1").bind(owner.operation_id.uuid()).fetch_one(&pool).await.unwrap();
+            archived.push((refs, owner, ticket, plans, revision));
+        }
+    }
+    if output {
+        // Archive retries may not replay a command with side effects.
+        let guest = m.guest_client().unwrap();
+        let command = sandbox_protocol::guest_model::Execute {
+            operation_id: OperationId::generate(),
+            argv: vec![
+                "/bin/busybox".into(),
+                "cat".into(),
+                "/execution-marker".into(),
+            ],
+            env: BTreeMap::new(),
+            cwd: "/".into(),
+            deadline_unix_ms: guardian::wall_ms() + 5000,
+            output_limit: 1024,
+        };
+        guest.execute(&command).await.unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !guest
+            .inspect(command.operation_id)
+            .await
+            .unwrap()
+            .cleanup_confirmed
+        {
+            assert!(Instant::now() < until);
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            guest
+                .output(sandbox_protocol::guest::ReadOutput {
+                    operation_id: command.operation_id.to_string(),
+                    stream: sandbox_protocol::guest::Stream::Stdout as i32,
+                    offset: 0,
+                    limit: 1024
+                })
+                .await
+                .unwrap()
+                .data,
+            b"once\n"
+        );
     }
     let (status, destroy) = http(
         &app,
@@ -836,6 +965,49 @@ async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: 
     assert!(m.receipt().unwrap().cleanup_confirmed);
     let (released,):(bool,)=sqlx::query_as("SELECT released_at IS NOT NULL AND release_evidence->>'simulated'='false' FROM allocations").fetch_one(&pool).await.unwrap();
     assert!(released);
+    if let Some(artifacts) = &artifacts {
+        f.restart().await;
+        let mut client = transport::connect_archiver(
+            &f.url,
+            f.config.host,
+            f.tls.ca.pem().as_bytes(),
+            f.tls.host.cert.pem().as_bytes(),
+            f.tls.host.key.serialize_pem().as_bytes(),
+        )
+        .await
+        .unwrap();
+        for (refs, owner, ticket, plans, revision) in archived {
+            let response = client
+                .archive_output(sandbox_protocol::supervisor::OutputRequest {
+                    ticket_json: serde_json::to_vec(&ticket).unwrap(),
+                    plans_json: serde_json::to_vec(&plans).unwrap(),
+                    publication_revision: revision + 1,
+                    claim_expires_unix_ms: guardian::wall_ms() + 120000,
+                })
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(!response.simulated);
+            assert_eq!(response.supervisor_epoch, 2);
+            assert_eq!(
+                serde_json::from_slice::<sandbox_protocol::output::OutputRefs>(
+                    &response.references_json
+                )
+                .unwrap(),
+                refs
+            );
+            assert_eq!(owner.host_epoch, 1);
+            artifacts
+                .read(&refs.stdout, &owner, guardian::wall_ms(), 0, 1024)
+                .await
+                .unwrap();
+        }
+        assert!(!m.group().exists());
+        eprintln!(
+            "real_output_archive_observation {}",
+            json!({"binary_stdout_stderr_verified":true,"empty_streams_verified":true,"controller_published":true,"execution_marker_once":true,"destroy_confirmed":true,"epoch_2_reconciles_epoch_1_objects_without_guest":true})
+        );
+    }
     eprintln!(
         "real_api_lifecycle_observation {}",
         json!({"create_succeeded":true,"duplicate_handles_match":true,"simulated":false,"guest_boot_bound":true,"lease_renewed":true,"destroy_succeeded":true,"database_release_confirmed":true,"cgroup_removed":true,"runtime_files_removed":true})
