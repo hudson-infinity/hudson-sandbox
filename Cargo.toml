@@ -18,6 +18,13 @@ publish = false
 sandbox-protocol = { path = "crates/sandbox-protocol" }
 sandbox-store = { path = "crates/sandbox-store" }
 sandbox-supervisor = { path = "crates/sandbox-supervisor" }
+sandbox-artifacts = { path = "crates/sandbox-artifacts" }
+# S3 transport uses the workspace's existing ring provider, never a second
+# default TLS provider. Explicit credentials and endpoints only.
+object_store = { version = "=0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider"] }
+futures-util = "0.3"
+url = "2"
 
 prost = "=0.14.3"
 tonic = { version = "=0.14.6", features = ["tls-ring"] }
