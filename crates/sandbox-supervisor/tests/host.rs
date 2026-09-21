@@ -33,6 +33,7 @@ struct Fixture {
     config_path: PathBuf,
     tls: tls::Fixture,
     reader: tls::Leaf,
+    file_reader: tls::Leaf,
     child: Child,
     url: String,
     address: String,
@@ -72,6 +73,7 @@ impl Fixture {
         };
         let tls = tls::Fixture::new();
         let reader = tls::Leaf::new(&tls.ca, "reader.sandbox.internal".into(), true);
+        let file_reader = tls::Leaf::new(&tls.ca, "file-reader.sandbox.internal".into(), true);
         let server = tls::Leaf::new(&tls.ca, transport::host_server_name(config.host), false);
         for (name, value) in [
             ("ca.pem", tls.ca.pem()),
@@ -105,13 +107,14 @@ impl Fixture {
             .unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let child = Self::spawn(&vm, &config_path, &address, &tls, &reader);
+        let child = Self::spawn(&vm, &config_path, &address, &tls, &reader, &file_reader);
         let f = Self {
             vm,
             config,
             config_path,
             tls,
             reader,
+            file_reader,
             child,
             url: format!("https://{address}"),
             address,
@@ -125,6 +128,7 @@ impl Fixture {
         address: &str,
         tls: &tls::Fixture,
         reader: &tls::Leaf,
+        file_reader: &tls::Leaf,
     ) -> Child {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sandbox-host"));
         let output = vm.temp.path().join("output.json");
@@ -146,6 +150,8 @@ impl Fixture {
             .arg(hex::encode(tls.host.pin()))
             .arg("--output-reader-cert-sha256")
             .arg(hex::encode(reader.pin()))
+            .arg("--file-reader-cert-sha256")
+            .arg(hex::encode(file_reader.pin()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -275,6 +281,7 @@ impl Fixture {
             &self.address,
             &self.tls,
             &self.reader,
+            &self.file_reader,
         );
         self.client().await;
     }
@@ -1899,3 +1906,6 @@ async fn real_guest_file_upload_execute_and_captured_download_round_trip() {
 
 #[path = "support/supervisor_files.rs"]
 mod supervisor_files;
+
+#[path = "support/file_downloads.rs"]
+mod file_downloads;

@@ -123,7 +123,8 @@ impl FakeHost {
             .values()
             .flat_map(|f| f.file_data.values())
             .map(Vec::len)
-            .sum();
+            .sum::<usize>()
+            + state.published_files.values().map(Vec::len).sum::<usize>();
         let f = state
             .fences
             .get_mut(&owner.allocation_id)
@@ -144,6 +145,7 @@ impl FakeHost {
         }
         let mut stored = None;
         let mut committed = false;
+        let mut publication = None;
         let mut uncertain = false;
         if !file.finished() && ready && !f.stopped {
             match action {
@@ -181,7 +183,7 @@ impl FakeHost {
                     {
                         file.state = 3;
                         committed = true;
-                        f.file_data.remove(&owner.operation_id);
+                        publication = f.file_data.remove(&owner.operation_id);
                     } else {
                         uncertain = true;
                     }
@@ -203,6 +205,11 @@ impl FakeHost {
         f.files.insert(owner.operation_id, file);
         if committed {
             state.file_commits += 1;
+        }
+        if let Some(bytes) = publication {
+            state
+                .published_files
+                .insert((owner.allocation_id, upload.path), bytes);
         }
         if std::mem::take(&mut state.lose_next_file_reply) {
             return Err(Status::unavailable("injected lost file reply"));

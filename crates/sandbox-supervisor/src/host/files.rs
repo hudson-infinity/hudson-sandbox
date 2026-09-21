@@ -141,6 +141,12 @@ impl Host {
             .get(&owner.allocation_id)
             .ok_or_else(|| uncertain("missing record"))?
             .clone();
+        // Reader captures and upload controls share one guest file worker. Reject
+        // contention before recording a mutation intent, rather than making it uncertain.
+        let _file_io = record
+            .file_io
+            .try_acquire()
+            .map_err(|_| Status::resource_exhausted("allocation file worker busy"))?;
         let client = if !record.stopped && !record.released {
             record.manifest.as_ref().and_then(|m| m.guest_client().ok())
         } else {

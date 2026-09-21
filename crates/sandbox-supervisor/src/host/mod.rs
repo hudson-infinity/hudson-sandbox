@@ -1,6 +1,7 @@
 //! Durable, root-operated lifecycle adapter. Guest readiness and cleanup remain observations.
 mod archive;
 mod commands;
+mod file_downloads;
 mod files;
 mod journal;
 mod live_output;
@@ -82,6 +83,8 @@ struct Inner {
     artifacts: Option<sandbox_artifacts::ArtifactStore>,
     archive_workers: tokio::sync::Semaphore,
     output_readers: tokio::sync::Semaphore,
+    file_readers: crate::file_downloads::Workers,
+    downloads: Mutex<crate::file_downloads::Registry>,
     cursor: AtomicUsize,
 }
 #[derive(Debug, Clone)]
@@ -175,6 +178,8 @@ impl Host {
                 artifacts,
                 archive_workers: tokio::sync::Semaphore::new(2),
                 output_readers: tokio::sync::Semaphore::new(4),
+                file_readers: crate::file_downloads::Workers::default(),
+                downloads: Mutex::new(crate::file_downloads::Registry::default()),
                 cursor: AtomicUsize::new(0),
             }),
         })
@@ -244,6 +249,7 @@ impl Host {
                 lease_revision: 0,
                 lease_request: None,
                 gate: gate.clone(),
+                file_io: journal::file_io(),
             },
         );
         self.save(&mut j)?;

@@ -16,3 +16,5 @@ pub mod identity;
 pub mod host;
 
 pub mod live_output;
+
+pub mod file_downloads;

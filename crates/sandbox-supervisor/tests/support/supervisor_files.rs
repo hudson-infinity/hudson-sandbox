@@ -6,7 +6,7 @@ use sandbox_protocol::{
 };
 use sha2::{Digest, Sha256};
 
-fn upload(owner: &Ownership, path: &str, bytes: &[u8]) -> FileRequest {
+pub(super) fn upload(owner: &Ownership, path: &str, bytes: &[u8]) -> FileRequest {
     let id = OperationId::generate();
     let mut owner = owner.clone();
     owner.operation_id = id.to_string();
