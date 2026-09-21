@@ -1,6 +1,6 @@
 # Create, destroy, and allocation maintenance
 
-Status: a single-host create/execute/destroy controller is implemented with PostgreSQL, the authenticated HTTP router, and gRPC/mTLS. The [real Linux supervisor](real-supervisor.md) now has controlled create, readiness, renewal and destroy evidence; the development fake remains available for portable tests. File transfer and automatic old-epoch database recovery remain unfinished; [command cancellation](command-cancellation.md) and output streaming are implemented.
+Status: a single-host create/execute/destroy controller is implemented with PostgreSQL, the authenticated HTTP router, and gRPC/mTLS. The [real Linux supervisor](real-supervisor.md) now has controlled create, readiness, renewal and destroy evidence; the development fake remains available for portable tests. Public file transfer and verified previous-epoch allocation recovery are implemented; [command cancellation](command-cancellation.md) and output streaming are implemented.
 
 ## One operation through the loop
 
@@ -56,6 +56,24 @@ Maintenance runs before one operation each tick, so a continuously nonempty oper
 
 [Lease integration tests](../crates/sandbox-controller/tests/leases.rs) cover competing claims, lost acknowledgements, crash-before-RPC recovery, stale observations, expiry during lock waits, deadline changes, health-check failure, service cleanup after suspension, credential rotation, and maintenance alongside operation queues. [Fake state tests](../crates/sandbox-fake-host/tests/state.rs) also verify survival beyond an initial lease after renewal, monotonic deadlines, watchdog expiry, and rejection of stale or post-stop renewal.
 
+## Previous-epoch allocation recovery
+
+After an operator provisions a newer supervisor epoch in both the host and database, the controller can reconcile older reservations through `ReconcilePreviousAllocation`. Health only marks old running observations unknown. It never proves cleanup or releases capacity. Registration and automatic epoch issuance remain unfinished.
+
+The recovery request carries two distinct identities: the complete original operation/allocation ownership tuple and the current **reporting epoch**. Normal create, command, file, stop and renewal methods still reject older epochs. The [recovery RPC](supervisor-protocol.md#previous-epoch-release-evidence) requires retained matching host ownership and verifies its original cleanup; an empty restarted fake cannot answer it.
+
+[Store preparation](../crates/sandbox-store/src/recovery.rs) runs under the existing create/destroy operation claim. It locks operation, project, sandbox and current host state, validates the original allocation/generation and the newer database host epoch, and commits a reconciliation phase before RPC. An old create reservation with no dispatch intent uses the existing rejection transaction, which independently proves no execution lease or create attempt before releasing it. Dispatched creates are never sent again.
+
+Running allocations from an older epoch become eligible for maintenance under the currently configured epoch. Preparation admits one service-owned destroy with reason `host_epoch_changed`, retaining all capacity. Active create/destroy transitions keep their original operation handles and use the recovery path directly. No old allocation is renewed, migrated to the new epoch or silently replaced.
+
+Completion accepts only a fresh, exact `released` or `fenced_absent` observation whose reporting epoch still matches the locked database host. The existing original epoch stays on the allocation and in the private release receipt, alongside the reporting epoch. Under a live claim, completion releases the allocation, clears the sandbox's current-allocation/transition pointers and marks it destroyed. A pending create finishes failed with its earlier outcome explicitly unknown; destroy finishes succeeded. A superseded unknown create is closed by the destroy receipt. Previously completed creates and command/file execution outcomes remain untouched: VM cleanup cannot invent an exit code or prove whether an uncertain effect ran.
+
+[The controller recovery step](../crates/sandbox-controller/src/recovery.rs) has a ten-second bound including metadata work and RPC; lifecycle transport retains its five-second RPC bound and transactions have two-second statement limits. Missing or contradictory evidence retains the reservation and marks the operation unknown for retry. Cancellation leaves the existing claim to expire. Stale claims, changed reporting epochs and expired observations cannot commit, including after database lock waits. Repeated host cleanup observations are safe; a completed operation cannot be claimed or completed again.
+
+[PostgreSQL tests](../crates/sandbox-controller/tests/recovery.rs) cover undispatched rejection, forged/stale observations, simulated-evidence opt-in, missing journal evidence, replacement claims, service-owned destroy, superseded creation, capacity reclamation, cancellation and lock-wait expiry. [Real-host tests](../crates/sandbox-supervisor/tests/support/previous_epoch.rs) exercise both a running VM and a create whose acknowledgement was discarded across a supervisor restart, including original ownership, cleanup, database recovery and a fresh replacement workload. An in-flight command remains unknown without another dispatch. These are nested-aarch64 development checks; missing/corrupt journals, lost hosts and supported-x86_64 acceptance still need their own recovery or release evidence.
+
+[Recorded recovery evidence](evidence/2026-09-21-aarch64-previous-epoch-recovery.json) binds 210 matching Mac/Linux source hashes and the built artifacts to 443 local tests and 17 passing real-host regressions. The record includes the initial fixture correction and diagnosed clock-skew failure, followed by the successful full rerun. Temporary storage was removed and test cgroups were verified empty.
+
 ## Simulated observations remain visible
 
 The controller rejects a simulated supervisor unless `--allow-simulated` is explicitly set. Use this mode only with isolated development data. A successful fake create includes `result.simulated=true` in the operation response. The sandbox response includes `observation_simulated=true`; false denotes real evidence, and omission denotes no confirmed observation source.
@@ -74,7 +92,7 @@ Required settings are `DATABASE_URL` (or `--database-url`), `--endpoint` using H
 
 The image allowlist is static process configuration and checked at dispatch. Updating it currently requires restarting the controller. The API independently requires an explicit [admission allowlist](api-contract.md#implemented-image-admission). Operators must keep API, controller, and supervisor policy aligned; disagreement rejects new admission or later dispatch. Removing an image does not invalidate an existing retry handle or stop an already running allocation. Image byte verification, manifest pinning, and host compatibility checks remain necessary work.
 
-Public state remains a timestamped last observation, not a live VM-presence guarantee. The maintenance loop below renews confirmed allocations and reconciles same-epoch watchdog release. Real VM watchdog enforcement and host-restart fencing remain unverified.
+Public state remains a timestamped last observation, not a live VM-presence guarantee. The maintenance loop renews confirmed allocations and reconciles same-epoch watchdog release. Controlled nested-aarch64 tests exercise watchdog teardown and restart fencing; supported-host failure and isolation gates remain separate.
 
 ## Evidence and remaining work
 
@@ -89,11 +107,11 @@ Public state remains a timestamped last observation, not a live VM-presence guar
 
 [Destroy integration tests](../crates/sandbox-controller/tests/destroy.rs) additionally cover concurrent idempotent admission, tenant isolation, live-transition conflicts, unknown-create handoff, delayed starts after fencing, lost stop/fence replies, unconfirmed release, claim expiry during completion, credential revocation after admission, and permanent tombstones.
 
-The [standalone HTTPS API and offline project provisioning](api-server.md) are exercised through real TCP/TLS tests; the controller remains a separate process. These tests close the create control-plane loop but do not satisfy the real execution or isolation gates in [Phase 1](roadmap.md#scope-discipline-for-phase-1). Remaining work includes authenticated host registration, old-epoch database recovery, file transfer, production images, and the full supported-host/adversarial failure gates.
+The [standalone HTTPS API and offline project provisioning](api-server.md) are exercised through real TCP/TLS tests; the controller remains a separate process. These tests close the create control-plane loop but do not satisfy the real execution or isolation gates in [Phase 1](roadmap.md#scope-discipline-for-phase-1). Remaining work includes authenticated host registration, finite history reclamation, production images/network policy, distribution packaging, and the full supported-host/adversarial failure gates.
 
 ## Real Linux lifecycle integration
 
-The [real supervisor](real-supervisor.md) now implements the same lifecycle RPCs with `simulated=false`. Its controlled PostgreSQL/HTTP-router test exercises authenticated admission, real VM readiness, scheduled renewal and verified destroy/release through this controller. Command execution is integrated below; file transfer and automatic recovery of database allocations from an earlier host epoch remain unfinished. See the real supervisor document for host capacity, restart and evidence limits.
+The [real supervisor](real-supervisor.md) now implements the same lifecycle RPCs with `simulated=false`. Its controlled PostgreSQL/HTTP-router test exercises authenticated admission, real VM readiness, scheduled renewal and verified destroy/release through this controller. Command execution, public file transfer and verified previous-epoch allocation recovery are integrated. See the real supervisor document for host capacity, restart and evidence limits.
 
 ## Command admission and dispatch ownership
 

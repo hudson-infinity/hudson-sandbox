@@ -41,13 +41,14 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 ## Controller
 
 - [x] Extend create/destroy with allocation lease renewal and same-epoch expiry reconciliation against the fake; [maintenance evidence](../controller.md#allocation-maintenance).
-- [ ] Add the remaining operation kinds and validate watchdog/old-epoch fencing on real Linux/KVM hosts.
+- [x] Reconcile verified previous-epoch allocation release into database ownership; [development recovery evidence](../controller.md#previous-epoch-allocation-recovery).
+- [ ] Validate watchdog/epoch fencing against the complete supported-host failure matrix.
 - [ ] Add authenticated host registration and verified image/host compatibility to the initial operator-provisioned create path.
 - [ ] Extend the implemented [create intent and evidence transactions](../controller.md#completion-and-uncertainty) to the remaining lifecycle actions.
 
 ## Supervisor
 
-The separate [allocation guardian](../allocation-guardian.md) implements verified staging, real jailer/Firecracker ownership, cgroup limits, local deadlines and cleanup. Its controlled aarch64 tests are component evidence; the [real lifecycle RPC adapter](../real-supervisor.md) now connects it to create/renew/destroy. Partition, network, old-epoch database recovery and supported-host gates remain open.
+The separate [allocation guardian](../allocation-guardian.md) implements verified staging, real jailer/Firecracker ownership, cgroup limits, local deadlines and cleanup. Its controlled aarch64 tests are component evidence; the [real lifecycle RPC adapter](../real-supervisor.md) now connects it to create/renew/destroy. Verified previous-epoch database release now has a recovery path. Partition, network and supported-host gates remain open.
 
 - [ ] gRPC server over mTLS, private interface only, verifies the controller's certificate identity rather than merely a valid certificate.
 - [ ] Per-host certificate issuance and a small internal CA.

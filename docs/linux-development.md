@@ -50,6 +50,17 @@ git archive HEAD | limactl shell --workdir=/tmp hudson-sandbox-dev sh -c '
 
 This is a copy of committed source, so uncommitted changes are not included. Repeated extraction does not delete obsolete files from an earlier copy; use a fresh guest source directory for a clean build. Changes in the guest do not write back to the Mac checkout. PostgreSQL integration tests still need their own database configuration; do not expose the Mac development database automatically.
 
+## Check clocks before cross-host tests
+
+Database claims, supervisor observations, TLS certificates and S3 signatures depend on synchronized wall clocks. Before connecting the Linux VM to storage running elsewhere, compare UTC time on the Mac, Linux VM and storage container. For example:
+
+```sh
+date -u
+limactl shell --workdir=/tmp hudson-sandbox-dev date -u
+```
+
+During previous-epoch recovery validation, the development VM was about 65 minutes behind local MinIO. Health checks succeeded, but authenticated storage requests returned `RequestTimeTooSkewed`, which surfaced as an archival RPC failure. With test allocation cgroups confirmed empty, synchronizing the dedicated VM to the operator's clock restored signed storage access. Check time synchronization before changing storage credentials or recovery behavior. Correct large clock drift while test workloads are stopped, then rerun the affected checks; an expired lease or a clock correction is never allocation-release evidence.
+
 ## Verified boot and its limits
 
 [The recorded evidence](evidence/2026-09-21-aarch64-boot.json) describes the 2026-09-21 experiment on an M4 Pro. The outer Linux kernel was `6.8.0-134-generic`; KVM returned API version 12. A matching Firecracker/jailer `1.17.0` release booted an upstream `6.1.186` aarch64 guest kernel and a disposable BusyBox ext4 rootfs. The guest ran init commands, reported its cgroup controllers and loopback-only network devices, and powered off. The actual Firecracker child exited with status 0 and its cgroup became empty; the test removed that cgroup and disposable rootfs.

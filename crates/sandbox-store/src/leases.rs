@@ -29,11 +29,15 @@ struct Context {
     sandbox: PgRow,
     project: PgRow,
     owner: LeaseOwnership,
+    current_epoch: i64,
 }
 fn millis(stamp: OffsetDateTime) -> Result<i64, DispatchError> {
     i64::try_from(stamp.unix_timestamp_nanos() / 1_000_000).map_err(|_| DispatchError::InvalidData)
 }
 async fn context(db: &mut PgConnection, claim: &AllocationClaim) -> Result<Context, DispatchError> {
+    sqlx::query("SET LOCAL statement_timeout='2s'")
+        .execute(&mut *db)
+        .await?;
     // Discover identities without holding an allocation lock. The mutating
     // paths all serialize project -> sandbox -> host -> allocation, so this
     // cannot invert destroy's lock order.
@@ -62,7 +66,8 @@ async fn context(db: &mut PgConnection, claim: &AllocationClaim) -> Result<Conte
         .bind(claim.allocation_id.uuid()).bind(claim.revision).fetch_optional(&mut *db).await?.ok_or(DispatchError::LostClaim)?;
     let epoch: i64 = allocation.try_get("supervisor_epoch")?;
     let generation: i64 = allocation.try_get("generation")?;
-    if host.try_get::<i64, _>("supervisor_epoch")? != epoch
+    let current_epoch: i64 = host.try_get("supervisor_epoch")?;
+    if current_epoch < epoch
         || sandbox.try_get::<i64, _>("generation")? != generation
         || sandbox.try_get::<Option<uuid::Uuid>, _>("current_allocation_id")?
             != Some(claim.allocation_id.uuid())
@@ -88,6 +93,7 @@ async fn context(db: &mut PgConnection, claim: &AllocationClaim) -> Result<Conte
         sandbox,
         project,
         owner,
+        current_epoch,
     })
 }
 async fn fence(db: &mut PgConnection, claim: &AllocationClaim) -> Result<(), DispatchError> {
@@ -141,8 +147,8 @@ impl Store {
             return Err(DispatchError::InvalidData);
         }
         let row=sqlx::query("WITH candidate AS (
-            SELECT a.id FROM allocations a JOIN sandboxes s ON s.current_allocation_id=a.id
-            WHERE a.host_id=$1 AND a.supervisor_epoch=$2 AND a.status='running' AND a.released_at IS NULL
+            SELECT a.id FROM allocations a JOIN sandboxes s ON s.current_allocation_id=a.id JOIN hosts h ON h.id=a.host_id
+            WHERE a.host_id=$1 AND h.supervisor_epoch=$2 AND a.supervisor_epoch<=$2 AND a.status='running' AND a.released_at IS NULL
                 AND s.desired_state='running' AND s.active_transition_operation_id IS NULL
                 AND (a.maintenance_lease_until IS NULL OR a.maintenance_lease_until<=clock_timestamp())
                 AND (a.maintenance_next_at IS NULL OR a.maintenance_next_at<=clock_timestamp())
@@ -173,12 +179,18 @@ impl Store {
         let requested: Option<OffsetDateTime> = ctx.allocation.try_get("lease_requested_until")?;
         // A shortened sandbox deadline cannot be implemented by extending a
         // lease. Stop through the ordinary service-owned lifecycle instead.
-        if ctx.project.try_get::<String, _>("status")? != "active"
+        if ctx.current_epoch > ctx.owner.supervisor_epoch
+            || ctx.project.try_get::<String, _>("status")? != "active"
             || expiry.is_some_and(|e| {
                 e <= now || confirmed.is_some_and(|v| v > e) || requested.is_some_and(|v| v > e)
             })
         {
-            let operation = cleanup(&mut tx, &ctx, "execution_policy_revoked").await?;
+            let reason = if ctx.current_epoch > ctx.owner.supervisor_epoch {
+                "host_epoch_changed"
+            } else {
+                "execution_policy_revoked"
+            };
+            let operation = cleanup(&mut tx, &ctx, reason).await?;
             fence(&mut tx, claim).await?;
             let changed=sqlx::query("UPDATE allocations SET maintenance_lease_until=NULL,updated_at=clock_timestamp() WHERE id=$1 AND maintenance_revision=$2 AND maintenance_lease_until>clock_timestamp()")
                 .bind(claim.allocation_id.uuid()).bind(claim.revision).execute(&mut *tx).await?.rows_affected();
@@ -249,6 +261,9 @@ impl Store {
         }
         let mut tx = self.pool().begin().await?;
         let ctx = context(&mut tx, claim).await?;
+        if ctx.current_epoch != ctx.owner.supervisor_epoch {
+            return Err(DispatchError::Conflict);
+        }
         if observation.ownership.as_ref() != Some(&ctx.owner) {
             return Err(DispatchError::BadEvidence);
         }

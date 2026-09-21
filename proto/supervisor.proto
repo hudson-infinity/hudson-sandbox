@@ -21,6 +21,17 @@ service Supervisor {
   rpc Stop(StopRequest) returns (Observation);
   rpc RenewLease(LeaseRequest) returns (LeaseObservation);
   rpc InspectLease(LeaseInspection) returns (LeaseObservation);
+  // Cleanup evidence for an older retained owner; never start or renew work.
+  rpc ReconcilePreviousAllocation(PreviousAllocationRequest) returns (PreviousAllocationObservation);
+}
+
+message PreviousAllocationRequest {
+  Ownership ownership = 1;
+  int64 reporting_epoch = 2;
+}
+message PreviousAllocationObservation {
+  PreviousAllocationRequest request = 1;
+  Observation release = 2;
 }
 
 // A separate read-only service, authenticated with distinct API-reader pins.

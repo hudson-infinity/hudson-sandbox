@@ -456,6 +456,16 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn reconcile_previous_allocation(
+        &self,
+        _r: Request<sandbox_protocol::supervisor::PreviousAllocationRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::PreviousAllocationObservation>, Status> {
+        // Restart discards this simulator's journal. A new epoch cannot invent
+        // release evidence for ownership that was never durably retained.
+        Err(Status::failed_precondition(
+            "prior ownership evidence unavailable",
+        ))
+    }
     async fn begin_file(
         &self,
         r: Request<sandbox_protocol::supervisor::FileRequest>,
