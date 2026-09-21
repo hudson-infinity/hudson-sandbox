@@ -36,6 +36,7 @@ pub enum Problem {
     OutputCorrupt,
     OutputRange,
     CommandInProgress(sandbox_protocol::OperationId),
+    ExecutionCapacityExhausted,
     /// The same key was used for a different request, or a conflicting
     /// lifecycle transition is already in progress.
     Conflict(&'static str),
@@ -71,6 +72,7 @@ impl Problem {
             Self::OutputCorrupt => StatusCode::BAD_GATEWAY,
             Self::OutputRange => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::CommandInProgress(_) => StatusCode::CONFLICT,
+            Self::ExecutionCapacityExhausted => StatusCode::CONFLICT,
             Self::Conflict(_) | Self::TransitionInProgress(_) => StatusCode::CONFLICT,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -95,6 +97,7 @@ impl Problem {
             Self::OutputCorrupt => "output_corrupt",
             Self::OutputRange => "output_range_invalid",
             Self::CommandInProgress(_) => "command_in_progress",
+            Self::ExecutionCapacityExhausted => "execution_capacity_exhausted",
             Self::Conflict(_) | Self::TransitionInProgress(_) => "conflict",
             Self::Unavailable => "unavailable",
             Self::Internal => "internal",
@@ -119,6 +122,9 @@ impl Problem {
             Self::OutputCorrupt => "Output integrity verification failed",
             Self::OutputRange => "The offset exceeds the captured output size",
             Self::CommandInProgress(_) => "Another operation is still active or unresolved",
+            Self::ExecutionCapacityExhausted => {
+                "Retained command capacity is exhausted; use a smaller output limit or a new sandbox"
+            }
             Self::Conflict(detail) => detail,
             Self::TransitionInProgress(_) => "Another lifecycle operation is in progress",
             Self::Unavailable => "The service is temporarily unable to handle this request",

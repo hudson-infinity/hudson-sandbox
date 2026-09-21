@@ -55,7 +55,7 @@ Expiry alone retains all bodies. After compaction, dispatch/completion receipts,
 
 Already-issued output plans keep their original immutable retention/grace timestamps. A newly assigned shorter response deadline stops public reads and publication but does not rewrite those plans or authorize early storage deletion. [Output retirement](output-storage.md#storage-retirement) completes independently at the original attempt's eligibility time.
 
-Operation identity, project ownership, retry digest/version and outcome remain for the project's lifetime. Further receipt-history archival and host/guest journal reclamation require their own recovery protocol. Host and guest journals still have their documented fixed limits; this worker does not reclaim those reservations or make previously executed work runnable again.
+Operation identity, project ownership, retry digest/version and outcome remain for the project's lifetime. Further receipt-history archival and host/guest journal reclamation require their own recovery protocol. Host and guest journals still have their documented fixed limits; this worker does not reclaim those reservations or make previously executed work runnable again. [Execute admission](controller.md#command-admission-and-dispatch-ownership) continues counting compacted commands and their original output limits toward per-allocation capacity.
 
 ## Evidence
 

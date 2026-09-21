@@ -26,6 +26,7 @@ async fn request(f: &Fixture, sandbox: SandboxId, key: &str, value: Value) -> (S
         .body(axum::body::Body::from(value.to_string()))
         .unwrap();
     let response = f.app.clone().oneshot(r).await.unwrap();
+    assert_eq!(response.headers()["cache-control"], "no-store");
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 65536)
         .await
@@ -79,6 +80,80 @@ async fn public_execute_succeeds_and_retries_never_dispatch_twice(pool: PgPool) 
         .await
         .unwrap();
     assert_eq!(n, 1);
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn public_capacity_rejection_never_dispatches_and_destroy_still_completes(pool: PgPool) {
+    let f = Fixture::new(&pool).await;
+    let (mut c, s) = ready(&f).await;
+    let mut last = None;
+    for _ in 0..sandbox_protocol::command::MAX_COMMANDS {
+        let key = OperationId::generate().to_string();
+        let command = body();
+        let (status, admission) = request(&f, s, &key, command.clone()).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{admission}");
+        assert_eq!(c.tick().await.unwrap(), Tick::Confirmed);
+        assert_eq!(
+            state(&f, admission["operation_id"].as_str().unwrap()).await["status"],
+            "succeeded"
+        );
+        last = Some((key, command, admission));
+    }
+    let (key, mut command, admission) = last.unwrap();
+    let retry = request(&f, s, &key, command.clone()).await;
+    assert_eq!(retry.0, StatusCode::ACCEPTED);
+    assert_eq!(retry.1["operation_id"], admission["operation_id"]);
+    command["argv"] = json!(["changed"]);
+    assert_eq!(request(&f, s, &key, command).await.1["code"], "conflict");
+    let rejected = request(&f, s, &OperationId::generate().to_string(), body()).await;
+    assert_eq!(rejected.0, StatusCode::CONFLICT);
+    assert_eq!(rejected.1["code"], "execution_capacity_exhausted");
+    assert!(rejected.1.get("operation_id").is_none());
+    assert_eq!(c.tick().await.unwrap(), Tick::Idle);
+    assert_eq!(
+        f.fake.total_commands().await,
+        sandbox_protocol::command::MAX_COMMANDS as u64
+    );
+    let (status, destroy) = f
+        .send("POST", &format!("/v1/sandboxes/{s}/destroy"), json!({}))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(c.tick().await.unwrap(), Tick::Confirmed);
+    assert_eq!(
+        state(&f, destroy["operation_id"].as_str().unwrap()).await["status"],
+        "succeeded"
+    );
+    assert_eq!(
+        f.fake.total_commands().await,
+        sandbox_protocol::command::MAX_COMMANDS as u64
+    );
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn public_output_capacity_rejects_without_consuming_the_retry_key(pool: PgPool) {
+    let f = Fixture::new(&pool).await;
+    let (mut c, s) = ready(&f).await;
+    for _ in 0..6 {
+        let mut command = body();
+        command["output_limit"] = json!(10 * 1024 * 1024);
+        assert_eq!(
+            request(&f, s, &OperationId::generate().to_string(), command)
+                .await
+                .0,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(c.tick().await.unwrap(), Tick::Confirmed);
+    }
+    let key = OperationId::generate().to_string();
+    let mut command = body();
+    command["output_limit"] = json!(4 * 1024 * 1024 + 1);
+    let rejected = request(&f, s, &key, command.clone()).await;
+    assert_eq!(rejected.0, StatusCode::CONFLICT);
+    assert_eq!(rejected.1["code"], "execution_capacity_exhausted");
+    command["output_limit"] = json!(4 * 1024 * 1024);
+    assert_eq!(request(&f, s, &key, command).await.0, StatusCode::ACCEPTED);
+    assert_eq!(c.tick().await.unwrap(), Tick::Confirmed);
+    assert_eq!(f.fake.total_commands().await, 7);
 }
 
 #[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
