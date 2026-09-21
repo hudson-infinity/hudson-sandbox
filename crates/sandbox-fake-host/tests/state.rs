@@ -329,3 +329,183 @@ async fn fenced_absence_consumes_its_generation_and_is_observable_after_lost_rep
     );
     assert_eq!(fake.total_starts().await, 1);
 }
+
+fn lease_owner(
+    create: &CreateRequest,
+    revision: i64,
+) -> sandbox_protocol::supervisor::LeaseOwnership {
+    let owner = create.ownership.as_ref().unwrap();
+    sandbox_protocol::supervisor::LeaseOwnership {
+        host_id: owner.host_id.clone(),
+        project_id: owner.project_id.clone(),
+        sandbox_id: owner.sandbox_id.clone(),
+        allocation_id: owner.allocation_id.clone(),
+        generation: owner.generation,
+        supervisor_epoch: owner.supervisor_epoch,
+        revision,
+        claim_expires_unix_ms: unix_ms().unwrap() + 30_000,
+    }
+}
+
+#[tokio::test]
+async fn renewal_lost_reply_reconciles_and_reordering_never_shortens_lease() {
+    use sandbox_protocol::supervisor::{LeaseInspection, LeaseRequest};
+    let (fake, create) = fixture();
+    fake.create(Request::new(create.clone())).await.unwrap();
+    let owner = lease_owner(&create, 1);
+    let deadline = unix_ms().unwrap() + 60_000;
+    let request = LeaseRequest {
+        ownership: Some(owner.clone()),
+        allocation_expires_unix_ms: deadline,
+    };
+    fake.lose_next_renew_reply().await;
+    assert_eq!(
+        fake.renew_lease(Request::new(request.clone()))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unavailable
+    );
+    let observed = fake
+        .inspect_lease(Request::new(LeaseInspection {
+            ownership: Some(owner.clone()),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(observed.allocation_expires_unix_ms, deadline);
+    let mut changed = request.clone();
+    changed.allocation_expires_unix_ms -= 1;
+    assert_eq!(
+        fake.renew_lease(Request::new(changed))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::AlreadyExists
+    );
+    let shorter = fake
+        .renew_lease(Request::new(LeaseRequest {
+            ownership: Some(lease_owner(&create, 2)),
+            allocation_expires_unix_ms: unix_ms().unwrap() + 40_000,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(shorter.allocation_expires_unix_ms, deadline);
+    assert_eq!(
+        fake.renew_lease(Request::new(request))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    assert_eq!(fake.total_starts().await, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn renewal_keeps_an_incarnation_alive_beyond_its_original_lease_then_watchdog_stops_it() {
+    use sandbox_protocol::supervisor::{LeaseInspection, LeaseRequest};
+    let (fake, create) = fixture();
+    fake.create(Request::new(create.clone())).await.unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(11)).await;
+    let request = LeaseRequest {
+        ownership: Some(lease_owner(&create, 1)),
+        allocation_expires_unix_ms: unix_ms().unwrap() + 60_000,
+    };
+    fake.renew_lease(Request::new(request.clone()))
+        .await
+        .unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(20)).await;
+    assert_eq!(
+        fake.inspect_lease(Request::new(LeaseInspection {
+            ownership: request.ownership.clone()
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .state,
+        AllocationState::Ready as i32
+    );
+    tokio::time::advance(std::time::Duration::from_secs(41)).await;
+    fake.expire_leases().await;
+    assert_eq!(
+        fake.renew_lease(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner()
+            .state,
+        AllocationState::Released as i32
+    );
+    assert_eq!(fake.total_starts().await, 1);
+}
+
+#[tokio::test]
+async fn stop_fences_delayed_renewal_and_missing_allocations_are_never_started() {
+    use sandbox_protocol::supervisor::LeaseRequest;
+    let (fake, create) = fixture();
+    let request = LeaseRequest {
+        ownership: Some(lease_owner(&create, 1)),
+        allocation_expires_unix_ms: unix_ms().unwrap() + 60_000,
+    };
+    assert_eq!(
+        fake.renew_lease(Request::new(request.clone()))
+            .await
+            .unwrap()
+            .into_inner()
+            .state,
+        AllocationState::Absent as i32
+    );
+    assert_eq!(fake.total_starts().await, 0);
+    fake.create(Request::new(create.clone())).await.unwrap();
+    fake.stop(Request::new(StopRequest {
+        ownership: create.ownership.clone(),
+    }))
+    .await
+    .unwrap();
+    assert_eq!(
+        fake.renew_lease(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner()
+            .state,
+        AllocationState::Released as i32
+    );
+    assert_eq!(fake.total_starts().await, 1);
+}
+
+#[tokio::test]
+async fn renewal_requires_exact_incarnation_and_bounded_deadlines() {
+    use sandbox_protocol::supervisor::LeaseRequest;
+    for field in [
+        "host",
+        "epoch",
+        "project",
+        "sandbox",
+        "allocation",
+        "generation",
+        "claim",
+        "deadline",
+    ] {
+        let (fake, create) = fixture();
+        fake.create(Request::new(create.clone())).await.unwrap();
+        let mut request = LeaseRequest {
+            ownership: Some(lease_owner(&create, 1)),
+            allocation_expires_unix_ms: unix_ms().unwrap() + 60_000,
+        };
+        let owner = request.ownership.as_mut().unwrap();
+        match field {
+            "host" => owner.host_id = HostId::generate().to_string(),
+            "epoch" => owner.supervisor_epoch += 1,
+            "project" => owner.project_id = ProjectId::generate().to_string(),
+            "sandbox" => owner.sandbox_id = SandboxId::generate().to_string(),
+            "allocation" => owner.allocation_id = "bad".into(),
+            "generation" => owner.generation += 1,
+            "claim" => owner.claim_expires_unix_ms = 1,
+            _ => request.allocation_expires_unix_ms = i64::MAX,
+        }
+        assert!(
+            fake.renew_lease(Request::new(request)).await.is_err(),
+            "{field}"
+        );
+    }
+}

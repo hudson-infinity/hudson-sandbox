@@ -173,6 +173,13 @@ impl Store {
         if changed != 1 {
             return Err(DispatchError::HostUnavailable);
         }
+        // A healthy replacement epoch cannot vouch for the prior incarnation.
+        // Preserve its capacity and observation timestamp while exposing uncertainty.
+        sqlx::query("UPDATE sandboxes s SET observed_state='unknown',state_revision=state_revision+1,updated_at=clock_timestamp()
+            FROM allocations a WHERE s.current_allocation_id=a.id AND a.host_id=$1 AND a.supervisor_epoch<>$2
+            AND a.released_at IS NULL AND s.desired_state='running' AND s.observed_state='running'
+            AND s.active_transition_operation_id IS NULL")
+            .bind(host.uuid()).bind(epoch).execute(self.pool()).await?;
         Ok(())
     }
 
@@ -230,7 +237,8 @@ impl Store {
         };
         let allocation_id: uuid::Uuid = ctx.allocation.try_get("id")?;
         let lease: (OffsetDateTime,) = sqlx::query_as(
-            "UPDATE allocations SET lease_expires_at=clock_timestamp()+interval '30 seconds',
+            "UPDATE allocations SET lease_expires_at=least(clock_timestamp()+interval '30 seconds',
+            (SELECT expires_at FROM sandboxes WHERE id=allocations.sandbox_id)),
             updated_at=clock_timestamp() WHERE id=$1 RETURNING lease_expires_at",
         )
         .bind(allocation_id)
@@ -327,7 +335,7 @@ impl Store {
         let allocation_id: uuid::Uuid = ctx.allocation.try_get("id")?;
         if state == AllocationState::Ready {
             sqlx::query(
-                "UPDATE allocations SET status='running',updated_at=clock_timestamp() WHERE id=$1",
+                "UPDATE allocations SET status='running',maintenance_next_at=clock_timestamp()+interval '10 seconds',updated_at=clock_timestamp() WHERE id=$1",
             )
             .bind(allocation_id)
             .execute(&mut *tx)

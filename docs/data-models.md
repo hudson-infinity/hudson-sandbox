@@ -147,6 +147,8 @@ Internal ID: `alc_<uuidv7>`.
 | `generation`, `supervisor_epoch` | Rejects commands from old VM incarnations or supervisors |
 | `vcpu`, `memory_mib`, `disk_mib`, `status`, `lease_expires_at` | Reserved CPU, RAM, writable/restore disk and ownership lifetime |
 | `release_evidence`, `released_at` (nullable) | Confirmed termination/fencing and release of the reservation |
+| `maintenance_revision`, `maintenance_lease_until`, `maintenance_next_at` | Independent durable claim and scheduling for running allocation maintenance |
+| `lease_requested_until`, `renewal_pending`, `lease_observation` | Renewal intent and bounded latest supervisor evidence, kept separate from the last known execution deadline |
 
 Pause releases the allocation only after durable snapshot publication, confirmed VM shutdown, and cleanup of its reserved local resources. Snapshot staging is a separate reservation on the snapshot until its own cleanup completes. Resume creates a new allocation ID and increasing generation. A failed allocation consumes its generation; it cannot be reused.
 

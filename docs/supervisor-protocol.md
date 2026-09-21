@@ -4,7 +4,7 @@ Status: the versioned gRPC transport and an in-memory fake are implemented. The 
 
 ## Contract and identity
 
-[The protobuf source](../proto/supervisor.proto) generates Rust messages, a client, and a server at build time through `tonic-prost-build`. The package is `hudson.supervisor.v1`. Keep wire field numbers stable; do not reuse removed numbers. The protocol currently covers health, create, inspect, and stop. Execute, output, file transfer, and lease renewal still need protocol and implementation work.
+[The protobuf source](../proto/supervisor.proto) generates Rust messages, a client, and a server at build time through `tonic-prost-build`. The package is `hudson.supervisor.v1`. Keep wire field numbers stable; do not reuse removed numbers. The protocol currently covers health, create, inspect, stop, allocation lease renewal, and lease inspection. Execute, output, and file transfer still need protocol and implementation work.
 
 Every request uses gRPC over mutual TLS. [Shared transport](../crates/sandbox-supervisor/src/transport.rs) requires a trusted private CA and client certificate. The server interceptor also compares the connected client's leaf-certificate SHA-256 fingerprint against one or two configured controller certificates. Another CA-valid certificate, even with the same subject name, has no authority. The second pin supports an explicitly configured rotation overlap. No raw Project or Admin token is accepted on this interface.
 
@@ -26,6 +26,12 @@ An observation echoes the requested ownership tuple, names the original create o
 
 `Absent` means this supervisor has no evidence for that allocation. It is not confirmation that another epoch stopped the VM, permission to free its reservation, or permission to repeat an uncertain command. Database intent, authenticated observations, and the [lifecycle reconciliation contract](lifecycle.md#destroy-and-recovery) govern the next action.
 
+## Lease maintenance messages
+
+`RenewLease` and `InspectLease` use `LeaseOwnership`: host, project, sandbox, allocation, generation, supervisor epoch, maintenance revision, and absolute maintenance claim deadline. This ownership is distinct from operation claims; periodic renewal must not reopen a completed create. `LeaseObservation` echoes that tuple and returns state, simulation source, observation time, and the actual execution deadline known by the supervisor.
+
+The fake retains the greatest maintenance revision for the allocation. A lower revision is rejected; a repeated renewal at the same revision must have the same requested deadline. Renewal can only extend a ready allocation, never shorten a newer deadline, create a missing allocation, or revive release/expiry/stop-fenced state. It preserves the immutable original create request, so a later create retry cannot extend the lease. Inspecting an absent allocation returns absence, not release proof. Lease fields have the same bounded deadline and identity validation as other control requests; the independent monotonic watchdog remains authoritative locally. See [controller maintenance](controller.md#allocation-maintenance) for persistence and recovery.
+
 ## What the fake exercises
 
 [The fake library](../crates/sandbox-fake-host/src/lib.rs) runs no subprocesses. It models the following control-plane behavior:
@@ -35,8 +41,8 @@ An observation echoes the requested ownership tuple, names the original create o
 - A stop received before create prevents a delayed create from starting that allocation and reports `fenced_absent`; later inspections preserve that proof. Stopping a known allocation is idempotent; replaying its old create returns released state.
 - A sandbox can have a new generation only after the previous recorded incarnation is released. Changing project, sandbox, or generation under an allocation ID is rejected.
 - An explicit digest allowlist, per-sandbox resource bounds, and aggregate CPU/RAM/disk capacity checks control simulated admission. They do not verify image bytes or enforce hardware resources.
-- The binary checks allocation leases independently every 100 ms; expired allocations become simulated released records. Calls also check expiry before serving observations. There is no lease-renewal RPC yet.
-- Test hooks can lose create or stop acknowledgements after applying the action. Inspection reports the same start, released incarnation, or fenced absence.
+- The binary checks allocation leases independently every 100 ms; expired allocations become simulated released records. Calls also check expiry before serving observations. Renewal can extend a still-live allocation, but cannot restart an expired or stopped incarnation.
+- Test hooks can lose create, stop, or renewal acknowledgements after applying the action. Inspection reports the same start, released incarnation, or fenced absence.
 
 The fake bounds retained allocation/fence records to 10,000 and operation revisions to 64 per allocation. It rejects additional records rather than evicting deduplication or fencing evidence. Restart clears memory: supply a new externally assigned epoch. Do not reuse an epoch to make lost evidence appear authoritative. Production epoch issuance and durable supervisor receipts are still required.
 

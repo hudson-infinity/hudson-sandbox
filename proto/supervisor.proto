@@ -7,6 +7,8 @@ service Supervisor {
   rpc Create(CreateRequest) returns (Observation);
   rpc Inspect(InspectRequest) returns (Observation);
   rpc Stop(StopRequest) returns (Observation);
+  rpc RenewLease(LeaseRequest) returns (LeaseObservation);
+  rpc InspectLease(LeaseInspection) returns (LeaseObservation);
 }
 message HealthRequest {}
 message HostInfo {
@@ -40,6 +42,29 @@ message CreateRequest {
 }
 message InspectRequest { Ownership ownership = 1; }
 message StopRequest { Ownership ownership = 1; }
+// Allocation maintenance is independent of completed customer operations.
+message LeaseOwnership {
+  string host_id = 1;
+  string project_id = 2;
+  string sandbox_id = 3;
+  string allocation_id = 4;
+  int64 generation = 5;
+  int64 supervisor_epoch = 6;
+  int64 revision = 7;
+  int64 claim_expires_unix_ms = 8;
+}
+message LeaseRequest {
+  LeaseOwnership ownership = 1;
+  int64 allocation_expires_unix_ms = 2;
+}
+message LeaseInspection { LeaseOwnership ownership = 1; }
+message LeaseObservation {
+  LeaseOwnership ownership = 1;
+  AllocationState state = 2;
+  bool simulated = 3;
+  int64 allocation_expires_unix_ms = 4;
+  int64 observed_unix_ms = 5;
+}
 enum AllocationState {
   ALLOCATION_STATE_UNSPECIFIED = 0;
   // Absence is not permission to replay an uncertain command.
