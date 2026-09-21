@@ -14,12 +14,7 @@ use crate::auth::Authenticated;
 use crate::headers::RequestKey;
 use crate::problem::Problem;
 
-/// Largest sandbox the service will schedule, from
-/// `docs/compatibility.md#sandbox`. Validated here so a caller gets a `400`
-/// rather than a request that is admitted and then fails placement.
-const MAX_VCPU: i32 = 4;
-const MAX_MEMORY_MIB: i64 = 8192;
-const MAX_DISK_MIB: i64 = 65_536;
+use sandbox_protocol::resources::{MAX_DISK_MIB, MAX_MEMORY_MIB, MAX_VCPU};
 
 /// What a caller asks for.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -132,6 +127,11 @@ pub async fn create(
 
     Ok(match admission {
         Admission::ImageDenied => return Err(Problem::ImageDenied),
+        Admission::InvalidResources => {
+            return Err(Problem::BadRequest(
+                "resources must be 1-4 vCPU, 128-8192 MiB memory and 64-65536 MiB disk",
+            ));
+        }
         Admission::Admitted {
             sandbox_id,
             operation_id,

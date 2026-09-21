@@ -283,10 +283,11 @@ impl Host {
             .resources
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("resources required"))?;
-        if !(1..=4).contains(&r.vcpu)
-            || !(128..=8192).contains(&r.memory_mib)
-            || !(64..=65536).contains(&r.disk_mib)
-        {
+        if !sandbox_protocol::resources::supported(
+            r.vcpu.into(),
+            r.memory_mib.into(),
+            r.disk_mib.into(),
+        ) {
             return Err(Status::invalid_argument(
                 "resources outside real VM envelope",
             ));

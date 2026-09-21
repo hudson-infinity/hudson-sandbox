@@ -55,6 +55,8 @@ pub struct CreateSandbox {
 /// What admission decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
+    /// New work is outside the supported per-guest resource envelope.
+    InvalidResources,
     /// New work is not permitted by the current operator image policy.
     ImageDenied,
     /// A new operation was inserted.
@@ -130,6 +132,17 @@ impl Store {
         // work must pass this check before any resource or operation is written.
         if !images.allows(&request.image_digest) {
             return Ok(Admission::ImageDenied);
+        }
+
+        // Apply today's size policy only to new work. Existing retry handles
+        // survive a tightened minimum, just as they survive image policy changes.
+        let r = request.resources;
+        if !sandbox_protocol::resources::supported(
+            r.vcpu.into(),
+            r.memory_mib.into(),
+            r.disk_mib.into(),
+        ) {
+            return Ok(Admission::InvalidResources);
         }
 
         let sandbox_id = SandboxId::generate();

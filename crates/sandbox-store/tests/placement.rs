@@ -442,3 +442,44 @@ async fn host_observation_expiring_during_lock_wait_is_rejected(pool: PgPool) {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn legacy_undersized_sandboxes_do_not_reserve_capacity(pool: PgPool) {
+    let (store, claim, host) = fixture(&pool).await;
+    for resources in [
+        json!({"vcpu":1,"memory_mib":127,"disk_mib":64}),
+        json!({"vcpu":1,"memory_mib":128,"disk_mib":63}),
+    ] {
+        sqlx::query("UPDATE sandboxes SET resources=$2 WHERE id=$1")
+            .bind(claim.sandbox_id.uuid())
+            .bind(resources)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.reserve_create(&claim, host, 1).await,
+            Err(PlacementError::InvalidResources)
+        ));
+    }
+    let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM allocations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    let (generation,): (i64,) = sqlx::query_as("SELECT generation FROM sandboxes WHERE id=$1")
+        .bind(claim.sandbox_id.uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(generation, 0);
+    sqlx::query("UPDATE sandboxes SET resources=$2 WHERE id=$1")
+        .bind(claim.sandbox_id.uuid())
+        .bind(json!({"vcpu":1,"memory_mib":128,"disk_mib":64}))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.reserve_create(&claim, host, 1).await,
+        Ok(Reservation::Reserved(_))
+    ));
+}

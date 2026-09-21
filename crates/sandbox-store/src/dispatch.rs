@@ -19,6 +19,8 @@ pub enum CreateAction {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
+    #[error("allocation resources are outside the supported envelope")]
+    InvalidResources,
     #[error("create claim expired or changed")]
     LostClaim,
     #[error("create ownership or allocation requires reconciliation")]
@@ -235,6 +237,13 @@ impl Store {
             disk_mib: u64::try_from(ctx.allocation.try_get::<i64, _>("disk_mib")?)
                 .map_err(|_| DispatchError::InvalidData)?,
         };
+        if !sandbox_protocol::resources::supported(
+            resources.vcpu.into(),
+            resources.memory_mib.into(),
+            resources.disk_mib.into(),
+        ) {
+            return Err(DispatchError::InvalidResources);
+        }
         let allocation_id: uuid::Uuid = ctx.allocation.try_get("id")?;
         let lease: (OffsetDateTime,) = sqlx::query_as(
             "UPDATE allocations SET lease_expires_at=least(clock_timestamp()+interval '30 seconds',

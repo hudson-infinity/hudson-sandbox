@@ -483,3 +483,72 @@ async fn another_projects_key_cannot_bypass_image_policy() {
     a.cleanup().await;
     b.cleanup().await;
 }
+
+#[tokio::test]
+async fn host_resource_minimums_are_checked_before_admission() {
+    let Some(f) = fixture("active").await else {
+        return;
+    };
+    let key = "minimum-resources-key-01";
+    for (memory, disk) in [(127, 64), (128, 63)] {
+        let mut body = f.valid_body();
+        body["resources"] = json!({"vcpu":1,"memory_mib":memory,"disk_mib":disk});
+        let (status, _, _) = f.send(f.request(Some(key), Some(&f.token), body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (operations,sandboxes):(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM operations WHERE project_id=$1),(SELECT count(*) FROM sandboxes WHERE project_id=$1)")
+        .bind(f.project_id.uuid()).fetch_one(f.store.pool()).await.unwrap();
+    assert_eq!((operations, sandboxes), (0, 0));
+    let mut body = f.valid_body();
+    body["resources"] = json!({"vcpu":1,"memory_mib":128,"disk_mib":64});
+    let (status, _, _) = f.send(f.request(Some(key), Some(&f.token), body)).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "a rejected request must not consume the key"
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn tighter_resource_minimum_preserves_legacy_retry_handles() {
+    let Some(f) = fixture("active").await else {
+        return;
+    };
+    let key = "legacy-resource-retry-01";
+    let body = f.valid_body();
+    let (_, admitted, _) = f
+        .send(f.request(Some(key), Some(&f.token), body.clone()))
+        .await;
+    // Model an operation admitted under the previous positive-only size policy.
+    let mut legacy = body.clone();
+    legacy["resources"] = json!({"vcpu":1,"memory_mib":127,"disk_mib":64});
+    let typed: sandbox_api::sandboxes::CreateRequest =
+        serde_json::from_value(legacy.clone()).unwrap();
+    let digest = sandbox_protocol::RequestDigest::compute("POST", "/v1/sandboxes", &typed).unwrap();
+    sqlx::query("UPDATE operations SET request_digest=$2,payload=$3 WHERE project_id=$1")
+        .bind(f.project_id.uuid())
+        .bind(digest.as_bytes().as_slice())
+        .bind(serde_json::to_value(&typed).unwrap())
+        .execute(f.store.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE sandboxes SET resources=$2 WHERE project_id=$1")
+        .bind(f.project_id.uuid())
+        .bind(&legacy["resources"])
+        .execute(f.store.pool())
+        .await
+        .unwrap();
+    let (status, retry, _) = f
+        .send(f.request(Some(key), Some(&f.token), legacy.clone()))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(retry, admitted);
+    let (status, _, _) = f.send(f.request(Some(key), Some(&f.token), body)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _, _) = f
+        .send(f.request(Some("legacy-size-new-key-01"), Some(&f.token), legacy))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    f.cleanup().await;
+}
