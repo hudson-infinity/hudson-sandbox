@@ -9,5 +9,7 @@ pub mod ids;
 pub mod token;
 
 pub use idempotency::{DIGEST_VERSION, IdempotencyKey, KeyError, RequestDigest};
-pub use ids::{HostId, Id, IdParseError, OperationId, ProjectId, SandboxId, SnapshotId};
+pub use ids::{
+    AllocationId, HostId, Id, IdParseError, OperationId, ProjectId, SandboxId, SnapshotId,
+};
 pub use token::{ProjectToken, TokenHash, TokenKeyId, TokenParseError};

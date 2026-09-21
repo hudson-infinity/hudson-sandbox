@@ -6,6 +6,7 @@
 
 pub mod admission;
 pub mod claims;
+pub mod placement;
 pub mod projects;
 pub mod reads;
 

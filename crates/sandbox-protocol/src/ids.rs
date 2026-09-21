@@ -163,6 +163,11 @@ define_id!(
     "snp"
 );
 define_id!(
+    /// One sandbox incarnation's resource reservation on a compute host.
+    AllocationId,
+    "alc"
+);
+define_id!(
     /// A registered compute machine. Internal; not exposed in ordinary
     /// sandbox responses.
     HostId,
