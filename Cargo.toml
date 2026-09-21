@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+repository = "https://github.com/hudson-infinity/hudson-sandbox"
+publish = false
+
+# Dependency choices are recorded here as they are made. Cargo only resolves an
+# entry once a member crate uses it, so declaring one ahead of its first use
+# costs nothing and keeps the choice in one place. Pin the exact version when
+# the first crate actually takes the dependency.
+[workspace.dependencies]
+sandbox-protocol = { path = "crates/sandbox-protocol" }
+sandbox-store = { path = "crates/sandbox-store" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+debug = 1

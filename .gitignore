@@ -1,2 +1,8 @@
 __pycache__/
 *.py[cod]
+
+# Rust
+target/
+
+# Local environment
+.env
