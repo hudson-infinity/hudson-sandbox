@@ -12,7 +12,7 @@ These numbers are opening positions for the first spike, not commitments to call
 
 ## Proposed budgets
 
-Targets assume one supported Linux/KVM host configuration, a 2 vCPU / 1 GiB sandbox, and a warm host image cache.
+Targets assume the host in [supported configuration](compatibility.md#host), a 2 vCPU / 1 GiB sandbox as the reference size, and a warm host image cache. The largest supported sandbox is 4 vCPU / 8 GiB, so the memory-dependent rows scale to eight times the reference figure at the ceiling.
 
 | Path | Proposed target | Current evidence |
 | --- | --- | --- |
@@ -62,4 +62,4 @@ No benchmarks exist yet. Implement measurement for:
 
 ## Open decisions
 
-Choose the largest supported sandbox memory size, compression, chunk size, whether a host-local snapshot cache ships before multiple hosts, and the throughput assumption used for capacity planning. Decide whether any target becomes a published service expectation or stays an internal engineering budget. See [roadmap](roadmap.md#implementation-phases) for when these must be demonstrated.
+Choose compression, chunk size, whether a host-local snapshot cache ships before multiple hosts, and the throughput assumption used for capacity planning. The memory ceiling is settled at 8 GiB in [supported configuration](compatibility.md#sandbox). Decide whether any target becomes a published service expectation or stays an internal engineering budget. See [roadmap](roadmap.md#implementation-phases) for when these must be demonstrated.

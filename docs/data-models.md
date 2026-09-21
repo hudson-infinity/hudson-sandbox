@@ -68,6 +68,8 @@ The diagram shows historical relationships. A sandbox can have many allocations 
 
 IDs use PostgreSQL `uuid`, with a typed UUIDv7 prefix added in the API. All tables have `created_at` and `updated_at` timestamps. Times use `timestamptz`; counters use `bigint`; bounded structured metadata uses `jsonb`. The fields below describe the logical schema, not executable SQL.
 
+PostgreSQL 16 is the minimum supported version. Migrations are versioned SQL applied by `sqlx migrate`, which is already in the stack; no second migration tool is introduced. Both a fresh install and a supported upgrade path are tested.
+
 ### 1. projects — ownership and limits
 
 API ID: `prj_<uuidv7>`.
@@ -75,7 +77,7 @@ API ID: `prj_<uuidv7>`.
 | Fields | Purpose |
 | --- | --- |
 | `id`, `name`, `status` | Stable owner identity and lifecycle |
-| `limits` | CPU, memory, disk, snapshot storage, sandbox count, and pending-operation quotas |
+| `limits` | CPU, memory, disk, snapshot storage, sandbox count, and pending-operation quotas. Initial defaults: 25 concurrent sandboxes per project, each bounded by the 4 vCPU / 8 GiB [supported ceiling](compatibility.md#sandbox) |
 | `api_tokens` | Small bounded token metadata collection: key ID, SHA-256 hash, creation/expiry/revocation times; at most two active tokens for rotation |
 | `external_reference` (optional) | Mapping to a caller's organization or workspace |
 
@@ -158,7 +160,8 @@ API ID: `snp_<uuidv7>`.
 | `staging_host_id`, `staging_reserved_mib`, `staging_released_at` (nullable), `upload_slot_held`, `upload_lease_expires_at` | Temporary disk and upload-slot reservations, retained until cleanup/termination evidence |
 | `manifest_key`, `manifest_version`, `manifest_digest`, `compatibility` | Verified immutable references to matching memory, disk, and VM-state objects |
 | `chunk_layout` | Chunk or page size and offsets for the memory component, so a restore can fetch ranges instead of whole objects |
-| `published_at`, `expires_at`, `deleted_at` (nullable) | Publication and retention lifecycle |
+| `published_at`, `expires_at`, `deleted_at` (nullable) | Publication and retention lifecycle; snapshots expire 7 days after publication by default, operator-configurable |
+| `encryption_key_id` | Which key the components are encrypted under, so per-project keys can replace the installation key without invalidating published snapshots |
 
 PostgreSQL stores metadata; object storage holds the large files. One pause operation reserves one snapshot ID across retries. A published manifest is immutable, and an incomplete upload cannot become resumable state.
 
@@ -172,13 +175,13 @@ Reserve worst-case staging capacity and a host upload slot before freezing the g
 | --- | --- |
 | `request_keys` | Retry key and digest fields on `operations` |
 | `operation_attempts` | Bounded attempt receipts and history references on `operations` |
-| `image_versions` | Verified image digest and compatibility pinned on the sandbox/create operation; an operator-configured image allowlist controls permitted inputs |
+| `image_versions` | Verified image digest and compatibility pinned on the sandbox/create operation; an operator-configured image allowlist controls permitted inputs. An allowed image must carry our init and guest agent, and the guest kernel is supplied separately by the supervisor rather than being part of the image ([supported configuration](compatibility.md#how-a-sandbox-boots)) |
 | `usage_records` | Derived from allocations and operations rather than sampled; revisit before any billing, per-project reporting, or hosted offering depends on it |
 | `artifacts` | Output references on `operations`, containing object key/version, digest, size, retention, and cleanup state |
 
 There are no public image or artifact IDs initially. Retrieve outputs through their authorized operation. Output names identify entries within that operation, not arbitrary bucket paths. Separate catalogs or artifact management can be introduced when needed.
 
-Two of these deferrals are product gaps, not just schema simplifications. An operator-configured digest allowlist means a project cannot bring its own dependencies, which is likely to block real workloads; and deriving usage after the fact is only adequate while nobody is billed or quota-reported from it. [Roadmap](roadmap.md#blocking-non-engineering-decisions) tracks both as decisions the owner has to make rather than open schema questions.
+Both deferrals are now deliberate rather than unexamined. The first release ships operator-allowlisted images only, with per-project images named as the next capability so the limitation is visible rather than discovered; customers install their own dependencies at runtime, which is what guest root and the egress allowlist are for. Usage is derived from allocations and operations rather than sampled, which is adequate while nothing is billed from it and must be revisited before anything is.
 
 ## Supporting UI security records
 
@@ -246,4 +249,4 @@ No migrations or database tests exist yet. Verify typed UUIDv7 parsing and colli
 
 UI session/credential constraints and audit admission must satisfy [auth acceptance](auth-design.md#acceptance-checks). Use [lifecycle](lifecycle.md) for release evidence and [API contract](api-contract.md) for retry response behavior. The session's stable-ID example lives in [lifecycle](lifecycle.md#identity-through-a-sandbox-session).
 
-Open work: SQLx version/features and query-check setup, migration tooling and fresh/upgrade database tests, executable SQL types/enums, indexes/composite constraints, migration ordering, retention defaults, encryption/object-store configuration, and storage cleanup tests. Link actual migrations and tests here once implemented.
+Open work: SQLx version/features and query-check setup, fresh and upgrade database tests, executable SQL types/enums, indexes/composite constraints, migration ordering, and storage cleanup tests. Development and CI run PostgreSQL 16 against MinIO for object storage. Link actual migrations and tests here once implemented.

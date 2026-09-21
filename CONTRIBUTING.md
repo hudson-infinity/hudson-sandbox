@@ -2,13 +2,13 @@
 
 Hudson Sandbox is being designed in public by Hudson Labs. Start with the [README](README.md) and [documentation guide](docs/README.md). The runtime is not implemented yet; documentation checks work today, while VM integration tests and installation commands will arrive with the code.
 
-License selection is pending. Resolve licensing with the maintainers before submitting substantial implementation contributions; public visibility alone does not grant an open-source license. Asking each contributor to negotiate this individually is a stopgap, and selecting a license is tracked as a [blocking decision](docs/roadmap.md#blocking-non-engineering-decisions). No CLA or commit-signoff requirement is currently configured.
+The project is released under [Apache-2.0](LICENSE); contributions are accepted under the same terms, as its section 5 provides. No CLA or commit-signoff requirement is currently configured.
 
 ## From idea to pull request
 
 1. **Agree on the problem.** Small fixes may go straight to a PR. Open an issue first for substantial features, architecture changes, or new dependencies. Describe the use case, scope, and acceptance criteria. Report vulnerabilities [privately](SECURITY.md).
 2. **Create a branch.** Outside contributors fork the repository; maintainers use a branch in this repository. Start from current `main`. Use a descriptive name such as `feat/sandbox-create`, `fix/snapshot-cleanup`, or `docs/auth-flow`. Coding agents use `codex/` branches in isolated worktrees.
-3. **Make one focused change.** Preserve unrelated edits. Update the authoritative document when behavior changes. Add tests that demonstrate the behavior or regression when executable code is involved. Do not claim a planned feature is implemented.
+3. **Make one focused change.** Preserve unrelated edits. Update the authoritative document when behavior changes. Add tests that demonstrate the behavior or regression when executable code is involved. Do not claim a planned feature is implemented. If your change finishes work described in [docs/implementation](docs/implementation/README.md), move anything durable into the document that owns it and delete the note in the same pull request.
 4. **Check locally.** Run the commands below and any tests relevant to the change. Report skipped checks and their reason.
 5. **Open a PR against `main`.** Use the PR template. Draft PRs are welcome for early feedback; mark ready when the change and its validation are reviewable.
 6. **Review and merge.** Address feedback, rerun affected checks after edits, and obtain an approving review. Only @itsafal may bypass the PR/review requirement. A maintainer squash-merges after required checks pass and review threads are resolved.

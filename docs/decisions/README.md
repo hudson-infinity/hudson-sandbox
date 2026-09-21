@@ -10,6 +10,8 @@ A record belongs here when a choice is hard to reverse, when a reader would othe
 | --- | --- | --- |
 | [0001: standalone service with no Temporal dependency](0001-standalone-service-no-temporal.md) | Accepted | Whether sandbox lifecycle uses a durable workflow engine |
 | [0002: no MCP server in the initial scope](0002-no-mcp-server-initially.md) | Accepted | How agents reach the service |
+| [0003: root inside the guest, on our kernel and our init](0003-guest-root-with-our-kernel.md) | Accepted | What privilege a customer holds inside their own sandbox |
+| [0004: Apache-2.0 license](0004-apache-2-0-license.md) | Accepted | Terms the project is released under |
 
 ## Writing one
 

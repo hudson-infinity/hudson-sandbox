@@ -20,7 +20,8 @@ The security requirements were previously spread across several documents. This 
 
 | Adversary | Assumed capability | Primary defenses |
 | --- | --- | --- |
-| Malicious code inside a sandbox | Full root inside the guest, chosen kernel-facing syscalls, arbitrary network attempts | Firecracker with jailer, seccomp, per-VM cgroups and namespaces, deny-by-default egress, no host credentials in the guest |
+| Malicious code inside a sandbox | Root in guest userspace by design ([decision 0003](decisions/0003-guest-root-with-our-kernel.md)), chosen syscalls, arbitrary network attempts | Firecracker with jailer, seccomp, per-VM cgroups and namespaces, our kernel with modules off and lockdown on, deny-by-default egress, no host credentials in the guest |
+| A root customer attacking our guest agent inside their own sandbox | Same privilege level as the agent; may kill, replace, or impersonate it | Agent in a separate PID namespace and `system` cgroup, control socket unreachable from the workload namespace, host-side detection. Hardening, not a boundary — see the non-promises below |
 | A tenant attacking another tenant | Same as above, plus knowledge of ID formats and timing | Per-project ownership checks on every lookup, separate VMs, host-enforced network isolation, nonrevealing `404` responses |
 | A stolen project token | Full API authority for one project | Hashed storage, expiry, rotation, revocation, per-project scoping, no admin route acceptance |
 | A stolen admin credential | Installation control | Separate validator and namespace, audited mutations, hashes only, revocation across replicas |
@@ -34,7 +35,7 @@ The security requirements were previously spread across several documents. This 
 1. **Client to API.** Every request authenticated; no unauthenticated path exists in any environment, including local development.
 2. **API and controller to supervisor.** Separate service credentials. Supervisor endpoints reject project and admin credentials.
 3. **Supervisor to guest.** The guest is untrusted. Guest messages never grant host authority, and the guest holds no PostgreSQL or object-storage credentials.
-4. **Guest agent to customer processes.** The management agent must stay outside the frozen customer process groups and outside customer privilege. [Lifecycle](lifecycle.md#resume) owns this contract; it is the least proven boundary in the design.
+4. **Guest agent to customer processes.** The agent stays outside the frozen customer process groups. It does not stay outside customer *privilege* — the customer is root in the same VM — so this is the weakest line in the design and the one most in need of the Phase 0 spikes. [Lifecycle](lifecycle.md#resume) owns the contract; [architecture](architecture.md#privilege-layers-inside-a-sandbox) owns the layering.
 5. **Management UI origin to guest content.** Guest output and sandbox ports are never served from the UI origin.
 6. **Project to project.** Enforced in the database and on every lookup, not by identifier obscurity.
 
@@ -44,7 +45,8 @@ Subject to the evidence gates in [roadmap](roadmap.md#required-evidence-by-deliv
 
 - Customer code runs only inside a microVM, never as a host process.
 - A sandbox cannot reach another sandbox, the platform database, the supervisor control channel, or cloud metadata.
-- Guest root does not imply host access, another tenant's data, or orchestration credentials.
+- Guest root does not imply host access, another tenant's data, or orchestration credentials. Root inside a sandbox is expected and reaches nothing outside it.
+- No inbound connection reaches a sandbox, and outbound traffic is confined to an allowlist of address ranges and ports enforced on the host ([networking](networking.md)).
 - Snapshots are encrypted, integrity-verified, and readable only by their owning project.
 - Access decisions are re-evaluated on resume rather than trusted from restored memory.
 - Revocation stops new requests and new execution dispatch within a bounded time across replicas.
@@ -55,8 +57,9 @@ Stating these prevents a reader from assuming a stronger product than we are bui
 
 - **No exactly-once execution.** Arbitrary commands have external side effects. Uncertain outcomes are reported as `unknown`, not retried silently.
 - **No resistance to CPU microarchitectural side channels.** We rely on the host's kernel and firmware mitigations and do not claim protection beyond them.
+- **No in-guest protection against a hostile root customer.** A customer who is root in their own sandbox can attempt to kill, replace, or impersonate our guest agent. We make this expensive and detectable, not impossible. The consequence is bounded: they can distort our view of *their own* sandbox — its output, its exit codes, whether a deadline was honoured — and nothing beyond it. A sandbox whose agent is missing or unresponsive is failed and reported, never treated as a sandbox that ran for free.
 - **No protection against an installation administrator.** Admin access can read customer output; that access is audited, not prevented.
-- **No protection of data the customer's own code exfiltrates** through destinations its project policy allows.
+- **No protection of data the customer's own code exfiltrates** through destinations its project policy allows. Egress rules control where traffic goes, never what it carries, and allowed traffic is not inspected.
 - **No recovery of unsaved memory after host loss.** Work since the last published snapshot can be lost, and this is reported rather than concealed.
 - **No isolation of a caller's other tools.** Installing the CLI in an agent's environment does not confine that agent's other file or shell access. [Architecture](architecture.md#client-interfaces-and-agent-integration) states this boundary.
 - **No availability or performance guarantee.** [Performance](performance.md) holds engineering budgets, not service commitments.
@@ -68,13 +71,14 @@ These tests gate the first usable runtime and are owned by [roadmap](roadmap.md#
 
 1. Guest privilege escalation attempts against the host, jailer, and supervisor socket.
 2. Filesystem and archive traversal on every privileged file path, including symlink races.
-3. Egress attempts to cloud metadata, the platform database, the supervisor channel, and another tenant, including DNS, IPv6, redirect, and alternate-protocol bypasses.
-4. Cross-project access through guessed and known identifiers, on every route and in storage paths.
-5. Credential and session attacks: cookie fallback on bearer routes, bearer fallback on UI routes, CSRF, cross-origin login, and revocation propagation across replicas.
-6. Guest-controlled output rendered in the management UI without executing.
-7. Stale supervisor, stale controller claim, and stale allocation generation attempting to mutate current state.
-8. A crafted snapshot or image failing closed at verification rather than restoring.
+3. The full [networking acceptance set](networking.md#acceptance-checks): egress to metadata, platform services, the supervisor channel and other tenants; DNS exfiltration through unapproved names; IPv6, redirect and alternate-protocol bypasses; and bandwidth saturation.
+4. A hostile root customer against the guest agent: a broad kill sweep from the workload namespace, attempts to reach its control socket, attempts to load a kernel module, and a forged handshake on resume. Each must fail closed, and a missing agent must fail the sandbox.
+5. Cross-project access through guessed and known identifiers, on every route and in storage paths.
+6. Credential and session attacks: cookie fallback on bearer routes, bearer fallback on UI routes, CSRF, cross-origin login, and revocation propagation across replicas.
+7. Guest-controlled output rendered in the management UI without executing.
+8. Stale supervisor, stale controller claim, and stale allocation generation attempting to mutate current state.
+9. A crafted snapshot or image failing closed at verification rather than restoring.
 
 ## Open decisions
 
-Choose snapshot encryption key management, the egress policy configuration model and its per-project granularity, the supported host hardening baseline and its mitigation requirements, log and trace redaction rules, and whether a third-party review precedes the first release. Mechanism details belong to [architecture](architecture.md#isolation-and-data-protection); access-control details belong to [auth design](auth-design.md).
+Snapshots are encrypted under one installation-wide key held in the operator's KMS, with the key identifier recorded in the manifest so per-project keys can follow without breaking published snapshots. A third-party review is planned before 1.0, after the first public release; until it happens, no document here may describe the isolation as externally validated. Still open: the supported host hardening baseline and its mitigation requirements, log and trace redaction rules, and per-project egress granularity. Mechanism details belong to [architecture](architecture.md#isolation-and-data-protection); access-control details belong to [auth design](auth-design.md).

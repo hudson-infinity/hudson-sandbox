@@ -13,15 +13,28 @@ The repository is currently **design only**. These documents record selected dir
 | [Lifecycle](lifecycle.md) | State transitions, completion evidence, deadlines, cancellation, recovery | How create/pause/resume/destroy actually work |
 | [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |
+| [Supported configuration](compatibility.md) | Host and guest envelope, privilege layers, boot inputs | What a supported installation and a sandbox actually are |
+| [Networking](networking.md) | Egress policy, name resolution, ingress, bandwidth | What a sandbox can reach and what can reach it |
 | [Threat model](threat-model.md) | Adversaries, trust boundaries, explicit promises and non-promises | What we defend against and what we deliberately do not |
 | [Performance](performance.md) | Latency/size budgets, format constraints they impose, measurement rules | Whether the design is fast enough to be usable |
 | [Alternatives](alternatives.md) | Build-versus-adopt argument and revisit triggers | Why we are building this instead of using something existing |
 | [Roadmap](roadmap.md) | Implementation sequence, exit gates, evidence, blocking owner decisions, deferred work | What to build next and when it is ready |
 | [Decisions](decisions/README.md) | Records of significant choices and their supersession | Why a hard-to-reverse choice was made |
+| [Implementation notes](implementation/README.md) | Temporary working notes, deleted as work lands | What to build next — never what is true |
 
-Start with Product goal for scope, then Architecture for a system overview. Alternatives and Threat model explain why the system exists in this shape and what it must withstand. Backend contributors then read Data models, Lifecycle, API contract, Authentication, and Performance. UI contributors read UI design, Authentication, and API contract. Installation work starts with Roadmap; a working self-hosting guide will follow a validated installer.
+Start with Product goal for scope, then Architecture for a system overview. Supported configuration and Networking define the envelope a sandbox runs in; Alternatives and Threat model explain why the system exists in this shape and what it must withstand. Backend contributors then read Data models, Lifecycle, API contract, Authentication, and Performance. UI contributors read UI design, Authentication, and API contract. Installation work starts with Roadmap; a working self-hosting guide will follow a validated installer.
 
 For branches, commits, reviews, and local documentation checks, read [Contributing](../CONTRIBUTING.md). Security reports use the private channel in [Security](../SECURITY.md).
+
+## What persists and what is disposable
+
+Two kinds of document live here, and the distinction is deliberate.
+
+**Permanent.** Everything in the table above except the last row. The contracts, the architecture, and above all the [decision records](decisions/README.md) — what we chose, what we rejected, and why. A record stays even when it is superseded; it is marked, never deleted. Someone reading this repository in three years should be able to reconstruct the reasoning without asking anyone.
+
+**Disposable.** [Implementation notes](implementation/README.md) are checklists for building what the permanent documents already decided. Each file is deleted in the pull request that finishes its work, after anything durable — a measured number, a confirmed mechanism, a changed choice — has moved into the document that owns it. A task list outliving its task is stale by definition.
+
+If a note and a contract disagree, the contract is right.
 
 ## Keeping the docs together
 

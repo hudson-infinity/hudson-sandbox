@@ -30,7 +30,7 @@ The service has four planned ways to use it. The HTTP API is the common boundary
 | Interface | Intended user | Responsibility |
 | --- | --- | --- |
 | HTTP API | Any application or harness | Authenticated lifecycle, execution, status, output, and file requests |
-| SDKs | Application developers | Language-friendly functions and typed results over the HTTP API; initial languages remain undecided |
+| SDKs | Application developers | Language-friendly functions and typed results over the HTTP API; Python, TypeScript and Rust in the first release |
 | CLI | Humans, scripts, and agents with shell access | Parse commands, authenticate API requests, and present readable or structured results |
 | Management UI | Project users and installation Admins | Browser views and actions through session-authenticated API routes |
 
@@ -56,7 +56,7 @@ Installing the CLI does not redirect the harness's built-in file edits or shell 
 
 ```mermaid
 flowchart TD
-    Client["Hudson or another backend client"] -->|"Authenticated requests"| API
+    Client["Hudson or another backend client"] -->|"Bearer token over HTTPS"| API
     Browser["Project or Admin management UI"] -->|"Validated browser session"| API
     subgraph Platform["Platform services: standalone first, Kubernetes later"]
         API["API and UI backend"]
@@ -66,20 +66,27 @@ flowchart TD
     DB[("PostgreSQL: six resource models plus sessions and audit")]
     Objects[("Object storage: memory, disk, VM state, outputs")]
     subgraph Host["Dedicated Linux host with KVM"]
-        Supervisor["Host supervisor"]
-        VM["Firecracker VM: guest agent and customer processes"]
+        Supervisor["Host supervisor: jailer, nftables, resolver, leases"]
+        subgraph VM["Firecracker microVM, one per sandbox"]
+            Agent["Guest agent — system cgroup, own PID namespace"]
+            Work["Customer processes — workload cgroup, root in userspace"]
+        end
     end
     API -->|"Admit operations; read status"| DB
     Controller <-->|"Claim work; reserve resources; record receipts"| DB
-    Controller <-->|"Commands, health, and receipts"| Supervisor
-    Supervisor <-->|"VM lifecycle and guest communication"| VM
+    Controller <-->|"gRPC over mTLS: commands, health, receipts"| Supervisor
+    Supervisor <-->|"Firecracker API: boot, pause, snapshot, resume"| VM
+    Supervisor <-->|"vsock, length-prefixed protobuf"| Agent
+    Agent -->|"Spawn, freeze, thaw"| Work
     Supervisor <-->|"Upload and restore bytes"| Objects
-    Client <-->|"Live output"| Stream
-    Browser <-->|"Live output"| Stream
+    Client <-->|"Live output, SSE"| Stream
+    Browser <-->|"Live output, SSE"| Stream
     Stream -->|"Authorize and resolve allocation"| DB
     Stream <-->|"Scoped internal connection"| Supervisor
     Objects -->|"Authorized stored output retrieval"| API
 ```
+
+Customer processes never talk to anything outside the VM directly. Every command, byte of output, and file crosses the vsock channel to the guest agent, and every packet they send crosses the supervisor's filter. [Networking](networking.md) owns what is permitted to leave.
 
 The controller polls/claims persisted work; PostgreSQL does not call it. The API returns an operation handle after admission. Output bytes use the streaming path or object storage, not the controller's work queue.
 
@@ -93,7 +100,64 @@ The controller polls/claims persisted work; PostgreSQL does not call it. The API
 | PostgreSQL | Durable intent, ownership, reservations, receipts, sessions, and audit |
 | Object storage | Large immutable snapshot components and bounded retained output |
 
-The API and controller may initially share a binary. Privileged host setup stays a separate boundary. Internal controller-to-supervisor transport is undecided; the initial guest channel proposal is vsock. Guest messages are untrusted and cannot grant host authority.
+The API and controller may initially share a binary. Privileged host setup stays a separate boundary. Guest messages are untrusted and cannot grant host authority regardless of the channel they arrive on.
+
+### Data flow for one execute request
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as API
+    participant P as PostgreSQL
+    participant K as Controller
+    participant S as Supervisor
+    participant G as Guest agent
+    participant W as Customer process
+
+    C->>A: POST /execute + Idempotency-Key
+    A->>P: admit operation in one transaction
+    A-->>C: 202 Accepted, operation ID
+    K->>P: claim operation, validate generation
+    K->>S: dispatch over gRPC/mTLS
+    S->>G: run command over vsock
+    G->>W: spawn in workload cgroup
+    W-->>G: stdout and stderr
+    G-->>S: output chunks with sequence numbers
+    S-->>C: live output over SSE
+    W-->>G: exit code
+    G-->>S: completion receipt
+    S-->>K: receipt
+    K->>P: persist result and output references
+    C->>A: GET /operations/{id}
+    A-->>C: status, result, output references
+```
+
+The client's HTTP request ends at the third step. Everything after it is durable work the controller owns, which is why a disconnected client neither cancels the command nor stops its output being retained. [API contract](api-contract.md#retries-and-admission) owns admission and retries; [lifecycle](lifecycle.md#create-and-execute) owns the evidence each step must record.
+
+## Privilege layers inside a sandbox
+
+[Decision 0003](decisions/0003-guest-root-with-our-kernel.md) settles what a customer controls. The layers below are the shape it produces, and most of this document's isolation claims depend on the lower ones staying ours.
+
+```text
+┌─ host ────────────────────────────────────────────────────────┐
+│  supervisor (root)   jailer · nftables · DNS resolver         │  ← ours
+│  ┌─ Firecracker + KVM ──────────────────────────────────────┐ │
+│  │  ┌─ microVM ────────────────────────────────────────────┐│ │
+│  │  │  guest kernel   modules off, lockdown on             ││ │  ← ours, pinned
+│  │  │  init (PID 1)   starts the agent before user code    ││ │  ← ours
+│  │  │  ┌──────────────────┬─────────────────────────────┐  ││ │
+│  │  │  │ system cgroup    │ workload cgroup             │  ││ │
+│  │  │  │ guest agent      │ customer processes, as root │  ││ │  ← theirs
+│  │  │  │ own PID ns       │ cannot see the agent        │  ││ │
+│  │  │  └──────────────────┴─────────────────────────────┘  ││ │
+│  │  └──────────────────────────────────────────────────────┘│ │
+│  └──────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────┘
+```
+
+The customer owns everything in the workload cgroup and nothing below it. They install packages, write anywhere in their filesystem, and bind any port. They cannot load a kernel module, replace the boot path, or select a different kernel.
+
+Two consequences worth stating together. The VM boundary, the jailer, the host's resource limits, and every networking rule are unaffected by guest root — a root customer is no closer to the host, to another project, or to the platform database than an unprivileged one. But the separation between the guest agent and the workload is *hardening*, not a boundary: a determined root customer inside their own sandbox can attempt to kill or impersonate the agent. The namespace and cgroup split raises the cost; it does not make it impossible. [Threat model](threat-model.md#what-we-do-not-promise) states that limitation directly, and [lifecycle](lifecycle.md#resume) requires a missing agent to fail the sandbox rather than be assumed benign.
 
 ## Selected stack
 
@@ -101,6 +165,9 @@ The API and controller may initially share a binary. Privileged host setup stays
 | --- | --- | --- |
 | Implementation | Rust | API, controller, supervisor, guest agent, and shared protocol types |
 | Public interface | HTTP/JSON with OpenAPI | Lifecycle, commands, files, status, and a separate authenticated output stream |
+| Controller to supervisor | gRPC over mTLS, per-host certificates | Allocation commands, health, and execution receipts |
+| Host to guest | vsock with length-prefixed protobuf | Commands, output, file transfer, and the pause/resume handshake |
+| Output streaming | Server-sent events with a cursor | Live output, resumable from the client's last sequence |
 | Client authentication | Opaque Project/Admin credentials over HTTPS | Separate scope validators, hashed storage, expiry, rotation, and revocation |
 | Management UI | Same-origin UI with server-side sessions | Project/Admin access and audited administration; framework to be selected |
 | Isolation | Firecracker with Linux KVM | One microVM per sandbox |
@@ -112,7 +179,7 @@ The API and controller may initially share a binary. Privileged host setup stays
 | Observability | OpenTelemetry, Prometheus, Grafana | Instrumentation, metrics collection, and operational views |
 | Harness coordination | Temporal, only in `hudson` | Durable agent tasks outside this service |
 
-Pin the Rust toolchain, dependencies, Firecracker release, guest kernel, and images after the first host integration is validated. Exact HTTP libraries, internal transport, telemetry backends for logs/traces, and version pins remain implementation decisions. Selecting OpenTelemetry does not by itself select a log or trace storage system.
+Pin the Rust toolchain, dependencies, Firecracker release, guest kernel, and images after the first host integration is validated. Exact HTTP libraries and version pins remain implementation decisions. The reference deployment sends OpenTelemetry data to a collector, then Prometheus for metrics and Tempo for traces, with logs as JSON at every level; a self-hoster may point it elsewhere. [Supported configuration](compatibility.md) owns the host and guest envelope those choices assume.
 
 Use PostgreSQL through [SQLx](https://github.com/transact-rs/sqlx), with explicit parameterized SQL rather than an ORM. This keeps transaction boundaries and locking visible for operation claims, lifecycle transitions, and capacity reservations. The proposed `sandbox-store` crate owns queries and database transactions; `psql` is an optional human administration client, not the backend integration. [Data models](data-models.md#database-access-and-migrations) owns query and migration conventions. SQLx is a selected design choice, not an installed dependency yet.
 
@@ -148,7 +215,9 @@ These are the mechanisms. [Threat model](threat-model.md) states which adversary
 
 Use Firecracker jailer, supported seccomp filters, per-VM cgroups/namespaces, restricted host sockets, immutable verified templates, and a private writable filesystem per sandbox. Harden host setup using [Firecracker's production guidance](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md).
 
-Enforce deny-by-default egress through host-controlled networking and filtering. Block cloud metadata, platform databases, supervisor control channels, and other tenants. Approved destinations must not permit bypasses through DNS changes, IPv6, redirects, or alternate protocols. Validate this with adversarial network tests.
+Inside the guest, the mechanisms that make root survivable are kernel-enforced and therefore depend on the kernel staying ours: module loading compiled out, kernel lockdown enabled, the guest agent in its own PID namespace and `system` cgroup, and the agent's control socket unreachable from the workload namespace. Treat all of it as raising cost rather than closing the boundary.
+
+Enforce deny-by-default egress through host-controlled networking and filtering, with an allowlist of address ranges and ports rather than names, a host-side resolver that refuses unapproved queries, and no inbound path into a sandbox. [Networking](networking.md) owns the full policy, including why domain-shaped rules and forwarding resolvers are both rejected. Validate it with the adversarial tests listed there.
 
 Keep privileged file operations symlink-safe and reject archive/path traversal. Bound message sizes, process output, and uploads. Guest root must not imply access to host paths, devices, orchestration credentials, or another sandbox.
 
@@ -178,7 +247,7 @@ This layout is a proposal; the directories and binaries do not exist yet. The UI
 
 ## Open decisions and verification
 
-Choose exact dependency versions, internal transport, frontend framework, host packaging, and telemetry storage backends during implementation. Start with one supported KVM host configuration; use a remote Linux host for real VM testing from macOS. No performance or isolation guarantee is established by this diagram.
+Choose exact dependency versions, the frontend framework, and host packaging during implementation. The supported host configuration is in [supported configuration](compatibility.md); use a remote Linux host for real VM testing from macOS. No performance or isolation guarantee is established by this diagram.
 
 Validation: integration and isolation tests are not written yet. Required gates and planned delivery are in [roadmap](roadmap.md); lifetime/recovery checks are in [lifecycle](lifecycle.md#acceptance-checks); adversarial tests are listed in [threat model](threat-model.md#required-validation); latency and size budgets are in [performance](performance.md).
 

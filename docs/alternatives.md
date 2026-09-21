@@ -52,4 +52,4 @@ Reopen this decision if any of these becomes true.
 
 ## Open decisions
 
-Whether a hosted offering ever exists alongside self-hosting, and whether usage metering is therefore required in the data model, remain open. Licensing is an owner decision and currently blocks contribution; see [roadmap](roadmap.md#blocking-non-engineering-decisions).
+Self-hosting comes first, and a hosted offering stays possible rather than planned; usage is therefore derived from allocations and operations rather than metered in the schema, and that must be revisited before anything is billed from it. The project is released under Apache-2.0 ([decision 0004](decisions/0004-apache-2-0-license.md)). The first public release is a 0.1 once the Phase 3 recovery and isolation gate passes.
