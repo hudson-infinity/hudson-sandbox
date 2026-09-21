@@ -20,6 +20,9 @@ pub struct GuestClient {
     _socket_directory: Option<std::sync::Arc<std::fs::File>>,
 }
 impl GuestClient {
+    pub fn context(&self) -> &m::Context {
+        &self.context
+    }
     pub fn new(socket: PathBuf, port: u32, tls: ClientTls, context: m::Context) -> Result<Self> {
         ensure!(
             socket.is_absolute() && port > 0 && port < u32::MAX && context.generation > 0,

@@ -234,95 +234,22 @@ impl Store {
         epoch: i64,
     ) -> Result<ExecuteAction, DispatchError> {
         let mut tx = self.pool().begin().await?;
-        let op = sqlx::query(
-            "SELECT * FROM operations WHERE id=$1 AND claim_revision=$2
-            AND lease_expires_at>clock_timestamp() AND status IN ('running','unknown') FOR UPDATE",
-        )
-        .bind(claim.operation_id.uuid())
-        .bind(claim.revision)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(DispatchError::LostClaim)?;
-        if op.try_get::<String, _>("kind")? != "execute" {
-            return Err(DispatchError::Conflict);
-        }
-        let project: uuid::Uuid = op.try_get("project_id")?;
-        let sandbox_id: uuid::Uuid = op.try_get("sandbox_id")?;
-        let allocation: uuid::Uuid = op
-            .try_get::<Option<uuid::Uuid>, _>("execution_allocation_id")?
-            .ok_or(DispatchError::InvalidData)?;
-        sqlx::query("SELECT id FROM projects WHERE id=$1 FOR UPDATE")
-            .bind(project)
-            .fetch_one(&mut *tx)
-            .await?;
-        let sandbox = sqlx::query("SELECT * FROM sandboxes WHERE id=$1 FOR UPDATE")
-            .bind(sandbox_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        // Read the pinned record even after destroy releases it. Never redirect
-        // an old command onto the sandbox's current allocation or a new epoch.
-        let allocation_row = sqlx::query("SELECT * FROM allocations WHERE id=$1 AND sandbox_id=$2")
-            .bind(allocation)
-            .bind(sandbox_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        let allocation_host = allocation_row.try_get::<uuid::Uuid, _>("host_id")?;
-        let host_row = sqlx::query("SELECT * FROM hosts WHERE id=$1 FOR UPDATE")
-            .bind(allocation_host)
-            .fetch_one(&mut *tx)
-            .await?;
-        let command: CommandInput = serde_json::from_value(op.try_get("payload")?)
-            .map_err(|_| DispatchError::InvalidData)?;
-        command.validate().map_err(|_| DispatchError::InvalidData)?;
-        let command = command.for_operation(claim.operation_id);
-        let digest = command.digest().map_err(|_| DispatchError::InvalidData)?;
-        let owner = Ownership {
-            host_id: HostId::from_uuid(allocation_host).to_string(),
-            project_id: ProjectId::from_uuid(project).to_string(),
-            sandbox_id: SandboxId::from_uuid(sandbox_id).to_string(),
-            allocation_id: AllocationId::from_uuid(allocation).to_string(),
-            operation_id: claim.operation_id.to_string(),
-            generation: allocation_row.try_get("generation")?,
-            supervisor_epoch: allocation_row.try_get("supervisor_epoch")?,
-            claim_revision: claim.revision,
-            claim_expires_unix_ms: i64::try_from(
-                op.try_get::<OffsetDateTime, _>("lease_expires_at")?
-                    .unix_timestamp_nanos()
-                    / 1_000_000,
-            )
-            .map_err(|_| DispatchError::InvalidData)?,
-        };
+        let ctx = context(&mut tx, claim).await?;
+        let Context {
+            op,
+            sandbox,
+            allocation_row,
+            host_row,
+            allocation,
+            allocation_host,
+            owner,
+            command,
+            digest,
+        } = ctx;
         let dispatched = op.try_get::<i32, _>("attempt_count")? > 0
             || op.try_get::<String, _>("status")? == "unknown";
         if dispatched {
-            // A changed persisted payload is corruption, never permission to inspect
-            // another command under the same public operation ID.
-            let receipts: serde_json::Value = op.try_get("attempt_receipts")?;
-            let recorded = receipts
-                .as_array()
-                .and_then(|items| items.first())
-                .ok_or(DispatchError::InvalidData)?;
-            let expected = dispatch::evidence(&owner, None, "execute_dispatch_intent");
-            if op.try_get::<i32, _>("attempt_count")? != 1
-                || recorded
-                    .get("command_digest")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(hex::encode(digest).as_str())
-                || [
-                    "phase",
-                    "host_id",
-                    "project_id",
-                    "sandbox_id",
-                    "operation_id",
-                    "allocation_id",
-                    "generation",
-                    "supervisor_epoch",
-                ]
-                .iter()
-                .any(|key| recorded.get(*key) != expected.get(*key))
-            {
-                return Err(DispatchError::InvalidData);
-            }
+            validate_intent(&op, &owner, &digest)?;
             dispatch::fence(&mut tx, claim).await?;
             tx.commit().await?;
             return Ok(ExecuteAction::Inspect { owner, digest });
@@ -392,5 +319,261 @@ impl Store {
         }
         tx.commit().await?;
         Ok(ExecuteAction::Dispatch { owner, command })
+    }
+}
+
+struct Context {
+    op: sqlx::postgres::PgRow,
+    sandbox: sqlx::postgres::PgRow,
+    allocation_row: sqlx::postgres::PgRow,
+    host_row: sqlx::postgres::PgRow,
+    allocation: uuid::Uuid,
+    allocation_host: uuid::Uuid,
+    owner: Ownership,
+    command: Execute,
+    digest: [u8; 32],
+}
+async fn context(db: &mut PgConnection, claim: &Claim) -> Result<Context, DispatchError> {
+    let op = sqlx::query(
+        "SELECT * FROM operations WHERE id=$1 AND claim_revision=$2
+            AND lease_expires_at>clock_timestamp() AND status IN ('running','unknown') FOR UPDATE",
+    )
+    .bind(claim.operation_id.uuid())
+    .bind(claim.revision)
+    .fetch_optional(&mut *db)
+    .await?
+    .ok_or(DispatchError::LostClaim)?;
+    if op.try_get::<String, _>("kind")? != "execute" {
+        return Err(DispatchError::Conflict);
+    }
+    let project: uuid::Uuid = op.try_get("project_id")?;
+    let sandbox_id: uuid::Uuid = op.try_get("sandbox_id")?;
+    let allocation: uuid::Uuid = op
+        .try_get::<Option<uuid::Uuid>, _>("execution_allocation_id")?
+        .ok_or(DispatchError::InvalidData)?;
+    sqlx::query("SELECT id FROM projects WHERE id=$1 FOR UPDATE")
+        .bind(project)
+        .fetch_one(&mut *db)
+        .await?;
+    let sandbox = sqlx::query("SELECT * FROM sandboxes WHERE id=$1 FOR UPDATE")
+        .bind(sandbox_id)
+        .fetch_one(&mut *db)
+        .await?;
+    // Read the pinned record even after destroy releases it. Never redirect
+    // an old command onto the sandbox's current allocation or a new epoch.
+    let allocation_row = sqlx::query("SELECT * FROM allocations WHERE id=$1 AND sandbox_id=$2")
+        .bind(allocation)
+        .bind(sandbox_id)
+        .fetch_one(&mut *db)
+        .await?;
+    let allocation_host = allocation_row.try_get::<uuid::Uuid, _>("host_id")?;
+    let host_row = sqlx::query("SELECT * FROM hosts WHERE id=$1 FOR UPDATE")
+        .bind(allocation_host)
+        .fetch_one(&mut *db)
+        .await?;
+    let command: CommandInput =
+        serde_json::from_value(op.try_get("payload")?).map_err(|_| DispatchError::InvalidData)?;
+    command.validate().map_err(|_| DispatchError::InvalidData)?;
+    let command = command.for_operation(claim.operation_id);
+    let digest = command.digest().map_err(|_| DispatchError::InvalidData)?;
+    let owner = Ownership {
+        host_id: HostId::from_uuid(allocation_host).to_string(),
+        project_id: ProjectId::from_uuid(project).to_string(),
+        sandbox_id: SandboxId::from_uuid(sandbox_id).to_string(),
+        allocation_id: AllocationId::from_uuid(allocation).to_string(),
+        operation_id: claim.operation_id.to_string(),
+        generation: allocation_row.try_get("generation")?,
+        supervisor_epoch: allocation_row.try_get("supervisor_epoch")?,
+        claim_revision: claim.revision,
+        claim_expires_unix_ms: i64::try_from(
+            op.try_get::<OffsetDateTime, _>("lease_expires_at")?
+                .unix_timestamp_nanos()
+                / 1_000_000,
+        )
+        .map_err(|_| DispatchError::InvalidData)?,
+    };
+
+    Ok(Context {
+        op,
+        sandbox,
+        allocation_row,
+        host_row,
+        allocation,
+        allocation_host,
+        owner,
+        command,
+        digest,
+    })
+}
+
+fn validate_intent(
+    op: &sqlx::postgres::PgRow,
+    owner: &Ownership,
+    digest: &[u8; 32],
+) -> Result<(), DispatchError> {
+    // A changed persisted payload is corruption, never permission to inspect
+    // another command under the same public operation ID.
+    let receipts: serde_json::Value = op.try_get("attempt_receipts")?;
+    let recorded = receipts
+        .as_array()
+        .and_then(|items| items.first())
+        .ok_or(DispatchError::InvalidData)?;
+    let expected = dispatch::evidence(owner, None, "execute_dispatch_intent");
+    if op.try_get::<i32, _>("attempt_count")? != 1
+        || recorded
+            .get("command_digest")
+            .and_then(serde_json::Value::as_str)
+            != Some(hex::encode(digest).as_str())
+        || [
+            "phase",
+            "host_id",
+            "project_id",
+            "sandbox_id",
+            "operation_id",
+            "allocation_id",
+            "generation",
+            "supervisor_epoch",
+        ]
+        .iter()
+        .any(|key| recorded.get(*key) != expected.get(*key))
+    {
+        return Err(DispatchError::InvalidData);
+    }
+    Ok(())
+}
+
+impl Store {
+    /// Transport loss has no execution meaning; preserve intent and inspect again.
+    pub async fn record_execute_unknown(&self, claim: &Claim) -> Result<(), DispatchError> {
+        self.finish_execute_observation(claim, None, false).await
+    }
+    pub async fn record_execute_observation(
+        &self,
+        claim: &Claim,
+        observation: &sandbox_protocol::supervisor::CommandObservation,
+        allow_simulated: bool,
+    ) -> Result<(), DispatchError> {
+        self.finish_execute_observation(claim, Some(observation), allow_simulated)
+            .await
+    }
+    async fn finish_execute_observation(
+        &self,
+        claim: &Claim,
+        observation: Option<&sandbox_protocol::supervisor::CommandObservation>,
+        allow_simulated: bool,
+    ) -> Result<(), DispatchError> {
+        use sandbox_protocol::guest_model::{Receipt, State};
+        let mut tx = self.pool().begin().await?;
+        let ctx = context(&mut tx, claim).await?;
+        validate_intent(&ctx.op, &ctx.owner, &ctx.digest)?;
+        let old_receipts: serde_json::Value = ctx.op.try_get("attempt_receipts")?;
+        let intent = old_receipts[0].clone();
+        let previous = old_receipts.get(1).cloned();
+        let mut receipt: Option<Receipt> = None;
+        let mut not_started = false;
+        let mut simulated = None;
+        if let Some(o) = observation {
+            if o.simulated && !allow_simulated {
+                return Err(DispatchError::SimulationDenied);
+            }
+            if o.ownership.as_ref() != Some(&ctx.owner)
+                || o.command_digest.as_slice() != ctx.digest
+                || (o.not_started && o.receipt.is_some())
+            {
+                return Err(DispatchError::BadEvidence);
+            }
+            let fresh: (bool,) = sqlx::query_as(
+                "SELECT abs(extract(epoch FROM clock_timestamp())*1000-$1::bigint)<=10000",
+            )
+            .bind(o.observed_unix_ms)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !fresh.0 {
+                return Err(DispatchError::BadEvidence);
+            }
+            simulated = Some(o.simulated);
+            not_started = o.not_started;
+            if not_started
+                && previous
+                    .as_ref()
+                    .is_some_and(|v| v.get("guest_receipt").is_some())
+            {
+                return Err(DispatchError::BadEvidence);
+            }
+            if let Some(wire) = &o.receipt {
+                let r: Receipt = wire
+                    .clone()
+                    .try_into()
+                    .map_err(|_| DispatchError::BadEvidence)?;
+                if r.operation_id != claim.operation_id
+                    || r.context.allocation_id.uuid() != ctx.allocation
+                    || r.context.generation != ctx.owner.generation
+                    || r.digest != ctx.digest
+                    || r.deadline_unix_ms != ctx.command.deadline_unix_ms
+                    || r.output_limit != ctx.command.output_limit
+                {
+                    return Err(DispatchError::BadEvidence);
+                }
+                if let Some(boot) = previous
+                    .as_ref()
+                    .and_then(|v| v.pointer("/guest_receipt/context/boot_id"))
+                    .and_then(serde_json::Value::as_str)
+                    && boot != r.context.boot_id
+                {
+                    return Err(DispatchError::BadEvidence);
+                }
+                receipt = Some(r);
+            }
+        }
+        let (status, phase, error) = match receipt.as_ref().map(|r| r.state) {
+            Some(State::Exited) if receipt.as_ref().is_some_and(|r| r.exit_code == Some(0)) => {
+                ("succeeded", "exited", None)
+            }
+            Some(State::Exited) => ("failed", "exited", Some("command_failed")),
+            Some(State::TimedOut) => ("failed", "timed_out", Some("deadline_exceeded")),
+            Some(State::Cancelled) => ("cancelled", "cancelled", None),
+            Some(State::LaunchIntent) => ("running", "executing", None),
+            _ if not_started => ("failed", "not_started", Some("command_not_started")),
+            _ => ("unknown", "reconciling", Some("outcome_unknown")),
+        };
+        let terminal = matches!(status, "succeeded" | "failed" | "cancelled");
+        // Only bounded statistics/results cross the controller, never output bytes
+        // or guest-controlled reason text. The receipt cannot release VM resources.
+        let result = receipt.as_ref().map(|r| {
+            json!({"simulated":simulated,"exit_code":r.exit_code,"signal":r.signal,
+            "stdout":r.stdout,"stderr":r.stderr,"guest_reported":true})
+        });
+        let error = error.map(|code| json!({"code":code,"simulated":simulated}));
+        let mut history = vec![intent];
+        if let Some(receipt) = receipt {
+            let mut evidence = dispatch::evidence(&ctx.owner, simulated, "command_observed");
+            evidence["observed_unix_ms"] = json!(observation.map(|o| o.observed_unix_ms));
+            evidence["guest_receipt"] =
+                serde_json::to_value(receipt).map_err(|_| DispatchError::InvalidData)?;
+            history.push(evidence);
+        } else if not_started {
+            let mut evidence =
+                dispatch::evidence(&ctx.owner, simulated, "command_fenced_before_start");
+            evidence["not_started"] = json!(true);
+            evidence["observed_unix_ms"] = json!(observation.map(|o| o.observed_unix_ms));
+            evidence["command_digest"] = json!(hex::encode(ctx.digest));
+            history.push(evidence);
+        } else if let Some(previous) = previous {
+            history.push(previous);
+        }
+        dispatch::fence(&mut tx, claim).await?;
+        let changed = sqlx::query("UPDATE operations SET status=$3,phase=$4,result=$5,error=$6,attempt_receipts=$7,
+            completed_at=CASE WHEN $8 THEN clock_timestamp() ELSE NULL END,lease_expires_at=NULL,
+            next_retry_at=CASE WHEN $8 THEN NULL ELSE clock_timestamp()+interval '1 second' END,updated_at=clock_timestamp()
+            WHERE id=$1 AND claim_revision=$2 AND lease_expires_at>clock_timestamp()
+            AND ($9::bigint IS NULL OR abs(extract(epoch FROM clock_timestamp())*1000-$9::bigint)<=10000)")
+            .bind(claim.operation_id.uuid()).bind(claim.revision).bind(status).bind(phase).bind(result).bind(error)
+            .bind(json!(history)).bind(terminal).bind(observation.map(|o| o.observed_unix_ms))
+            .execute(&mut *tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(DispatchError::LostClaim);
+        }
+        tx.commit().await?;
+        Ok(())
     }
 }

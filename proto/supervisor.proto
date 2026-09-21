@@ -1,8 +1,11 @@
 syntax = "proto3";
 package hudson.supervisor.v1;
+import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc ExecuteCommand(CommandRequest) returns (CommandObservation);
+  rpc InspectCommand(CommandInspection) returns (CommandObservation);
   rpc Health(HealthRequest) returns (HostInfo);
   rpc Create(CreateRequest) returns (Observation);
   rpc Inspect(InspectRequest) returns (Observation);
@@ -84,4 +87,18 @@ message Observation {
   string create_operation_id = 5;
   int64 observed_unix_ms = 6;
   string reason = 7;
+}
+
+// Command payloads are bounded configuration, never output bytes or secrets.
+message CommandRequest { Ownership ownership = 1; hudson.guest.v1.Execute command = 2; }
+message CommandInspection { Ownership ownership = 1; bytes command_digest = 2; }
+message CommandObservation {
+  Ownership ownership = 1;
+  bool simulated = 2;
+  int64 observed_unix_ms = 3;
+  bytes command_digest = 4;
+  hudson.guest.v1.Receipt receipt = 5;
+  // Durable fence: this operation was never dispatched and cannot start later.
+  // Missing receipt without this fence is an unknown outcome.
+  bool not_started = 6;
 }

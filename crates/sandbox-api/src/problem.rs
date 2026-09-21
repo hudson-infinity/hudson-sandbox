@@ -28,6 +28,8 @@ pub enum Problem {
     ImageDenied,
     /// Missing, or belonging to another project. Indistinguishable on purpose.
     NotFound,
+    Gone,
+    CommandInProgress(sandbox_protocol::OperationId),
     /// The same key was used for a different request, or a conflicting
     /// lifecycle transition is already in progress.
     Conflict(&'static str),
@@ -56,6 +58,8 @@ impl Problem {
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::ImageDenied => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Gone => StatusCode::GONE,
+            Self::CommandInProgress(_) => StatusCode::CONFLICT,
             Self::Conflict(_) | Self::TransitionInProgress(_) => StatusCode::CONFLICT,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -72,6 +76,8 @@ impl Problem {
             Self::Forbidden => "forbidden",
             Self::ImageDenied => "image_not_allowed",
             Self::NotFound => "not_found",
+            Self::Gone => "gone",
+            Self::CommandInProgress(_) => "command_in_progress",
             Self::Conflict(_) | Self::TransitionInProgress(_) => "conflict",
             Self::Unavailable => "unavailable",
             Self::Internal => "internal",
@@ -88,6 +94,8 @@ impl Problem {
             Self::Forbidden => "This credential does not have the required access",
             Self::ImageDenied => "The requested image is not allowed",
             Self::NotFound => "No such resource",
+            Self::Gone => "This sandbox has been destroyed",
+            Self::CommandInProgress(_) => "Another operation is still active or unresolved",
             Self::Conflict(detail) => detail,
             Self::TransitionInProgress(_) => "Another lifecycle operation is in progress",
             Self::Unavailable => "The service is temporarily unable to handle this request",
@@ -112,7 +120,9 @@ impl IntoResponse for Problem {
         let status = self.status();
         let body = Json(Body {
             operation_id: match self {
-                Self::TransitionInProgress(id) => Some(id.to_string()),
+                Self::TransitionInProgress(id) | Self::CommandInProgress(id) => {
+                    Some(id.to_string())
+                }
                 _ => None,
             },
             title: self.title(),

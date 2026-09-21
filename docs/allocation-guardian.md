@@ -1,6 +1,6 @@
 # Linux allocation guardian
 
-Status: implemented component, with controlled aarch64 Linux/KVM evidence. The root-only `sandbox-supervisor` CLI stages and owns a real Firecracker allocation. The [real lifecycle supervisor](real-supervisor.md) now connects it to controller dispatch; public execute, files, and network policy remain separate work. [Guest bootstrap and durable boot binding](guest-bootstrap.md) now connect the guest channel to this owner. The supported x86_64 release gates remain open.
+Status: implemented component, with controlled aarch64 Linux/KVM evidence. The root-only `sandbox-supervisor` CLI stages and owns a real Firecracker allocation. The [real lifecycle supervisor](real-supervisor.md) now connects it to controller dispatch; public execute now uses this ownership, while files and network policy remain unfinished. [Guest bootstrap and durable boot binding](guest-bootstrap.md) now connect the guest channel to this owner. The supported x86_64 release gates remain open.
 
 The implementation is in [guardian](../crates/sandbox-supervisor/src/guardian/mod.rs), [process ownership and control](../crates/sandbox-supervisor/src/guardian/process.rs), and [the irrevocable deadline](../crates/sandbox-supervisor/src/lease.rs). The existing [supervisor RPC](supervisor-protocol.md) supports both the development fake and the real host adapter. The authenticated [guest protocol](guest-protocol.md) is a separate component to integrate with this owner.
 

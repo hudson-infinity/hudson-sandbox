@@ -51,6 +51,91 @@ impl CommandInput {
     }
 }
 
+/// Leaves space in each allocation's 64-operation fence budget for lifecycle work.
+pub const MAX_COMMANDS: usize = 32;
+
+/// Host-owned command evidence. Persisted before forwarding any guest Execute.
+/// No command arguments or environment are retained in this host journal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandRecord {
+    pub digest: [u8; 32],
+    pub context: Option<crate::guest_model::Context>,
+    pub deadline_unix_ms: i64,
+    pub output_limit: u64,
+    pub not_started: bool,
+    pub receipt: Option<crate::guest_model::Receipt>,
+}
+impl CommandRecord {
+    pub fn fenced(digest: [u8; 32]) -> Self {
+        Self {
+            digest,
+            context: None,
+            deadline_unix_ms: 0,
+            output_limit: 0,
+            not_started: true,
+            receipt: None,
+        }
+    }
+    pub fn pending(
+        command: &Execute,
+        context: crate::guest_model::Context,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            digest: command.digest()?,
+            context: Some(context),
+            deadline_unix_ms: command.deadline_unix_ms,
+            output_limit: command.output_limit,
+            not_started: false,
+            receipt: None,
+        })
+    }
+    pub fn finished(&self) -> bool {
+        self.not_started
+            || self.receipt.as_ref().is_some_and(|r| {
+                r.cleanup_confirmed
+                    && matches!(
+                        r.state,
+                        crate::guest_model::State::Exited
+                            | crate::guest_model::State::TimedOut
+                            | crate::guest_model::State::Cancelled
+                    )
+            })
+    }
+    pub fn validate_receipt(
+        &self,
+        id: OperationId,
+        receipt: &crate::guest_model::Receipt,
+    ) -> anyhow::Result<()> {
+        receipt.validate()?;
+        anyhow::ensure!(
+            !self.not_started
+                && receipt.operation_id == id
+                && self.context.as_ref() == Some(&receipt.context)
+                && self.digest == receipt.digest
+                && self.deadline_unix_ms == receipt.deadline_unix_ms
+                && self.output_limit == receipt.output_limit,
+            "command receipt does not match retained intent"
+        );
+        Ok(())
+    }
+    pub fn observation(
+        &self,
+        owner: crate::supervisor::Ownership,
+        simulated: bool,
+        now: i64,
+    ) -> crate::supervisor::CommandObservation {
+        crate::supervisor::CommandObservation {
+            ownership: Some(owner),
+            simulated,
+            observed_unix_ms: now,
+            command_digest: self.digest.to_vec(),
+            receipt: self.receipt.as_ref().map(Into::into),
+            not_started: self.not_started,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {

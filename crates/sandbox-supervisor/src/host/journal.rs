@@ -19,6 +19,8 @@ pub(super) struct Record {
     pub dispatched: bool,
     pub stopped: bool,
     pub released: bool,
+    #[serde(default)]
+    pub commands: BTreeMap<String, sandbox_protocol::command::CommandRecord>,
     pub lease_revision: i64,
     pub lease_request: Option<(i64, i64)>,
     #[serde(skip)]
@@ -145,6 +147,39 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
                     receipt.cleanup_confirmed && receipt.state == GuardianState::Stopped,
                     "retained release lacks cleanup evidence"
                 );
+            }
+        }
+        anyhow::ensure!(
+            record.commands.len() <= sandbox_protocol::command::MAX_COMMANDS,
+            "retained command journal too large"
+        );
+        for (id, command) in &record.commands {
+            let id: OperationId = id.parse()?;
+            if command.not_started {
+                anyhow::ensure!(
+                    command.context.is_none()
+                        && command.receipt.is_none()
+                        && command.output_limit == 0
+                        && command.deadline_unix_ms == 0,
+                    "invalid command fence"
+                );
+            } else {
+                let context = command
+                    .context
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("missing command context"))?;
+                anyhow::ensure!(
+                    context.allocation_id.to_string() == record.owner.allocation_id
+                        && context.generation == record.owner.generation
+                        && !context.boot_id.is_empty()
+                        && context.boot_id.len() <= 64
+                        && (1..=sandbox_protocol::command::MAX_OUTPUT)
+                            .contains(&command.output_limit),
+                    "invalid retained command ownership"
+                );
+                if let Some(receipt) = &command.receipt {
+                    command.validate_receipt(id, receipt)?;
+                }
             }
         }
         record.stopped = true;

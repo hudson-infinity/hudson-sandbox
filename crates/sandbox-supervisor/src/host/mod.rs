@@ -1,4 +1,5 @@
 //! Durable, root-operated lifecycle adapter. Guest readiness and cleanup remain observations.
+mod commands;
 mod journal;
 use crate::guardian::{self, Action, Artifact, Manifest, Receipt, State as GuardianState};
 use journal::{Journal, Record};
@@ -222,6 +223,7 @@ impl Host {
                 dispatched: false,
                 stopped: false,
                 released: false,
+                commands: BTreeMap::new(),
                 lease_revision: 0,
                 lease_request: None,
                 gate: gate.clone(),
@@ -680,6 +682,23 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn execute_command(
+        &self,
+        r: Request<sandbox_protocol::supervisor::CommandRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::CommandObservation>, Status> {
+        self.work(move |h| h.execute_command_sync(r.into_inner()))
+            .await
+            .map(Response::new)
+    }
+    async fn inspect_command(
+        &self,
+        r: Request<sandbox_protocol::supervisor::CommandInspection>,
+    ) -> Result<Response<sandbox_protocol::supervisor::CommandObservation>, Status> {
+        self.work(move |h| h.inspect_command_sync(r.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn health(&self, _: Request<HealthRequest>) -> Result<Response<HostInfo>, Status> {
         self.work(|h| {
             drop(h.journal()?);
