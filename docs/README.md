@@ -11,6 +11,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [Data models](data-models.md) | Fields, relationships, IDs, database constraints, storage layout | What we persist and how records connect |
 | [Authentication](auth-design.md) | Project/Admin permissions, credentials, sessions, CSRF, revocation, audit semantics | Who can do what and how access is enforced |
 | [Lifecycle](lifecycle.md) | State transitions, completion evidence, deadlines, cancellation, recovery | How create/pause/resume/destroy actually work |
+| [Linux development](linux-development.md) | Nested Linux/KVM setup and real boot evidence | How to develop the guest and real supervisor |
 | [API server](api-server.md) | HTTPS transport, offline provisioning, and runnable local setup | How to start and call the implemented API |
 | [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |

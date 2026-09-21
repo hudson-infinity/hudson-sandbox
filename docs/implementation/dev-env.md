@@ -30,44 +30,11 @@ Authentication, admission, claims, reservations, and read handlers have executab
 
 The fake models bounded resource accounting, stale ownership, lease expiry, duplicate requests, and lost acknowledgements for control-plane tests. Those models do not test host resource enforcement or hardware isolation; those require stage 1 and supported hardware.
 
-## Stage 1 — real Firecracker, still on your Mac
+## Stage 1 — real Firecracker on a nested Linux host
 
-`sandbox-supervisor` and `sandbox-guest` need cgroups, netlink, and vsock. They do not run on macOS at all. They run in a Linux VM on it.
+A dedicated aarch64 Linux/KVM host and a real Firecracker/jailer boot have now been verified on an M4 Pro. The [Linux development guide](../linux-development.md) owns the pinned Lima configuration, setup commands, observed process/cgroup evidence, and the limits of that experiment.
 
-Apple added nested virtualization for M3 and later on macOS 15 and up, so a Linux guest can itself expose `/dev/kvm` and run Firecracker.
-
-```text
-macOS                         Lima VM — Ubuntu arm64, nested virt
-├── api + controller   ←───→  ├── sandbox-supervisor
-├── postgres, minio           ├── firecracker (aarch64)
-└── your editor               └── microVM + guest agent
-    repo mounted into the VM, so Linux binaries build there
-```
-
-Sketch of the Lima configuration — **not yet verified on this machine**, so treat the first run as part of the work:
-
-```yaml
-vmType: vz
-rosetta:
-  enabled: false
-nestedVirtualization: true
-images:
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
-    arch: "aarch64"
-mounts:
-  - location: "~/Desktop/work/hudsonlabs/hudson-sandbox"
-    writable: true
-```
-
-```sh
-brew install lima
-limactl start --name=sandbox ./lima-sandbox.yaml
-limactl shell sandbox -- ls -l /dev/kvm   # the whole question, answered
-```
-
-If `/dev/kvm` is there, install Firecracker inside the VM, build the supervisor from the mounted repo, and point the controller on macOS at it. Then `hudson-sandbox exec` boots a real microVM on your laptop.
-
-Two limits to keep in mind. This is **aarch64**, and the first release targets x86_64 ([supported configuration](../compatibility.md#host)) — logic transfers, architecture-specific behaviour does not. And timing under nested virtualization is not trustworthy, so no number measured here belongs in [performance](../performance.md).
+The guest runner and real supervisor integration remain unfinished. This local environment lets those components be developed and tested without mounting the Mac filesystem. It does not validate the supported x86_64 host, hostile workload isolation, or production performance. Keep those release gates separate from the aarch64 development evidence.
 
 ## Stage 2 — rented x86_64 hardware
 
