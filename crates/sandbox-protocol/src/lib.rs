@@ -29,3 +29,5 @@ pub mod guest_model;
 pub mod guest_wire;
 
 pub mod bootstrap;
+
+pub mod command;

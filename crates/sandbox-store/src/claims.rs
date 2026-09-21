@@ -33,7 +33,7 @@ impl OperationKind {
 }
 
 /// Ownership and the persisted evidence the new owner must reconcile.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Claim {
     pub operation_id: OperationId,
     pub project_id: ProjectId,
@@ -46,6 +46,17 @@ pub struct Claim {
     pub payload: serde_json::Value,
     pub receipts: serde_json::Value,
     pub deadline: Option<OffsetDateTime>,
+}
+
+// Payloads can contain customer argv/environment and receipts can contain guest
+// data. Log ownership metadata only, including through derived caller Debug.
+impl std::fmt::Debug for Claim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Claim")
+            .field("operation_id", &self.operation_id)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

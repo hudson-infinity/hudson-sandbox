@@ -33,8 +33,19 @@ async fn collection_index_upgrade_preserves_rows_and_installs_scoped_sort_indexe
         .fetch_one(&pool)
         .await
         .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
+    // This test owns the index-only migration, not columns added by later work.
+    let through_indexes = Migrator {
+        migrations: Cow::Owned(
+            MIGRATOR
+                .iter()
+                .filter(|m| m.version <= 4)
+                .cloned()
+                .collect(),
+        ),
+        ..Migrator::DEFAULT
+    };
+    through_indexes.run(&pool).await.unwrap();
+    through_indexes.run(&pool).await.unwrap();
     let (sandbox_after, operation_after): (serde_json::Value, serde_json::Value) = sqlx::query_as(
         "SELECT (SELECT to_jsonb(s) FROM sandboxes s),(SELECT to_jsonb(o) FROM operations o)",
     )
