@@ -48,7 +48,7 @@ impl Store {
         if !authorized {
             return Ok(UploadAdmission::Unauthorized);
         }
-        if let Some(old)=sqlx::query("SELECT o.*,f.plan FROM operations o LEFT JOIN file_uploads f ON f.operation_id=o.id WHERE o.project_id=$1 AND o.idempotency_key=$2")
+        if let Some(old)=sqlx::query("SELECT o.*,f.plan,f.source_frozen_at FROM operations o LEFT JOIN file_uploads f ON f.operation_id=o.id WHERE o.project_id=$1 AND o.idempotency_key=$2")
  .bind(r.project_id.uuid()).bind(r.key.as_str()).fetch_optional(&mut *tx).await? {
   if old.try_get::<Vec<u8>,_>("request_digest")?.as_slice()!=digest.as_bytes() || old.try_get::<i32,_>("digest_version")?!=sandbox_protocol::idempotency::DIGEST_VERSION{return Ok(UploadAdmission::Conflict);}
   let status:String=old.try_get("status")?;let id=OperationId::from_uuid(old.try_get("id")?);
@@ -56,7 +56,7 @@ impl Store {
   if matches!(status.as_str(),"succeeded"|"failed"|"cancelled")&&old.try_get::<Option<OffsetDateTime>,_>("response_expires_at")?.is_some_and(|t|t<=now){return Ok(UploadAdmission::ResponseExpired(id));}
   let plan:SourcePlan=serde_json::from_value(old.try_get("plan")?).map_err(|_|DispatchError::InvalidData)?;plan.validate().map_err(|_|DispatchError::InvalidData)?;
   if plan.upload.operation_id!=id || UploadInput::from_plan(&plan)!=r.input || plan.owner.scope.project_id!=r.project_id || plan.owner.scope.sandbox_id!=r.sandbox_id{return Err(DispatchError::InvalidData);}
-  let write_source=matches!(status.as_str(),"queued"|"running")&&old.try_get::<i32,_>("attempt_count")?==0&&ms(now)?<plan.write_expires_unix_ms;
+  let write_source=old.try_get::<Option<OffsetDateTime>,_>("source_frozen_at")?.is_none()&&matches!(status.as_str(),"queued"|"running")&&old.try_get::<i32,_>("attempt_count")?==0&&ms(now)?<plan.write_expires_unix_ms;
   tx.commit().await?;return Ok(UploadAdmission::Accepted{plan:Box::new(plan),status,write_source});
  }
         let sandbox =
@@ -93,7 +93,7 @@ impl Store {
         sqlx::query("SELECT pg_advisory_xact_lock(7213091301)")
             .execute(&mut *tx)
             .await?;
-        let counts=sqlx::query("SELECT count(*) AS total,COALESCE(sum(size),0)::bigint AS bytes,count(*) FILTER(WHERE project_id=$1) AS project_count,COALESCE(sum(size) FILTER(WHERE project_id=$1),0)::bigint AS project_bytes,count(*) FILTER(WHERE allocation_id=$2) AS allocation_count,COALESCE(sum(size) FILTER(WHERE allocation_id=$2),0)::bigint AS allocation_bytes FROM file_uploads")
+        let counts=sqlx::query("SELECT count(*) AS total,COALESCE(sum(size) FILTER(WHERE source_retired_at IS NULL),0)::bigint AS bytes,count(*) FILTER(WHERE project_id=$1) AS project_count,COALESCE(sum(size) FILTER(WHERE project_id=$1 AND source_retired_at IS NULL),0)::bigint AS project_bytes,count(*) FILTER(WHERE allocation_id=$2) AS allocation_count,COALESCE(sum(size) FILTER(WHERE allocation_id=$2),0)::bigint AS allocation_bytes FROM file_uploads")
  .bind(r.project_id.uuid()).bind(allocation).fetch_one(&mut *tx).await?;
         if counts.try_get::<i64, _>("total")? >= 1024
             || counts.try_get::<i64, _>("bytes")? + r.input.size as i64 > 1024 * 1024 * 1024

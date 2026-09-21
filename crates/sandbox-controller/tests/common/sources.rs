@@ -19,6 +19,7 @@ pub(crate) struct Sources {
     pub started: Notify,
     pub resume: Semaphore,
     pub reads: AtomicUsize,
+    pub uploads: AtomicUsize,
 }
 impl Default for Sources {
     fn default() -> Self {
@@ -31,6 +32,7 @@ impl Default for Sources {
             started: Notify::new(),
             resume: Semaphore::new(0),
             reads: AtomicUsize::new(0),
+            uploads: AtomicUsize::new(0),
         }
     }
 }
@@ -44,6 +46,7 @@ impl SourceBackend for Sources {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SourceRef, Error>> + Send + 'a>>
     {
         Box::pin(async move {
+            self.uploads.fetch_add(1, Ordering::SeqCst);
             assert_eq!(&p.owner, o);
             assert_eq!(p.upload.sha256, Sha256::digest(b).as_slice());
             if self.pause_upload.load(Ordering::SeqCst) {

@@ -1,0 +1,735 @@
+use super::*;
+use sandbox_artifacts::{Error, sources::SourceStore};
+use sandbox_cleanup::sources::{SourceCleaner, SourceCleanupTick, SourceRetirementBackend};
+use sandbox_protocol::file_sources::{SourceOwner, SourcePlan, SourceRef, SourceRetirement};
+use sandbox_store::dispatch::DispatchError;
+
+async fn aged(f: &Fixture, s: SandboxId, bytes: Vec<u8>) -> (OperationId, SourcePlan) {
+    let (_, a) = admit(f, s, bytes).await;
+    let id: OperationId = a["operation_id"].as_str().unwrap().parse().unwrap();
+    let raw: Value = sqlx::query_scalar("SELECT plan FROM file_uploads WHERE operation_id=$1")
+        .bind(id.uuid())
+        .fetch_one(f.store.pool())
+        .await
+        .unwrap();
+    let mut plan: SourcePlan = serde_json::from_value(raw).unwrap();
+    for t in [
+        &mut plan.created_unix_ms,
+        &mut plan.write_expires_unix_ms,
+        &mut plan.expires_unix_ms,
+        &mut plan.delete_after_unix_ms,
+    ] {
+        *t -= 7200000;
+    }
+    plan.validate().unwrap();
+    sqlx::query("UPDATE file_uploads SET plan=$2 WHERE operation_id=$1")
+        .bind(id.uuid())
+        .bind(serde_json::json!(plan))
+        .execute(f.store.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE operations SET deadline=clock_timestamp()-interval '1 hour' WHERE id=$1")
+        .bind(id.uuid())
+        .execute(f.store.pool())
+        .await
+        .unwrap();
+    (id, plan)
+}
+fn receipt(plan: &SourcePlan, selected: Option<&SourceRef>) -> SourceRetirement {
+    SourceRetirement {
+        version: 1,
+        plan_sha256: plan.metadata_digest().unwrap(),
+        previous: selected.cloned(),
+        marker_etag: "retired".into(),
+        marker_version: None,
+    }
+}
+async fn snapshot(f: &Fixture, id: OperationId) -> Value {
+    sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o WHERE id=$1")
+        .bind(id.uuid())
+        .fetch_one(f.store.pool())
+        .await
+        .unwrap()
+}
+async fn unretired_bytes(f: &Fixture) -> i64 {
+    sqlx::query_scalar("SELECT COALESCE(sum(size) FILTER(WHERE source_retired_at IS NULL),0)::bigint FROM file_uploads").fetch_one(f.store.pool()).await.unwrap()
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn freeze_and_verified_completion_preserve_outcomes_and_guest_reservations(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, _c, s) = setup(&pool).await;
+    let (id, plan) = aged(&f, s, b"private-data".to_vec()).await;
+    let before = snapshot(&f, id).await;
+    // Storage cleanup uses original ownership even after customer revocation or host epoch change.
+    sqlx::query("UPDATE projects SET status='suspended'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE hosts SET supervisor_epoch=supervisor_epoch+1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let claim = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        f.store
+            .claim_file_source_cleanup(30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(unretired_bytes(&f).await, 12);
+    let work = f.store.prepare_file_source_cleanup(&claim).await.unwrap();
+    assert_eq!(work.manifest.plan, plan);
+    assert!(work.manifest.selected.is_none());
+    assert!(work.now_unix_ms >= plan.delete_after_unix_ms);
+    let mut bad = receipt(&plan, None);
+    bad.plan_sha256 = "f".repeat(64);
+    assert!(matches!(
+        f.store.complete_file_source_cleanup(&claim, &bad).await,
+        Err(DispatchError::BadEvidence)
+    ));
+    assert_eq!(unretired_bytes(&f).await, 12);
+    f.store
+        .complete_file_source_cleanup(&claim, &receipt(&plan, None))
+        .await
+        .unwrap();
+    assert_eq!(unretired_bytes(&f).await, 0);
+    assert_eq!(snapshot(&f, id).await, before);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT sum(size)::bigint FROM file_uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        12
+    );
+    f.store
+        .complete_file_source_cleanup(&claim, &receipt(&plan, None))
+        .await
+        .unwrap();
+    assert_eq!(unretired_bytes(&f).await, 0);
+    assert!(
+        f.store
+            .claim_file_source_cleanup(30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn expiry_claim_grace_and_frozen_dispatch_are_independent_gates(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, _c, s) = setup(&pool).await;
+    let (_, a) = admit(&f, s, b"data".to_vec()).await;
+    assert!(
+        f.store
+            .claim_file_source_cleanup(30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // Age only the source. A still-valid operation deadline must prevent retirement.
+    let id = a["operation_id"]
+        .as_str()
+        .unwrap()
+        .parse::<OperationId>()
+        .unwrap();
+    let mut p: SourcePlan = serde_json::from_value(
+        sqlx::query_scalar::<_, Value>("SELECT plan FROM file_uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    for t in [
+        &mut p.created_unix_ms,
+        &mut p.write_expires_unix_ms,
+        &mut p.expires_unix_ms,
+        &mut p.delete_after_unix_ms,
+    ] {
+        *t -= 7200000;
+    }
+    sqlx::query("UPDATE file_uploads SET plan=$1")
+        .bind(serde_json::json!(p))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        f.store
+            .claim_file_source_cleanup(30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    sqlx::query(
+        "UPDATE operations SET deadline=clock_timestamp()-interval '4 minutes' WHERE id=$1",
+    )
+    .bind(id.uuid())
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        f.store
+            .claim_file_source_cleanup(30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    sqlx::query("UPDATE operations SET deadline=clock_timestamp()-interval '6 minutes',lease_expires_at=clock_timestamp()+interval '1 minute' WHERE id=$1").bind(id.uuid()).execute(&pool).await.unwrap();
+    assert!(
+        f.store
+            .claim_file_source_cleanup(30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    f.reclaim_now().await;
+    let cleanup = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    // Extending a deadline cannot reopen a frozen source or permit guest Begin.
+    sqlx::query(
+        "UPDATE operations SET deadline=clock_timestamp()+interval '5 minutes' WHERE id=$1",
+    )
+    .bind(id.uuid())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let op = f
+        .store
+        .claim_next(OperationKind::FileWrite, 30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .accept_upload_source(
+                &op,
+                &SourceRef {
+                    plan: p.clone(),
+                    etag: "old".into(),
+                    object_version: None
+                }
+            )
+            .await,
+        Err(DispatchError::BadEvidence)
+    ));
+    assert!(matches!(
+        f.store.prepare_upload(&op, f.config.host, 1).await.unwrap(),
+        UploadAction::Rejected
+    ));
+    assert_eq!(f.fake.total_file_commits().await, 0);
+    assert!(matches!(
+        f.store.prepare_file_source_cleanup(&cleanup).await,
+        Err(DispatchError::LostClaim)
+    ));
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn changed_manifest_source_or_expired_claim_cannot_refund_bytes(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    let (f, sources, _c, s) = setup(&pool).await;
+    let (id, p) = aged(&f, s, b"data".to_vec()).await;
+    let selected = SourceRef {
+        plan: p.clone(),
+        etag: "original".into(),
+        object_version: None,
+    };
+    sqlx::query("UPDATE file_uploads SET source_ref=$1")
+        .bind(serde_json::json!(selected))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let stale = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query(
+        "UPDATE file_uploads SET source_cleanup_lease_until=clock_timestamp()-interval '1 second'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let live = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .complete_file_source_cleanup(&stale, &receipt(&p, Some(&selected)))
+            .await,
+        Err(DispatchError::LostClaim)
+    ));
+    assert!(matches!(
+        f.store
+            .complete_file_source_cleanup(&live, &receipt(&p, None))
+            .await,
+        Err(DispatchError::BadEvidence)
+    ));
+    sqlx::query("UPDATE file_uploads SET source_ref=jsonb_set(source_ref,'{etag}','\"changed\"')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.store.prepare_file_source_cleanup(&live).await,
+        Err(DispatchError::InvalidData)
+    ));
+    sqlx::query("UPDATE file_uploads SET source_ref=$1")
+        .bind(serde_json::json!(selected))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let manifest: Value = sqlx::query_scalar("SELECT source_cleanup_manifest FROM file_uploads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE file_uploads SET source_cleanup_manifest=jsonb_set(source_cleanup_manifest,'{plan,owner,scope,generation}','99')").execute(&pool).await.unwrap();
+    assert!(matches!(
+        f.store.prepare_file_source_cleanup(&live).await,
+        Err(DispatchError::InvalidData)
+    ));
+    sqlx::query("UPDATE file_uploads SET source_cleanup_manifest=$1")
+        .bind(manifest)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before = snapshot(&f, id).await;
+    f.store
+        .complete_file_source_cleanup(&live, &receipt(&p, Some(&selected)))
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&f, id).await, before);
+    assert_eq!(unretired_bytes(&f).await, 0);
+    let key: String = sqlx::query_scalar("SELECT idempotency_key FROM operations WHERE id=$1")
+        .bind(id.uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let uploads = sources.uploads.load(Ordering::SeqCst);
+    let (status, retry) = put(f.app.clone(), f.token.clone(), s, key, b"data".to_vec()).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(retry["operation_id"], id.to_string());
+    assert_eq!(sources.uploads.load(Ordering::SeqCst), uploads);
+}
+
+struct Paused {
+    started: tokio::sync::Notify,
+    resume: tokio::sync::Semaphore,
+}
+struct PausedBackend(Arc<Paused>);
+impl SourceRetirementBackend for PausedBackend {
+    async fn retire(
+        &self,
+        p: &SourcePlan,
+        _: &SourceOwner,
+        s: Option<&SourceRef>,
+        _: i64,
+    ) -> Result<SourceRetirement, Error> {
+        self.0.started.notify_one();
+        self.0.resume.acquire().await.unwrap().forget();
+        Ok(receipt(p, s))
+    }
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn cancelled_worker_reclaims_same_frozen_attempt_without_changing_operation(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, _c, s) = setup(&pool).await;
+    let (id, p) = aged(&f, s, b"data".to_vec()).await;
+    let before = snapshot(&f, id).await;
+    let paused = Arc::new(Paused {
+        started: tokio::sync::Notify::new(),
+        resume: tokio::sync::Semaphore::new(0),
+    });
+    let worker = SourceCleaner::new(f.store.clone(), PausedBackend(paused.clone()));
+    let task = tokio::spawn(async move { worker.tick().await });
+    tokio::time::timeout(Duration::from_secs(3), paused.started.notified())
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(unretired_bytes(&f).await, 4);
+    sqlx::query(
+        "UPDATE file_uploads SET source_cleanup_lease_until=clock_timestamp()-interval '1 second'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let c = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.store
+            .prepare_file_source_cleanup(&c)
+            .await
+            .unwrap()
+            .manifest
+            .plan,
+        p
+    );
+    f.store
+        .complete_file_source_cleanup(&c, &receipt(&p, None))
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&f, id).await, before);
+}
+
+fn config() -> sandbox_artifacts::S3Config {
+    sandbox_artifacts::S3Config {
+        endpoint: std::env::var("HUDSON_TEST_S3_ENDPOINT").unwrap(),
+        region: "us-east-1".into(),
+        bucket: std::env::var("HUDSON_TEST_S3_VERSIONED_BUCKET").unwrap(),
+        access_key: std::env::var("HUDSON_TEST_S3_ACCESS_KEY").unwrap(),
+        secret_key: std::env::var("HUDSON_TEST_S3_SECRET_KEY").unwrap(),
+        session_token: None,
+        allow_loopback_http: true,
+    }
+}
+struct LoseRetirementReply {
+    inner: sandbox_artifacts::sources::SourceRetirer,
+    lost: std::sync::atomic::AtomicBool,
+}
+impl SourceRetirementBackend for LoseRetirementReply {
+    async fn retire(
+        &self,
+        p: &SourcePlan,
+        o: &SourceOwner,
+        s: Option<&SourceRef>,
+        now: i64,
+    ) -> Result<SourceRetirement, Error> {
+        let receipt = self.inner.retire(p, o, s, now).await?;
+        if !self.lost.swap(true, Ordering::SeqCst) {
+            return Err(Error::Unavailable);
+        }
+        Ok(receipt)
+    }
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+#[ignore = "requires private versioned MinIO bucket and HUDSON_TEST_S3_* configuration"]
+async fn output_minio_file_source_cleanup_reconciles_lost_retirement_reply(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, _c, s) = setup(&pool).await;
+    let bytes = (0..65539).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+    let (id, p) = aged(&f, s, bytes.clone()).await;
+    let sources: SourceStore = config().build_sources().unwrap();
+    let reference = sources
+        .upload(&p, &p.owner, p.created_unix_ms + 1, &bytes)
+        .await
+        .unwrap();
+    // API PUT reply was lost; no source_ref was ever selected by the controller.
+    let before = snapshot(&f, id).await;
+    let worker = SourceCleaner::new(
+        f.store.clone(),
+        LoseRetirementReply {
+            inner: config().build_source_retirer().unwrap(),
+            lost: std::sync::atomic::AtomicBool::new(false),
+        },
+    );
+    assert!(worker.tick().await.is_err());
+    assert_eq!(unretired_bytes(&f).await, bytes.len() as i64);
+    assert!(matches!(
+        sources
+            .read(&reference, &p.owner, p.created_unix_ms + 1)
+            .await,
+        Err(Error::Missing)
+    ));
+    sqlx::query("UPDATE file_uploads SET source_cleanup_next_at=NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.tick().await.unwrap(),
+        SourceCleanupTick::Completed(id)
+    );
+    assert_eq!(worker.tick().await.unwrap(), SourceCleanupTick::Idle);
+    assert_eq!(unretired_bytes(&f).await, 0);
+    assert_eq!(snapshot(&f, id).await, before);
+    assert!(
+        sources
+            .upload(&p, &p.owner, p.created_unix_ms + 1, &bytes)
+            .await
+            .is_err()
+    );
+    let retired: Value = sqlx::query_scalar("SELECT source_retirement FROM file_uploads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_value::<SourceRetirement>(retired)
+            .unwrap()
+            .previous,
+        Some(reference)
+    );
+    eprintln!(
+        "file_source_cleanup_observation={}",
+        serde_json::json!({"bytes":bytes.len(),"versioned_payload_removed":true,"lost_reply_reconciled":true,"late_put_rejected":true,"operation_unchanged":true,"guest_reservation_retained":true})
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn upgrade_preserves_admitted_sources_and_does_not_invent_retirement(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            sandbox_store::MIGRATOR.iter().take(13).cloned().collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+    .run(&pool)
+    .await
+    .unwrap();
+    let f = Fixture::new(&pool).await;
+    let (_, s) = f.admit().await;
+    f.controller().await.tick().await.unwrap();
+    let (project, allocation, host, generation, epoch): (
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        i64,
+        i64,
+    ) = sqlx::query_as("SELECT project_id,id,host_id,generation,supervisor_epoch FROM allocations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let id = OperationId::generate();
+    let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
+    let p = SourcePlan {
+        version: 1,
+        owner: SourceOwner {
+            operation_id: id,
+            scope: sandbox_protocol::file_downloads::ReadScope {
+                version: 1,
+                project_id: sandbox_protocol::ProjectId::from_uuid(project),
+                sandbox_id: s,
+                allocation_id: sandbox_protocol::AllocationId::from_uuid(allocation),
+                host_id: sandbox_protocol::HostId::from_uuid(host),
+                generation,
+                host_epoch: epoch,
+            },
+        },
+        upload: sandbox_protocol::files::Upload {
+            operation_id: id,
+            path: "old.bin".into(),
+            size: 4,
+            sha256: Sha256::digest(b"data").into(),
+            mode: 0o644,
+        },
+        source_attempt: OperationId::generate(),
+        created_unix_ms: now - 7200000,
+        write_expires_unix_ms: now - 6900000,
+        expires_unix_ms: now - 3600000,
+        delete_after_unix_ms: now - 3600000,
+    };
+    let payload = serde_json::json!({"path":p.upload.path,"size":p.upload.size,"sha256":p.upload.sha256,"mode":p.upload.mode});
+    let digest = sandbox_protocol::RequestDigest::compute(
+        "PUT",
+        &format!("/v1/sandboxes/{s}/files"),
+        &payload,
+    )
+    .unwrap();
+    sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,idempotency_key,request_digest,digest_version,payload,status,file_allocation_id,deadline) VALUES($1,$2,$3,'file_write','service',$4,$5,1,$6,'unknown',$7,clock_timestamp()-interval '1 hour')").bind(id.uuid()).bind(project).bind(s.uuid()).bind(id.to_string()).bind(digest.as_bytes().as_slice()).bind(payload).bind(allocation).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO file_uploads(operation_id,project_id,sandbox_id,allocation_id,size,token_hash,plan) VALUES($1,$2,$3,$4,4,$5,$6)").bind(id.uuid()).bind(project).bind(s.uuid()).bind(allocation).bind([0u8;32].as_slice()).bind(serde_json::json!(p)).execute(&pool).await.unwrap();
+    let before: Value = sqlx::query_scalar("SELECT to_jsonb(f) FROM file_uploads f")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let operation = snapshot(&f, id).await;
+    sandbox_store::MIGRATOR.run(&pool).await.unwrap();
+    sandbox_store::MIGRATOR.run(&pool).await.unwrap();
+    let mut after: Value = sqlx::query_scalar("SELECT to_jsonb(f) FROM file_uploads f")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        after
+            .as_object_mut()
+            .unwrap()
+            .remove("source_cleanup_revision"),
+        Some(serde_json::json!(0))
+    );
+    for key in [
+        "source_frozen_at",
+        "source_cleanup_manifest",
+        "source_cleanup_lease_until",
+        "source_cleanup_next_at",
+        "source_retired_at",
+        "source_retirement",
+    ] {
+        assert_eq!(
+            after.as_object_mut().unwrap().remove(key),
+            Some(Value::Null)
+        );
+    }
+    assert_eq!(before, after);
+    assert_eq!(snapshot(&f, id).await, operation);
+    let claim = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        f.store
+            .prepare_file_source_cleanup(&claim)
+            .await
+            .unwrap()
+            .manifest
+            .plan,
+        p
+    );
+    assert_eq!(unretired_bytes(&f).await, 4);
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn verified_retirement_reopens_project_byte_capacity_but_retains_guest_budget(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, mut c, s) = setup(&pool).await;
+    let bytes = vec![5; 8 * 1024 * 1024];
+    let (first, template) = aged(&f, s, bytes.clone()).await;
+    tick(&f, &mut c).await; // ordinary deadline rejection, no guest attempt
+    assert_eq!(state(&f, &first.to_string()).await["status"], "failed");
+    let payload: Value = sqlx::query_scalar("SELECT payload FROM operations WHERE id=$1")
+        .bind(first.uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let project = template.owner.scope.project_id;
+    // Valid retained history across four released allocations, each <=64 MiB.
+    let mut remaining = 31;
+    for _ in 0..4 {
+        let sandbox = SandboxId::generate();
+        let allocation = sandbox_protocol::AllocationId::generate();
+        sqlx::query("INSERT INTO sandboxes(id,project_id,image_digest,resources,desired_state,observed_state,generation,destroyed_at) VALUES($1,$2,'sha256:history','{}','destroyed','destroyed',1,clock_timestamp())").bind(sandbox.uuid()).bind(project.uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO allocations(id,project_id,sandbox_id,host_id,generation,supervisor_epoch,vcpu,memory_mib,disk_mib,status,released_at,release_evidence) VALUES($1,$2,$3,$4,1,1,1,128,64,'released',clock_timestamp(),'{\"simulated\":true}')").bind(allocation.uuid()).bind(project.uuid()).bind(sandbox.uuid()).bind(template.owner.scope.host_id.uuid()).execute(&pool).await.unwrap();
+        for _ in 0..remaining.min(8) {
+            let id = OperationId::generate();
+            let mut p = template.clone();
+            p.owner.scope.sandbox_id = sandbox;
+            p.owner.scope.allocation_id = allocation;
+            p.owner.operation_id = id;
+            p.upload.operation_id = id;
+            p.source_attempt = OperationId::generate();
+            let digest = sandbox_protocol::RequestDigest::compute(
+                "PUT",
+                &format!("/v1/sandboxes/{sandbox}/files"),
+                &payload,
+            )
+            .unwrap();
+            sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,idempotency_key,request_digest,digest_version,payload,status,file_allocation_id,deadline,completed_at) VALUES($1,$2,$3,'file_write','service',$4,$5,1,$6,'failed',$7,clock_timestamp()-interval '1 hour',clock_timestamp())").bind(id.uuid()).bind(project.uuid()).bind(sandbox.uuid()).bind(id.to_string()).bind(digest.as_bytes().as_slice()).bind(&payload).bind(allocation.uuid()).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO file_uploads(operation_id,project_id,sandbox_id,allocation_id,size,token_hash,plan) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(id.uuid()).bind(project.uuid()).bind(sandbox.uuid()).bind(allocation.uuid()).bind(bytes.len() as i64).bind([0u8;32].as_slice()).bind(serde_json::json!(p)).execute(&pool).await.unwrap();
+            remaining -= 1;
+        }
+    }
+    assert_eq!(remaining, 0);
+    assert_eq!(unretired_bytes(&f).await, 256 * 1024 * 1024);
+    let key = OperationId::generate().to_string();
+    assert_eq!(
+        put(
+            f.app.clone(),
+            f.token.clone(),
+            s,
+            key.clone(),
+            bytes.clone()
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let claim = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claim.operation_id, first);
+    // Merely freezing or claiming does not refund source capacity.
+    assert_eq!(
+        put(
+            f.app.clone(),
+            f.token.clone(),
+            s,
+            key.clone(),
+            bytes.clone()
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    f.store
+        .complete_file_source_cleanup(&claim, &receipt(&template, None))
+        .await
+        .unwrap();
+    assert_eq!(unretired_bytes(&f).await, 248 * 1024 * 1024);
+    assert_eq!(
+        put(f.app.clone(), f.token.clone(), s, key, bytes).await.0,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM file_uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        33
+    );
+    let declared: i64 =
+        sqlx::query_scalar("SELECT sum(size)::bigint FROM file_uploads WHERE allocation_id=$1")
+            .bind(template.owner.scope.allocation_id.uuid())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(declared, 16 * 1024 * 1024);
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn cleanup_rechecks_claim_after_file_and_allocation_lock_waits(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, _c, s) = setup(&pool).await;
+    let (_, plan) = aged(&f, s, b"data".to_vec()).await;
+    for table in ["file_uploads", "allocations"] {
+        let claim = f
+            .store
+            .claim_file_source_cleanup(30)
+            .await
+            .unwrap()
+            .unwrap();
+        sqlx::query("UPDATE file_uploads SET source_cleanup_lease_until=clock_timestamp()+interval '300 milliseconds'").execute(&pool).await.unwrap();
+        let mut held = pool.begin().await.unwrap();
+        sqlx::query(&format!("SELECT * FROM {table} FOR UPDATE"))
+            .execute(&mut *held)
+            .await
+            .unwrap();
+        let store = f.store.clone();
+        let r = receipt(&plan, None);
+        let job = tokio::spawn(async move { store.complete_file_source_cleanup(&claim, &r).await });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        held.commit().await.unwrap();
+        assert!(matches!(job.await.unwrap(), Err(DispatchError::LostClaim)));
+        assert_eq!(unretired_bytes(&f).await, 4);
+    }
+    for sql in [
+        "UPDATE file_uploads SET source_retired_at=clock_timestamp()",
+        "UPDATE file_uploads SET source_cleanup_manifest=NULL",
+        "UPDATE file_uploads SET source_retirement='{}'",
+    ] {
+        let error = sqlx::query(sql).execute(&pool).await.unwrap_err();
+        assert_eq!(
+            error.as_database_error().unwrap().code().as_deref(),
+            Some("23514")
+        );
+    }
+}

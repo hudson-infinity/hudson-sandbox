@@ -40,6 +40,27 @@ async fn once_uses_private_configuration_and_an_isolated_database(pool: PgPool) 
             assert!(!stderr.contains(secret) && !stdout.contains(secret));
         }
     }
+    // Source-only and combined cleanup require explicit private configuration.
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+    for combined in [false, true] {
+        let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_sandbox-cleanup"));
+        cmd.env("DATABASE_URL", url.as_str())
+            .args(["--once", "--file-source-config"])
+            .arg(&config)
+            .kill_on_drop(true);
+        if combined {
+            cmd.arg("--output-config").arg(&config);
+        }
+        let out = tokio::time::timeout(Duration::from_secs(10), cmd.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(out.status.success());
+        let text = String::from_utf8(out.stderr).unwrap();
+        assert!(text.contains("sandbox file source cleanup: Idle"));
+        assert_eq!(text.contains("sandbox output cleanup: Idle"), combined);
+        assert!(!text.contains("test-private-secret") && !text.contains(url.as_str()));
+    }
     // PostgreSQL includes the requested database name in startup errors.
     // That provider diagnostic must not reach this operator-facing process.
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
