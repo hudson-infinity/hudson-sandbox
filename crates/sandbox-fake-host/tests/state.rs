@@ -544,3 +544,6 @@ async fn simulator_uses_the_real_hosts_minimum_resources() {
         AllocationState::Ready as i32
     );
 }
+
+#[path = "support/files.rs"]
+mod files;

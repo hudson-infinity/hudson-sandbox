@@ -1896,3 +1896,6 @@ async fn real_guest_file_upload_execute_and_captured_download_round_trip() {
         serde_json::json!({"simulated":false,"round_trip_bytes":bytes.len(),"sha256_verified":true,"uploaded_script_executed":true,"execution_marker_once":true,"upload_retry_preserved_later_change":true,"released_capture_not_recreated":true,"vm_cleanup_confirmed":true})
     );
 }
+
+#[path = "support/supervisor_files.rs"]
+mod supervisor_files;

@@ -23,6 +23,11 @@ impl Host {
             .records
             .get(&owner.allocation_id)
             .ok_or_else(|| uncertain("missing allocation"))?;
+        if r.files.contains_key(&owner.operation_id) {
+            return Err(Status::already_exists(
+                "operation belongs to a file transfer",
+            ));
+        }
         if !r.commands.contains_key(&owner.operation_id) && r.commands.len() >= MAX_COMMANDS {
             return Err(Status::resource_exhausted("retained command journal full"));
         }
@@ -38,6 +43,11 @@ impl Host {
                 .records
                 .get(&owner.allocation_id)
                 .ok_or_else(|| uncertain("missing allocation"))?;
+            if r.files.contains_key(&owner.operation_id) {
+                return Err(Status::already_exists(
+                    "operation belongs to a file transfer",
+                ));
+            }
             if !r.commands.contains_key(&owner.operation_id) && r.commands.len() >= MAX_COMMANDS {
                 return Err(Status::resource_exhausted("retained command journal full"));
             }

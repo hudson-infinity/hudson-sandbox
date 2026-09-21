@@ -4,6 +4,11 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc BeginFile(FileRequest) returns (FileObservation);
+  rpc WriteFile(FileWriteRequest) returns (FileObservation);
+  rpc InspectFile(FileRequest) returns (FileObservation);
+  rpc CommitFile(FileRequest) returns (FileObservation);
+  rpc AbortFile(FileRequest) returns (FileObservation);
   rpc PrepareOutput(OutputRequest) returns (OutputObservation);
   rpc ArchiveOutput(OutputRequest) returns (OutputObservation);
   rpc ExecuteCommand(CommandRequest) returns (CommandObservation);
@@ -144,4 +149,14 @@ message CommandObservation {
   // Durable fence: this operation was never dispatched and cannot start later.
   // Missing receipt without this fence is an unknown outcome.
   bool not_started = 6;
+}
+
+// All actions carry the original descriptor. Inspection never needs retained paths.
+message FileRequest { Ownership ownership = 1; hudson.guest.v1.FileUpload upload = 2; }
+message FileWriteRequest { FileRequest request = 1; uint64 offset = 2; bytes data = 3; }
+message FileObservation {
+  Ownership ownership = 1; bool simulated = 2; int64 observed_unix_ms = 3;
+  bytes upload_digest = 4; hudson.guest.v1.Context context = 5;
+  // Unspecified is absence of a guest observation, not a terminal result.
+  hudson.guest.v1.FileState state = 6; bool not_started = 7; optional uint64 stored = 8;
 }
