@@ -274,6 +274,7 @@ impl Store {
                     .map(millis)
                     .transpose()?;
                 if Some(observed) != requested && Some(observed) != confirmed
+                    || confirmed.is_some_and(|previous| observed < previous)
                     || observed <= millis(now)?
                 {
                     return Err(DispatchError::BadEvidence);

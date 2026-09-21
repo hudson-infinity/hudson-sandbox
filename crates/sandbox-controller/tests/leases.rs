@@ -497,3 +497,31 @@ async fn replacement_epoch_cannot_confirm_or_release_old_allocations(pool: PgPoo
     assert_eq!(held, 1);
     assert_eq!(f.fake.total_starts().await, 1);
 }
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn suspension_between_renewal_and_acknowledgement_admits_cleanup(pool: PgPool) {
+    let f = ready(&pool).await;
+    let (claim, request) = prepared(&f).await;
+    let observation = observe(&f, request).await;
+    sqlx::query("UPDATE projects SET status='suspended'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .record_lease_observation(&claim, &observation, true)
+            .await
+            .unwrap(),
+        LeaseResult::Cleanup(_)
+    ));
+    let (state,held):(String,i64)=sqlx::query_as("SELECT min(observed_state),(SELECT count(*) FROM allocations WHERE released_at IS NULL) FROM sandboxes").fetch_one(&pool).await.unwrap();
+    assert_eq!(state, "destroying");
+    assert_eq!(held, 1);
+    assert_eq!(f.controller().await.tick().await.unwrap(), Tick::Confirmed);
+    let (held,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM allocations WHERE released_at IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(held, 0);
+}
