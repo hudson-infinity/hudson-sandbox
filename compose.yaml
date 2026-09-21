@@ -1,5 +1,11 @@
 # Local development dependencies. Not a deployment topology — see
 # docs/implementation/dev-env.md.
+#
+# Ports are deliberately off the defaults. A developer with PostgreSQL already
+# installed will otherwise have the container bind :: while 127.0.0.1 stays
+# with their native server, and every connection from the host silently
+# reaches the wrong database. That failure looks like a missing role, not a
+# port conflict, so it is worth avoiding by construction.
 name: hudson-sandbox-dev
 
 services:
@@ -10,7 +16,7 @@ services:
       POSTGRES_PASSWORD: sandbox
       POSTGRES_DB: sandbox
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -28,8 +34,8 @@ services:
       MINIO_ROOT_USER: sandbox
       MINIO_ROOT_PASSWORD: sandbox-dev-secret
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "59000:9000"
+      - "59001:9001"
     volumes:
       - minio-data:/data
     healthcheck:

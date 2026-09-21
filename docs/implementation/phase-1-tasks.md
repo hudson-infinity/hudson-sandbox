@@ -10,7 +10,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 - [x] Cargo workspace with the crates from the [proposed layout](../architecture.md#proposed-code-layout). Only the ones this phase needs.
 - [x] Pin the Rust toolchain. `rustfmt` and `clippy` configured, clippy warnings denied in CI.
-- [x] CI jobs: fmt, clippy, unit tests, alongside the existing docs check. Migration test follows the first migration.
+- [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
 - [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
 - [ ] A fake supervisor implementing the real gRPC interface, so the control plane is testable before any hardware exists.
 - [ ] Self-hosted runner for VM tests, once a host exists. Fork pull requests never run on it.
@@ -21,10 +21,10 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 ## Storage
 
-- [ ] First migration for `projects`, `sandboxes`, `operations`, `allocations`, `hosts` — the five records this phase touches. Snapshots wait for Phase 3.
-- [ ] The constraints from [data models](../data-models.md#database-rules): `UNIQUE (project_id, idempotency_key)`, `UNIQUE (sandbox_id, generation)`, one unreleased allocation per sandbox, composite keys keeping sandbox-local links in the same sandbox.
+- [x] First migration for `projects`, `sandboxes`, `operations`, `allocations`, `hosts` — the five records this phase touches. Snapshots wait for Phase 3.
+- [x] The constraints from [data models](../data-models.md#database-rules): `UNIQUE (project_id, idempotency_key)`, `UNIQUE (sandbox_id, generation)`, one unreleased allocation per sandbox, composite keys keeping sandbox-local links in the same sandbox.
 - [x] Typed UUIDv7 IDs with prefixes attached at the API boundary.
-- [ ] Fresh-install and upgrade migration tests.
+- [x] Fresh-install migration test. Upgrade tests arrive with the second migration, which is the first one that can break an existing database.
 
 ## API
 

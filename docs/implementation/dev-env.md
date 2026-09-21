@@ -24,6 +24,8 @@ make down    # stop, keeping data
 
 `.env.example` holds the connection strings; copy it to `.env`. Those credentials are for the local stack only.
 
+The stack binds PostgreSQL on 55432 and MinIO on 59000, not their defaults. If you already run PostgreSQL natively, the container binds `::` while `127.0.0.1` stays with your own server, and every connection from the host quietly reaches the wrong database — which surfaces as a missing role rather than a port conflict. Non-default ports remove the ambiguity. `make reset-db` drops the development schema when a migration changes underneath you.
+
 Everything here is real except the sandbox: authentication, transactional admission, idempotency keys, retry behaviour, database constraints, streaming, the CLI. The fake host implements the same gRPC service the supervisor will, and reports a VM that booted instantly and ran nothing. That is enough to build and test the entire control plane before any hardware exists, and it keeps the edit-run loop fast afterwards.
 
 The fake host is not a simulator. It does not model failure, timing, or resource limits. Anything that depends on those belongs in stage 1 or on real hardware.
