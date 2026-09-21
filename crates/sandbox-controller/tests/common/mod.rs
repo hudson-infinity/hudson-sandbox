@@ -49,6 +49,12 @@ impl Drop for Fixture {
 }
 impl Fixture {
     pub(super) async fn new(pool: &PgPool) -> Self {
+        Self::with_artifacts(pool, None).await
+    }
+    pub(super) async fn with_artifacts(
+        pool: &PgPool,
+        artifacts: Option<sandbox_artifacts::ArtifactStore>,
+    ) -> Self {
         let project = ProjectId::generate();
         let token = ProjectToken::generate().unwrap();
         sqlx::query("INSERT INTO projects(id,name,status,limits,api_tokens) VALUES($1,'controller-test','active','{}',$2)")
@@ -82,6 +88,10 @@ impl Fixture {
             },
         })
         .unwrap();
+        let fake = match artifacts {
+            Some(store) => fake.with_artifacts(store),
+            None => fake,
+        };
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("https://{}", listener.local_addr().unwrap());
         let service = SupervisorServer::new(fake.clone())

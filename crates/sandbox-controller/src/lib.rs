@@ -1,5 +1,6 @@
 //! One configured host, durable create/destroy dispatch, and reconciliation over mTLS.
 //! The supervisor is trusted only after its certificate, host ID, and epoch match.
+pub mod archive;
 
 use sandbox_protocol::{
     HostId,
@@ -63,6 +64,7 @@ pub struct Controller {
     store: Store,
     config: ControllerConfig,
     client: SupervisorClient<Channel>,
+    archive_client: SupervisorClient<Channel>,
     operation_cursor: usize,
 }
 
@@ -84,10 +86,13 @@ impl Controller {
             return Err(ControllerError::InvalidConfig);
         }
         let client = transport::connect(&config.endpoint, config.host, ca, cert, key).await?;
+        let archive_client =
+            transport::connect_archiver(&config.endpoint, config.host, ca, cert, key).await?;
         let mut controller = Self {
             store,
             config,
             client,
+            archive_client,
             operation_cursor: 0,
         };
         controller.check_host().await?;

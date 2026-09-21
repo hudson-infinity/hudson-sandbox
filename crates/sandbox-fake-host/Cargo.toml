@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 sandbox-protocol = { workspace = true }
 sandbox-supervisor = { workspace = true }
+sandbox-artifacts = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }

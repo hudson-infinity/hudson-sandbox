@@ -17,8 +17,10 @@ clap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tonic = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
+sandbox-artifacts = { workspace = true }
 sandbox-api = { path = "../sandbox-api" }
 sandbox-fake-host = { path = "../sandbox-fake-host" }
 axum = { workspace = true }

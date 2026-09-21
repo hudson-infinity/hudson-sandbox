@@ -1,6 +1,6 @@
 # Create, destroy, and allocation maintenance
 
-Status: a single-host create/execute/destroy controller is implemented with PostgreSQL, the authenticated HTTP router, and gRPC/mTLS. The [real Linux supervisor](real-supervisor.md) now has controlled create, readiness, renewal and destroy evidence; the development fake remains available for portable tests. Files/output, public cancellation and automatic old-epoch database recovery remain unfinished.
+Status: a single-host create/execute/destroy controller is implemented with PostgreSQL, the authenticated HTTP router, and gRPC/mTLS. The [real Linux supervisor](real-supervisor.md) now has controlled create, readiness, renewal and destroy evidence; the development fake remains available for portable tests. Files/public output retrieval, public cancellation and automatic old-epoch database recovery remain unfinished.
 
 ## One operation through the loop
 
@@ -89,11 +89,11 @@ Public state remains a timestamped last observation, not a live VM-presence guar
 
 [Destroy integration tests](../crates/sandbox-controller/tests/destroy.rs) additionally cover concurrent idempotent admission, tenant isolation, live-transition conflicts, unknown-create handoff, delayed starts after fencing, lost stop/fence replies, unconfirmed release, claim expiry during completion, credential revocation after admission, and permanent tombstones.
 
-The [standalone HTTPS API and offline project provisioning](api-server.md) are exercised through real TCP/TLS tests; the controller remains a separate process. These tests close the create control-plane loop but do not satisfy the real execution or isolation gates in [Phase 1](roadmap.md#scope-discipline-for-phase-1). Remaining work includes authenticated host registration, old-epoch database recovery, public cancellation, files/output, production images, and the full supported-host/adversarial failure gates.
+The [standalone HTTPS API and offline project provisioning](api-server.md) are exercised through real TCP/TLS tests; the controller remains a separate process. These tests close the create control-plane loop but do not satisfy the real execution or isolation gates in [Phase 1](roadmap.md#scope-discipline-for-phase-1). Remaining work includes authenticated host registration, old-epoch database recovery, public cancellation, files/public output retrieval, production images, and the full supported-host/adversarial failure gates.
 
 ## Real Linux lifecycle integration
 
-The [real supervisor](real-supervisor.md) now implements the same lifecycle RPCs with `simulated=false`. Its controlled PostgreSQL/HTTP-router test exercises authenticated admission, real VM readiness, scheduled renewal and verified destroy/release through this controller. Command execution is integrated below; files/output, public cancellation and automatic recovery of database allocations from an earlier host epoch remain unfinished. See the real supervisor document for host capacity, restart and evidence limits.
+The [real supervisor](real-supervisor.md) now implements the same lifecycle RPCs with `simulated=false`. Its controlled PostgreSQL/HTTP-router test exercises authenticated admission, real VM readiness, scheduled renewal and verified destroy/release through this controller. Command execution is integrated below; files/public output retrieval, public cancellation and automatic recovery of database allocations from an earlier host epoch remain unfinished. See the real supervisor document for host capacity, restart and evidence limits.
 
 ## Command admission and dispatch ownership
 
@@ -115,3 +115,8 @@ First-dispatch preparation locks operation → project → sandbox → host, rec
 Result recording validates the current claim, full ownership tuple, digest, observation time, guest context, deadline and output budget. A known boot identity cannot change across observations. Exit zero succeeds; nonzero exit or signal fails with `command_failed`; timeout fails with `deadline_exceeded`. Active receipts remain running and missing/unknown receipts remain unknown. Guest cancellation receipts can be represented, but public cancellation admission is not yet available. A no-start fence fails with `command_not_started`. Completion stores bounded output statistics and exit metadata with `guest_reported=true`; guest output bytes never traverse the controller and guest cleanup never releases an allocation. History retains the initial intent and latest command evidence, at most two entries. The guest is root-controlled, so command reports are workload data, not trusted isolation or external-effect evidence.
 
 [Public execution tests](../crates/sandbox-controller/tests/execute.rs) exercise HTTP admission and polling through real mTLS to the fake, including duplicate and changed retries, lost acknowledgements, no-start fencing, nonzero results, destroy during active execution, credential revocation, forged or cross-boot evidence, and command history pressure leaving capacity for destroy. Real API/VM evidence is recorded by the [host integration tests](../crates/sandbox-supervisor/tests/host.rs).
+
+
+## Independent output worker
+
+`--archive-output` enables [final-output archival](output-storage.md#supervisor-archival-and-recovery). It runs independently of lifecycle ticks using its own publication claim and mTLS connection, so waiting on storage does not serialize renewal or destruction. The controller persists tickets/plans/references and never receives guest output bytes or object credentials. Execution completion reports pending output first; archival can publish it later, including after destroy if the objects already exist. Public byte retrieval and SSE remain separate work.

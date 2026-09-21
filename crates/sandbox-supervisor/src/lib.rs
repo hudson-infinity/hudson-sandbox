@@ -1,5 +1,6 @@
 //! Authenticated supervisor transport, Linux guardian and durable lifecycle service.
 
+pub mod archive;
 pub mod transport;
 
 #[cfg(unix)]

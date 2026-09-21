@@ -2,6 +2,7 @@
 //! Every observation is explicitly simulated. Restart loses evidence and requires
 //! a new externally issued supervisor epoch; absence never proves old VM release.
 
+mod archive;
 mod commands;
 use sandbox_protocol::{
     AllocationId, HostId, OperationId, ProjectId, SandboxId,
@@ -35,6 +36,8 @@ pub struct FakeConfig {
 pub struct FakeHost {
     config: Arc<FakeConfig>,
     state: Arc<Mutex<State>>,
+    artifacts: Option<sandbox_artifacts::ArtifactStore>,
+    archive_workers: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Debug, Default)]
@@ -51,6 +54,9 @@ struct State {
     total_commands: u64,
     hold_next_command: bool,
     lose_next_command_reply: bool,
+    lose_next_archive_reply: bool,
+    archive_delay: Duration,
+    archives_started: u64,
 }
 
 #[derive(Debug)]
@@ -70,6 +76,7 @@ struct Fence {
     lease_revision: i64,
     lease_request: Option<(i64, i64)>,
     commands: HashMap<String, sandbox_protocol::command::CommandRecord>,
+    archives: HashMap<String, sandbox_supervisor::archive::ArchiveRecord>,
 }
 
 /// Database/controller deadlines and the supervisor wall clock must be synchronized.
@@ -107,6 +114,8 @@ impl FakeHost {
         Ok(Self {
             config: Arc::new(config),
             state: Arc::new(Mutex::new(State::default())),
+            artifacts: None,
+            archive_workers: Arc::new(tokio::sync::Semaphore::new(2)),
         })
     }
 
@@ -197,6 +206,7 @@ impl FakeHost {
                 lease_revision: 0,
                 lease_request: None,
                 commands: HashMap::new(),
+                archives: HashMap::new(),
             });
         if fence.owner.project_id != owner.project_id
             || fence.owner.sandbox_id != owner.sandbox_id
@@ -390,6 +400,22 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn prepare_output(
+        &self,
+        r: Request<sandbox_protocol::supervisor::OutputRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::OutputObservation>, Status> {
+        self.output_inner(r.into_inner(), false)
+            .await
+            .map(Response::new)
+    }
+    async fn archive_output(
+        &self,
+        r: Request<sandbox_protocol::supervisor::OutputRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::OutputObservation>, Status> {
+        self.output_inner(r.into_inner(), true)
+            .await
+            .map(Response::new)
+    }
     async fn execute_command(
         &self,
         r: Request<sandbox_protocol::supervisor::CommandRequest>,
