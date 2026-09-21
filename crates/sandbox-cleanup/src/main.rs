@@ -24,11 +24,22 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let retirer = S3Config::read_private(&args.output_config)?.build_retirer()?;
-    let store = Store::connect(&args.database_url, 4).await?;
-    store.migrate().await?;
+    let store = Store::connect(&args.database_url, 4)
+        .await
+        .map_err(|_| anyhow::anyhow!("invalid database configuration"))?;
+    store
+        .migrate()
+        .await
+        .map_err(|_| anyhow::anyhow!("database migration failed"))?;
     let cleaner = Cleaner::new(store, retirer, args.allow_simulated);
     if args.once {
-        eprintln!("{:?}", cleaner.tick().await?);
+        // Preserve the redacted Display message without attaching provider
+        // error sources, which anyhow would otherwise print at process exit.
+        let tick = cleaner
+            .tick()
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        eprintln!("{tick:?}");
         return Ok(());
     }
     loop {
