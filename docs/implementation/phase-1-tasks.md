@@ -37,7 +37,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 ## Controller
 
-- [x] Storage primitives claim operations with bounded leases and monotonically increasing claim revisions; PostgreSQL concurrency and expiry tests pass. Controller scheduling and dispatch still follow.
+- [ ] Integrate the implemented claim storage into a controller scheduling loop; claim semantics and evidence now live in [lifecycle](../lifecycle.md#operations-and-controller-ownership).
 - [ ] Capacity check and allocation reservation against one host.
 - [ ] gRPC client over mTLS to the supervisor.
 - [ ] Persist intent before every external action and confirmed evidence after it. This is gate 1a work even though gate 1b is what proves it.
