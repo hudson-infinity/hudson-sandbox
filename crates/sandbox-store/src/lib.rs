@@ -4,6 +4,7 @@
 //! live here rather than in the API or controller so that the constraints in
 //! the migrations and the code that relies on them stay in one place.
 
+pub mod admission;
 pub mod projects;
 
 use std::time::Duration;

@@ -1192,11 +1192,13 @@ name = "sandbox-api"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "hex",
  "http",
  "sandbox-protocol",
  "sandbox-store",
  "serde",
  "serde_json",
+ "sqlx",
  "time",
  "tokio",
  "tower",

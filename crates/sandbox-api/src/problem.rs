@@ -24,6 +24,9 @@ pub enum Problem {
     Forbidden,
     /// Missing, or belonging to another project. Indistinguishable on purpose.
     NotFound,
+    /// The same key was used for a different request, or a conflicting
+    /// lifecycle transition is already in progress.
+    Conflict(&'static str),
     /// A required backend is unavailable.
     Unavailable,
     /// Something failed that the caller cannot fix.
@@ -39,6 +42,7 @@ impl Problem {
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -52,6 +56,7 @@ impl Problem {
             Self::Unauthenticated => "unauthenticated",
             Self::Forbidden => "forbidden",
             Self::NotFound => "not_found",
+            Self::Conflict(_) => "conflict",
             Self::Unavailable => "unavailable",
             Self::Internal => "internal",
         }
@@ -65,6 +70,7 @@ impl Problem {
             Self::Unauthenticated => "Authentication is required",
             Self::Forbidden => "This credential does not have the required access",
             Self::NotFound => "No such resource",
+            Self::Conflict(detail) => detail,
             Self::Unavailable => "The service is temporarily unable to handle this request",
             Self::Internal => "The request could not be completed",
         }

@@ -5,7 +5,9 @@
 //! client cannot tell the difference.
 
 pub mod auth;
+pub mod headers;
 pub mod problem;
+pub mod sandboxes;
 
 use axum::Router;
 use axum::extract::FromRef;
@@ -25,9 +27,6 @@ impl FromRef<AppState> for Store {
 }
 
 /// Build the router.
-///
-/// Empty of routes so far by design: authentication exists, the operations it
-/// guards do not.
 pub fn router(state: AppState) -> Router {
-    Router::new().with_state(state)
+    Router::new().merge(sandboxes::routes()).with_state(state)
 }
