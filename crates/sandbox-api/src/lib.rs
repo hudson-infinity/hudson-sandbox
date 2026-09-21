@@ -18,6 +18,7 @@ pub mod reads;
 pub mod sandboxes;
 pub mod server;
 pub mod streams;
+pub mod uploads;
 
 use axum::Router;
 use axum::extract::FromRef;
@@ -65,6 +66,16 @@ pub fn router_with_files(
     live: Option<std::sync::Arc<dyn streams::live::LiveReader>>,
     files: Option<std::sync::Arc<dyn files::client::FileReader>>,
 ) -> Router {
+    router_with_uploads(state, reader, live, files, None)
+}
+pub fn router_with_uploads(
+    state: AppState,
+    reader: Option<std::sync::Arc<dyn outputs::OutputReader>>,
+    live: Option<std::sync::Arc<dyn streams::live::LiveReader>>,
+    files: Option<std::sync::Arc<dyn files::client::FileReader>>,
+    sources: Option<std::sync::Arc<dyn sandbox_artifacts::sources::SourceBackend>>,
+) -> Router {
+    let uploads = uploads::routes(state.store.clone(), sources);
     let files = files::routes(state.store.clone(), files);
     let streams = streams::routes(state.store.clone(), live, reader.clone());
     let outputs = outputs::routes(state.store.clone(), reader);
@@ -79,4 +90,5 @@ pub fn router_with_files(
         .merge(outputs)
         .merge(streams)
         .merge(files)
+        .merge(uploads)
 }

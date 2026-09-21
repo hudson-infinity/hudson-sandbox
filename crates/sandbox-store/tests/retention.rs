@@ -150,6 +150,7 @@ async fn retention_upgrade_preserves_existing_rows_without_assigning_policy(pool
             "payload_compacted_at",
             "command_summary",
             "payload_compaction_next_at",
+            "file_allocation_id",
         ] {
             assert_eq!(row.as_object_mut().unwrap().remove(key), Some(Value::Null));
         }

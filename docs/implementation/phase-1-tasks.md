@@ -12,7 +12,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Pin the Rust toolchain. `rustfmt` and `clippy` configured, clippy warnings denied in CI.
 - [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
 - [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
-- [ ] Extend the integrated [create controller and fake](../controller.md) for execute and retained output (done), files, and live streaming.
+- [x] Extend the integrated [create controller and fake](../controller.md) for execute, retained output, files and live streaming; see [file orchestration](../file-transfer.md#public-upload-orchestration).
 - [x] Dedicated nested aarch64 Linux/KVM development host and real boot evidence; [development guide](../linux-development.md). This does not pass the release gates.
 - [ ] Self-hosted x86_64 runner for VM tests, once a supported host exists. Fork pull requests never run on it.
 
@@ -34,7 +34,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
 - [x] Project-scoped sandbox/operation lists with bounded cursor pagination; [collection read contract](../api-contract.md#implemented-collection-reads).
 - [x] `problem+json` errors with the machine-readable code list. Codes are added as routes need them.
-- [ ] Create, execute, destroy, get sandbox, get operation, retained-output GET (done); file PUT remains.
+- [x] Create, execute, destroy, get sandbox, get operation, retained-output GET and [file PUT](../api-contract.md#implemented-file-uploads).
 - [x] Final output archival through the supervisor, independent fenced publication, and recovery of uploaded objects after destroy/restart; [scope and evidence](../output-storage.md).
 - [ ] SSE output stream with sequence cursors and resume.
 
@@ -62,15 +62,15 @@ The separate [allocation guardian](../allocation-guardian.md) implements verifie
 - [x] Allocation-scoped credentials, read-only bootstrap device, guest init and durable boot binding; [component evidence](../guest-bootstrap.md).
 - [ ] Guest image: Debian slim, our init, our guest agent, `system` and `workload` cgroups, agent in its own PID namespace.
 - [ ] Guest kernel build: modules off, lockdown on, pinned and digest-published.
-- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). Lifecycle boot binding is integrated; public command dispatch is integrated; file transfer remains open.
+- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). Lifecycle boot binding is integrated; public command dispatch is integrated; public file routes are integrated; source cleanup remains open.
 - [x] Guest-local spawn, process-tree cleanup, bounded output and exit/restart receipts; [component contract and evidence](../guest-runner.md). The command wire, lifecycle boot binding and local guardian watchdog are implemented; public command dispatch is integrated; the full host-fault gates remain open above.
-- [ ] File write into the workspace with path and size validation.
+- [x] File write into the workspace with path and size validation; [bounded transfer](../file-transfer.md).
 
 ## Passing 1a
 
 - [x] A caller with a project token runs a command in a real microVM and reads its retained output; [controlled nested aarch64 evidence](../evidence/2026-09-21-aarch64-output-read.json) only, not the complete supported-host gate.
 - [ ] A long-running process outlives the request that started it.
-- [ ] A file transfers in and is readable from inside the sandbox.
+- [x] A file transfers in and is readable from inside the sandbox; the MinIO-enabled [real host lifecycle](../../crates/sandbox-supervisor/tests/host.rs) uploads binary bytes, executes a command using them, downloads and verifies the result, then destroys the VM.
 - [ ] Destroy confirms allocation release in the database.
 - [ ] Limits and egress rules hold against the attempts from [spike question 1](phase-0-spikes.md#1-do-the-limits-actually-hold--gates-phase-1).
 - [ ] Tag it. This is the first thing worth showing anyone.

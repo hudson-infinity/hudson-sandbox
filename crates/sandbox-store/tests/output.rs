@@ -815,6 +815,7 @@ async fn publication_upgrade_preserves_old_outcomes_and_only_queues_receipt_cand
             "payload_compacted_at",
             "command_summary",
             "payload_compaction_next_at",
+            "file_allocation_id",
         ] {
             assert_eq!(row.as_object_mut().unwrap().remove(key), Some(Value::Null));
         }

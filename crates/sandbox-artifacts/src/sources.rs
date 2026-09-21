@@ -207,3 +207,54 @@ impl SourceStore {
 }
 #[cfg(test)]
 mod tests;
+
+/// Service boundary for API ingestion and controller recovery. Implementations
+/// must preserve the same immutable-plan and full-object validation contract.
+pub trait SourceBackend: std::fmt::Debug + Send + Sync {
+    fn upload<'a>(
+        &'a self,
+        plan: &'a SourcePlan,
+        owner: &'a SourceOwner,
+        now: i64,
+        bytes: &'a [u8],
+    ) -> futures_util::future::BoxFuture<'a, Result<SourceRef, Error>>;
+    fn reconcile<'a>(
+        &'a self,
+        plan: &'a SourcePlan,
+        owner: &'a SourceOwner,
+        now: i64,
+    ) -> futures_util::future::BoxFuture<'a, Result<SourceRef, Error>>;
+    fn read<'a>(
+        &'a self,
+        reference: &'a SourceRef,
+        owner: &'a SourceOwner,
+        now: i64,
+    ) -> futures_util::future::BoxFuture<'a, Result<SourceBytes, Error>>;
+}
+impl SourceBackend for SourceStore {
+    fn upload<'a>(
+        &'a self,
+        p: &'a SourcePlan,
+        o: &'a SourceOwner,
+        n: i64,
+        b: &'a [u8],
+    ) -> futures_util::future::BoxFuture<'a, Result<SourceRef, Error>> {
+        Box::pin(self.upload(p, o, n, b))
+    }
+    fn reconcile<'a>(
+        &'a self,
+        p: &'a SourcePlan,
+        o: &'a SourceOwner,
+        n: i64,
+    ) -> futures_util::future::BoxFuture<'a, Result<SourceRef, Error>> {
+        Box::pin(self.reconcile(p, o, n))
+    }
+    fn read<'a>(
+        &'a self,
+        r: &'a SourceRef,
+        o: &'a SourceOwner,
+        n: i64,
+    ) -> futures_util::future::BoxFuture<'a, Result<SourceBytes, Error>> {
+        Box::pin(self.read(r, o, n))
+    }
+}

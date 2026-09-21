@@ -1,6 +1,6 @@
 # Running the HTTPS API
 
-Status: implemented for create, execute, cancel, destroy, status, collections, outputs, streams and captured file downloads. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. An installer, SDK, public client CLI and management API/UI remain unfinished. This setup is not a production isolation guarantee.
+Status: implemented for create, execute, cancel, destroy, status, collections, outputs, streams, file uploads and captured downloads. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. An installer, SDK, public client CLI and management API/UI remain unfinished. This setup is not a production isolation guarantee.
 
 ## Transport contract
 
@@ -123,3 +123,9 @@ Enable the [public capture/download/release routes](api-contract.md#implemented-
 This single-host mapping is operator configuration. Customer IDs, paths and capture descriptors never choose an endpoint or credential file. A different allocation host returns unavailable until an operator configures a reader for it. The service cannot upload files or dispatch commands. No file-reader configuration means file requests for an otherwise readable sandbox return `503 unavailable`.
 
 Simulated replies require explicit `--allow-simulated-files` and must also match the current sandbox's recorded simulation provenance. Leave it disabled for real hosts. Capture descriptors, bearer headers, workspace paths and file contents must not be added to access logs. The default server logging policy already excludes request headers, query strings and bodies.
+
+## File source configuration
+
+`--file-source-config /absolute/private/file-sources.json` enables public upload ingestion. The controller must also receive `--file-source-config` pointing to the same private bucket/endpoint. The file uses the existing [S3 configuration](output-storage.md) shape (`endpoint`, `region`, `bucket`, `access_key`, `secret_key`, optional explicit loopback HTTP for development) and must be an owner-only regular file. The API needs conditional source PUT/GET permissions; the controller needs source GET/version GET. Use separate least-privilege credentials. Source credentials do not grant supervisor access; the controller retains its separate mTLS mutation identity. No raw object keys or presigned URLs are accepted from customers.
+
+Without this flag, uploads return `503`. Capture/download configuration remains independent. The upload route explicitly bounds its binary body at 8 MiB rather than the ordinary 64 KiB JSON extractor limit. Ingestion has four process-wide slots, a ten-second body deadline and a 15-second source-write deadline, within the normal 30-second request deadline. Configure matching controller storage before accepting uploads; admission alone cannot establish that a worker is running. Source retirement is not yet scheduled, and retained reservations are not reclaimed automatically.

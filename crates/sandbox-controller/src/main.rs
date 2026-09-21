@@ -32,6 +32,9 @@ struct Args {
     /// Run an independent output publisher; supervisor needs --output-config.
     #[arg(long)]
     archive_output: bool,
+    /// Private read-only source store for file writes.
+    #[arg(long)]
+    file_source_config: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = 86400)]
     output_retention_seconds: u32,
     #[arg(long, default_value_t = 3600)]
@@ -57,6 +60,11 @@ async fn main() -> anyhow::Result<()> {
         &std::fs::read(args.client_key)?,
     )
     .await?;
+    if let Some(path) = args.file_source_config {
+        controller = controller.with_file_sources(std::sync::Arc::new(
+            sandbox_artifacts::S3Config::read_private(&path)?.build_sources()?,
+        ));
+    }
     if args.once {
         eprintln!("{:?}", controller.tick().await?);
         if args.archive_output {

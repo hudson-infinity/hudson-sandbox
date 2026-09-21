@@ -326,7 +326,12 @@ async fn cancellation_upgrade_preserves_generic_rows_without_activating_them(poo
         .bind(legacy.uuid()).bind(key().as_str()).bind(target.uuid()).execute(&pool).await.unwrap();
     let before = read(&f, legacy).await;
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
-    assert_eq!(read(&f, legacy).await, before);
+    let mut after = read(&f, legacy).await;
+    assert_eq!(
+        after.as_object_mut().unwrap().remove("file_allocation_id"),
+        Some(serde_json::Value::Null)
+    );
+    assert_eq!(after, before);
     assert!(
         f.store
             .claim_next(OperationKind::Cancel, 30)

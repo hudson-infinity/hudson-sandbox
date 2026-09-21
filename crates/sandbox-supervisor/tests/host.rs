@@ -687,7 +687,15 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
             .build()
             .unwrap()
     });
-    let app = sandbox_api::router_with_files(
+    let sources = output.then(|| {
+        std::sync::Arc::new(
+            sandbox_artifacts::S3Config::read_private(&f.vm.temp.path().join("output.json"))
+                .unwrap()
+                .build_sources()
+                .unwrap(),
+        )
+    });
+    let app = sandbox_api::router_with_uploads(
         sandbox_api::AppState {
             store: store.clone(),
             images: sandbox_protocol::images::ImageAllowlist::new([image.clone()]).unwrap(),
@@ -717,6 +725,9 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
             )
             .unwrap(),
         )),
+        sources
+            .clone()
+            .map(|s| s as std::sync::Arc<dyn sandbox_artifacts::sources::SourceBackend>),
     );
     let mut controller = sandbox_controller::Controller::connect(
         store.clone(),
@@ -733,6 +744,9 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     )
     .await
     .unwrap();
+    if let Some(sources) = sources {
+        controller = controller.with_file_sources(sources);
+    }
     let token = token.render_once();
     let key = OperationId::generate().to_string();
     let body = json!({"image_digest":image,"resources":{"vcpu":1,"memory_mib":128,"disk_mib":64}});
@@ -1012,7 +1026,8 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
         }
     }
     public_cancel_case(&pool, &app, &token, &mut controller, sandbox, &m).await;
-    let file_capture = public_files::round_trip(&app, &token, &mut controller, sandbox).await;
+    let file_capture =
+        public_files::round_trip(&app, &token, &mut controller, sandbox, output).await;
     if output {
         // Archive retries may not replay a command with side effects.
         let guest = m.guest_client().unwrap();

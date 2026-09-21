@@ -81,6 +81,17 @@ fn verify_hash(
 }
 
 impl Authenticated {
+    pub(crate) async fn admit_upload(
+        &self,
+        store: &Store,
+        request: sandbox_store::uploads::UploadCommand,
+    ) -> Result<sandbox_store::uploads::UploadAdmission, Problem> {
+        store
+            .admit_upload(&request, &self.hash)
+            .await
+            .map_err(|_| Problem::Unavailable)
+    }
+
     pub(crate) async fn file_view(
         &self,
         store: &Store,

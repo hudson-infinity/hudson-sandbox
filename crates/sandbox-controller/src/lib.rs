@@ -1,6 +1,7 @@
 //! One configured host, durable create/destroy dispatch, and reconciliation over mTLS.
 //! The supervisor is trusted only after its certificate, host ID, and epoch match.
 pub mod archive;
+mod uploads;
 
 use sandbox_protocol::{
     HostId,
@@ -66,6 +67,8 @@ pub struct Controller {
     client: SupervisorClient<Channel>,
     archive_client: SupervisorClient<Channel>,
     operation_cursor: usize,
+    file_sources: Option<std::sync::Arc<dyn sandbox_artifacts::sources::SourceBackend>>,
+    file_cache: uploads::FileCache,
 }
 
 impl Controller {
@@ -94,6 +97,8 @@ impl Controller {
             client,
             archive_client,
             operation_cursor: 0,
+            file_sources: None,
+            file_cache: None,
         };
         controller.check_host().await?;
         Ok(controller)
@@ -334,15 +339,20 @@ impl Controller {
             OperationKind::Destroy,
             OperationKind::Create,
             OperationKind::Execute,
+            OperationKind::FileWrite,
         ];
         let first = self.operation_cursor;
         self.operation_cursor = (first + 1) % kinds.len();
         for offset in 0..kinds.len() {
             let kind = kinds[(first + offset) % kinds.len()];
+            if matches!(kind, OperationKind::FileWrite) && self.file_sources.is_none() {
+                continue;
+            }
             if let Some(claim) = self.store.claim_next(kind, 30).await? {
                 return match kind {
                     OperationKind::Destroy => self.destroy_tick(&claim).await,
                     OperationKind::Execute => self.execute_tick(&claim).await,
+                    OperationKind::FileWrite => self.upload_tick(&claim).await,
                     _ => self.create_tick(&claim).await,
                 };
             }
