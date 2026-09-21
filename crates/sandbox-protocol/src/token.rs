@@ -246,29 +246,20 @@ mod tests {
 
     #[test]
     fn a_different_secret_does_not_verify() {
-        let real = ProjectToken::generate().expect("generate");
-        let rendered = real.clone().render_once();
-
-        // Same key id, one flipped character in the secret.
-        let (head, tail) = rendered.rsplit_once('_').expect("has a secret");
-        let flipped: String = tail
-            .chars()
-            .enumerate()
-            .map(|(i, c)| {
-                if i == 0 {
-                    if c == 'A' { 'B' } else { 'A' }
-                } else {
-                    c
-                }
-            })
-            .collect();
-
-        let forged = ProjectToken::parse(&format!("{head}_{flipped}")).expect("parse");
-        assert_eq!(forged.key_id(), real.key_id());
-        assert!(
-            !forged.hash().verify(&real.hash()),
-            "a forged secret verified against the real hash"
-        );
+        // Hex case changes do not change the secret bytes. Exercise every
+        // possible first nibble, using a different value rather than a new case.
+        for first in "0123456789abcdef".chars() {
+            let original = format!("hsb_0000000000000000_{first}{}", "0".repeat(63));
+            let replacement = if first == '0' { '1' } else { '0' };
+            let altered = format!("hsb_0000000000000000_{replacement}{}", "0".repeat(63));
+            let real = ProjectToken::parse(&original).expect("original parses");
+            let forged = ProjectToken::parse(&altered).expect("altered parses");
+            assert_eq!(forged.key_id(), real.key_id());
+            assert!(
+                !forged.hash().verify(&real.hash()),
+                "a changed secret byte verified against the real hash"
+            );
+        }
     }
 
     #[test]
