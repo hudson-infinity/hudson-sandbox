@@ -117,7 +117,7 @@ Timeout or cancellation does not roll back external side effects. Revoking a cre
 
 ## Idle limits and automatic pause
 
-This section applies once pause ships; [roadmap](roadmap.md#implementation-phases) places that in Phase 4. Paused sandboxes cost storage; running idle sandboxes cost a host's CPU, memory, and disk. Reclaiming idle compute automatically is the point of having pause at all, so the policy belongs in this contract rather than arriving later as operational improvisation. Until pause exists, an idle sandbox can only be destroyed, and that outcome is reported as destruction rather than dressed up as saved state.
+This section applies once pause ships; [roadmap](roadmap.md#implementation-phases) places that in Phase 3. Paused sandboxes cost storage; running idle sandboxes cost a host's CPU, memory, and disk. Reclaiming idle compute automatically is the point of having pause at all, so the policy belongs in this contract rather than arriving later as operational improvisation. Until pause exists, an idle sandbox can only be destroyed, and that outcome is reported as destruction rather than dressed up as saved state.
 
 Idle means: no running execute operation, no attached output stream, and no client request against the sandbox, for one hour. Those three signals are authoritative. Guest-internal activity is deliberately excluded — a sandbox busy-looping with no operation attached is idle by this definition, because the service cannot observe intent inside the guest and must not infer liveness from CPU use.
 

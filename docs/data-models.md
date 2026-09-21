@@ -165,7 +165,7 @@ API ID: `snp_<uuidv7>`.
 
 PostgreSQL stores metadata; object storage holds the large files. One pause operation reserves one snapshot ID across retries. A published manifest is immutable, and an incomplete upload cannot become resumable state.
 
-`chunk_layout` and `manifest_version` exist for a deferred feature on purpose. Differential snapshots and lazy loading are Phase 6 work, but a published format that only supports whole-object reads would have to break every existing snapshot to get there. Recording the layout and versioning the manifest from the first implementation costs little and keeps that path open. [Performance](performance.md#constraints-on-designs-we-are-choosing-now) owns the reasoning.
+`chunk_layout` and `manifest_version` exist for a deferred feature on purpose. Differential snapshots and lazy loading are Phase 5 work, but a published format that only supports whole-object reads would have to break every existing snapshot to get there. Recording the layout and versioning the manifest from the first implementation costs little and keeps that path open. [Performance](performance.md#constraints-on-designs-we-are-choosing-now) owns the reasoning.
 
 Reserve worst-case staging capacity and a host upload slot before freezing the guest. Serialize upload attempts per snapshot initially; a new attempt cannot overwrite or replace the previous reservation until its uploader is stopped and leftover bytes are accounted for. Release the upload slot after confirmed upload completion/termination; release staging bytes only after confirmed file deletion or host storage retirement. Expired leases alone release neither. No additional reservation table is required.
 

@@ -15,12 +15,11 @@ The first milestone requires phases 1–3 below. Pause/resume follows as a separ
 | Phase | Deliverable and exit gate | Status |
 | --- | --- | --- |
 | 0. Feasibility spikes | Throwaway code on a real Linux/KVM host answering the questions in [feasibility spikes](#feasibility-spikes-phase-0); written findings, kept or discarded design assumptions, and first [performance](performance.md) measurements | Planned |
-| 1. Foundation and single-host execution | The [threat model](threat-model.md) turned into enforced behavior, plus the compatibility and privilege contract; Rust protocol/API/controller/supervisor/guest, SQLx storage access with versioned SQL migrations needed by shipped operations and admin audit persistence, authenticated setup and project requests; one jailed VM runs commands and long-running processes, transfers files, streams output, enforces resource/network limits, and tears down | Planned |
-| 2. Recovery and isolation | Failure-injection at create/execute/cancel/destroy boundaries; fenced ownership, honest unknown outcomes, retry deduplication, egress/tenant isolation, cleanup convergence, and the applicable [threat model](threat-model.md#required-validation) test set | Planned |
-| 3. Usable distribution | Supported single-host installation, CLI, working workload example, diagnostics, monitoring, client conformance checks, and verified teardown exercised by another developer; basic backup/restore and upgrade procedures for the shipped components | Planned |
-| 4. Pause/resume | Snapshot persistence and verified complete memory/disk publication, compute release, compatible restore, guest handshake, original deadlines, and failure-injection at every snapshot/restore boundary; the published format satisfies the [page-addressable constraints](performance.md#constraints-on-designs-we-are-choosing-now) | Planned |
-| 5. Management UI and platform packaging | Session migrations, shared Project/Admin policy, UI flows and acceptance checks, and Hudson using ordinary APIs; Kubernetes packaging follows the standalone proof | Planned |
-| 6. Multiple hosts and optimization | Compatible cross-host restore, placement, draining, provider autoscaling, and measured cache/snapshot optimizations including differential and lazily loaded snapshots | Planned |
+| 1. Foundation, execution, recovery and isolation | Two gates, built together and passed in order. **Gate 1a — it works:** the [threat model](threat-model.md) turned into enforced behavior, plus the compatibility and privilege contract; Rust protocol/API/controller/supervisor/guest, SQLx storage with versioned migrations for the records shipped operations touch, authenticated setup and project requests; one jailed VM runs commands and long-running processes, transfers files, streams output, enforces resource and network limits, and tears down. **Gate 1b — it does not lie:** failure-injection at create/execute/cancel/destroy boundaries; fenced ownership, honest unknown outcomes, retry deduplication, egress and tenant isolation, cleanup convergence, and the applicable [threat model](threat-model.md#required-validation) test set | Planned |
+| 2. Usable distribution | Supported single-host installation, CLI, working workload example, diagnostics, monitoring, client conformance checks, and verified teardown exercised by another developer; basic backup/restore and upgrade procedures for the shipped components | Planned |
+| 3. Pause/resume | Snapshot persistence and verified complete memory/disk publication, compute release, compatible restore, guest handshake, original deadlines, and failure-injection at every snapshot/restore boundary; the published format satisfies the [page-addressable constraints](performance.md#constraints-on-designs-we-are-choosing-now) | Planned |
+| 4. Management UI and platform packaging | Session migrations, shared Project/Admin policy, UI flows and acceptance checks, and Hudson using ordinary APIs; Kubernetes packaging follows the standalone proof | Planned |
+| 5. Multiple hosts and optimization | Compatible cross-host restore, placement, draining, provider autoscaling, and measured cache/snapshot optimizations including differential and lazily loaded snapshots | Planned |
 
 API contracts come first; implement the CLI against working endpoints and add SDKs against the same versioned schemas. A minimal CLI supports the single-host milestone; client packaging and conformance checks belong to the distribution phase, and cover all three SDKs. Existing UI designs remain available for later implementation, which shares the same admission and lifecycle services instead of creating a second control path. Define generic authenticated service connectivity before exposing guest services. Exact work breakdown can be split into issues once each phase has concrete interfaces.
 
@@ -28,7 +27,7 @@ API contracts come first; implement the CLI against working endpoints and add SD
 
 Two assumptions carry most of this design's risk, and neither has been executed. The first is that a jailed Firecracker VM on our supported host enforces the resource and connectivity limits the contracts assume. The second is that a guest agent can survive a snapshot outside the frozen customer process groups, reconnect afterwards, and gate the release of those processes; everything in [lifecycle](lifecycle.md#resume) depends on it.
 
-The second group gates Phase 4, not Phase 1, but it belongs here anyway: a negative answer changes what pause/resume can promise, and it is cheaper to learn that before three phases of contracts are built on top of it.
+The second group gates Phase 3, not Phase 1, but it belongs here anyway: a negative answer changes what pause/resume can promise, and it is cheaper to learn that before two phases of contracts are built on top of it.
 
 Spike on a real Linux/KVM host, with throwaway code that is not intended to merge, and write the findings down.
 
@@ -36,26 +35,33 @@ Spike on a real Linux/KVM host, with throwaway code that is not intended to merg
 | --- | --- | --- |
 | Do jailer, seccomp, cgroups, and host networking actually enforce the CPU, memory, disk, and egress limits we specify? | Phase 1 | The isolation promise is the product; a limit that is requested but not enforced is not a limit |
 | What does create-to-readiness cost on a supported host with a warm image cache? | Phase 1 | Sets whether the [performance](performance.md#proposed-budgets) create budget is reachable |
-| Does a frozen customer cgroup stay frozen across a Firecracker snapshot and restore? | Phase 4 | The entire controlled-resume contract assumes it does |
-| Can the guest agent reconnect over vsock after restore, given Firecracker's vsock reset? | Phase 4 | Without a reconnect there is no handshake, and without a handshake processes cannot be gated |
-| What happens to guest time, timers, and TCP connections across a long pause? | Phase 4 | Deadline enforcement and "credentials are not valid after restore" depend on the answer |
-| Can expired or cancelled process groups be terminated before any thaw? | Phase 4 | [Lifecycle](lifecycle.md#deadlines-and-cancellation) requires it |
-| What do a pause and a cold cross-host restore actually cost in seconds and bytes? | Phase 4 | Sets whether the [performance](performance.md) resume budgets are reachable |
-| How well can the guest agent be shielded from a root customer in the same VM? | Phases 1 and 4 | [Decision 0003](decisions/0003-guest-root-with-our-kernel.md) grants root deliberately. Measure what a hostile root can actually do to the agent: kill sweeps, reaching its control socket, forging a handshake |
+| Does a frozen customer cgroup stay frozen across a Firecracker snapshot and restore? | Phase 3 | The entire controlled-resume contract assumes it does |
+| Can the guest agent reconnect over vsock after restore, given Firecracker's vsock reset? | Phase 3 | Without a reconnect there is no handshake, and without a handshake processes cannot be gated |
+| What happens to guest time, timers, and TCP connections across a long pause? | Phase 3 | Deadline enforcement and "credentials are not valid after restore" depend on the answer |
+| Can expired or cancelled process groups be terminated before any thaw? | Phase 3 | [Lifecycle](lifecycle.md#deadlines-and-cancellation) requires it |
+| What do a pause and a cold cross-host restore actually cost in seconds and bytes? | Phase 3 | Sets whether the [performance](performance.md) resume budgets are reachable |
+| How well can the guest agent be shielded from a root customer in the same VM? | Phases 1 and 3 | [Decision 0003](decisions/0003-guest-root-with-our-kernel.md) grants root deliberately. Measure what a hostile root can actually do to the agent: kill sweeps, reaching its control socket, forging a handshake |
 
 The [spike sheet](implementation/phase-0-spikes.md) carries the method for each one. Exit gate: a written findings document per question, with the commands run and the host configuration recorded. A negative answer is a successful spike; it redirects the design before the dependent phase rather than during it. If process-continuous resume proves unreachable on this stack, reopen [alternatives](alternatives.md#revisit-triggers).
 
 ## Scope discipline for Phase 1
 
-Phase 1 is the largest phase and the easiest to let grow. The exit gate is a single authenticated path working end to end: an authorized caller creates a sandbox, runs a command and a long-running process in a real VM, transfers a file, reads output, destroys the sandbox, and the allocation's release is confirmed in the database. Resource and connectivity limits are enforced by the host, not requested politely.
+Execution and recovery were previously separate phases. They are merged because the mechanics that make recovery work — allocation generations, supervisor epochs, claim revisions, receipts before and after every external action — are cheap to build into the first implementation and expensive to retrofit into a working one. Writing failure-injection tests alongside the code that must survive them is also better than bolting them on to code that was never shaped for it.
 
-Migrations cover the records those operations touch and nothing further. Snapshot persistence belongs to Phase 4, sessions and browser audit surfaces to Phase 5. Deferring a table is not deferring correctness: allocation generations, supervisor epochs, and claim revisions are cheap to build in now and expensive to retrofit, so they stay in scope from the first migration.
+The merge does not mean one undifferentiated push. The phase has **two gates, passed in order**, so there is still a moment where the system is demonstrably working before it is asked to prove it does not lie.
+
+**Gate 1a — it works.** One authenticated path end to end: an authorized caller creates a sandbox, runs a command and a long-running process in a real VM, transfers a file, reads output, destroys the sandbox, and the allocation's release is confirmed in the database. Resource and connectivity limits are enforced by the host, not requested politely. Stop here and tag it; this is the first thing worth showing anyone.
+
+**Gate 1b — it does not lie.** Every row of the [lifecycle recovery table](lifecycle.md#destroy-and-recovery) that applies to create, execute, cancel and destroy reconciles correctly under injected failure. Stale controller claims, stale supervisor epochs and stale allocation generations are all rejected. Uncertain outcomes are recorded as `unknown` and reconciled rather than guessed. The [threat model's adversarial set](threat-model.md#required-validation) passes for the surfaces that exist. No leaked allocations, disk, or VMs after any of it.
+
+Scope discipline still applies to both. Migrations cover the records those operations touch and nothing further. Snapshot persistence belongs to Phase 3, sessions and browser audit surfaces to Phase 4. What 1a may not do is skip the ownership mechanics on the grounds that 1b will add them — they are in scope from the first migration, and 1b proves they work rather than introducing them.
 
 ## Required evidence by delivery gate
 
 | Area | Required evidence | Current evidence |
 | --- | --- | --- |
 | Feasibility | Written [Phase 0 spike findings](#feasibility-spikes-phase-0) on a real KVM host, before the phase each question gates | Not run |
+| Recovery under failure | Every applicable row of the [lifecycle recovery table](lifecycle.md#destroy-and-recovery) reconciled under injected failure, at gate 1b | Not implemented/tested |
 | Lifecycle correctness | [Lifecycle acceptance cases](lifecycle.md#acceptance-checks) applicable to shipped operations, including controller/host failure and cleanup; snapshot/restore cases are mandatory at the pause/resume gate | Not implemented/tested |
 | API behavior | [Admission, retries, errors, and streaming checks](api-contract.md#acceptance-checks-and-open-decisions) for each shipped endpoint | Not implemented/tested |
 | Ownership/storage | SQLx query/schema checks, fresh and supported-upgrade migration tests, and [model constraints and ID/storage checks](data-models.md#acceptance-checks-and-open-decisions) for shipped resources; snapshot checks before pause/resume | Not implemented/tested |
@@ -99,7 +105,7 @@ Two decisions remain, and both are procurement rather than design. Phase 0 canno
 
 ## Work breakdown
 
-Phase 0 and Phase 1 are concrete enough to become issues now, and the decisions above remove the remaining excuse for not writing them. Both are broken down in [implementation notes](implementation/README.md): a [spike sheet](implementation/phase-0-spikes.md) and a [task list](implementation/phase-1-tasks.md).
+Phase 0 and Phase 1 are concrete enough to become issues now, and the decisions above remove the remaining excuse for not writing them. Both are broken down in [implementation notes](implementation/README.md): a [spike sheet](implementation/phase-0-spikes.md) and a [task list](implementation/phase-1-tasks.md) covering both gates.
 
 Those notes are deliberately temporary and are deleted as the work lands. This document, the contracts, and the decision records are not — the reasoning outlives the build order.
 
@@ -121,7 +127,7 @@ Operational documentation should include proven setup commands, secret provision
 
 Pause/resume, multiple hosts, Kubernetes packaging, enterprise identity, specialized workload experiences, a polished dashboard, and performance optimizations follow the first usable runtime. Live migration, transparent recovery of unsaved memory after host loss, one Kubernetes pod per sandbox, and a custom hypervisor are outside the initial scope. No MCP server is planned for the current scope; see [decision 0002](decisions/0002-no-mcp-server-initially.md) and its revisit trigger. Agent integration uses the API/SDK or the CLI through a harness shell tool. Redis, ClickHouse, and more elaborate scheduling remain deferred. The scoped Project/Admin management UI remains part of later planned delivery; Hudson's agent/task UI remains outside this repository.
 
-Differential snapshots, lazy loading, and warm pools are deferred to Phase 6, but the format constraints that keep them possible apply from Phase 4. [Performance](performance.md#constraints-on-designs-we-are-choosing-now) owns those constraints.
+Differential snapshots, lazy loading, and warm pools are deferred to Phase 5, but the format constraints that keep them possible apply from Phase 3. [Performance](performance.md#constraints-on-designs-we-are-choosing-now) owns those constraints.
 
 ## Documentation to add when supported by implementation
 
