@@ -1,0 +1,241 @@
+{
+  "date": "2026-09-21",
+  "scope": "Local nested aarch64 guest command and recovery evidence; not supported x86_64 or isolation-gate validation",
+  "base_commit": "bdb5f6c3596768112b00b507d70b713fbff7e940",
+  "source_sha256": {
+    "Cargo.toml": "e3a9b8df1eafe36d9afc9397680a0a398809c105a3b33d98462958c9e4e6fab0",
+    "Cargo.lock": "b159b8fbb35c56dac99b3402a756ec1a6e612ccc0511ca4304479a2f7d7d7878",
+    "crates/sandbox-guest/Cargo.toml": "ef0ae4d3526d61eda1d958a7fe30dbab4a5e31699c8cd8e4395f3a3f06422210",
+    "crates/sandbox-guest/src/launcher.rs": "a2164f8b00de0126802131981ccd82d6ec902a12602a2755a54f2f64ae3ac0e9",
+    "crates/sandbox-guest/src/lib.rs": "1e956e98eef02aaa742545da01a58e3ef89730f24647448a0bc4c39a43ca3d9d",
+    "crates/sandbox-guest/src/main.rs": "104d091ffefe59972edde836c7ebb53e0f032e7ea258a773dfe3fc7707805a22",
+    "crates/sandbox-guest/src/model.rs": "eec919e13641e328e09b63503433932c29ded1180cf04f8ed363d9aefa7e76b7",
+    "crates/sandbox-guest/src/runner.rs": "9edee63fe887c0864db52093e318535e20bf8cce743527ecb86484c15ac8b082"
+  },
+  "build": "cargo build -p sandbox-guest --release; GNU aarch64 binary stripped for disposable rootfs",
+  "guest_binary_sha256": "98678ea91e26aca66a951ec6f8e6643a8e723c9744b74e1c0ac85263071d77ba",
+  "environment": {
+    "linux_host_kernel": "6.8.0-134-generic",
+    "guest_kernel": "6.1.186",
+    "guest_kernel_sha256": "0913a93462f1762581e3b25c434212aeadc06084e97f2e9c21ec4fca3fc54b42",
+    "firecracker": "1.17.0",
+    "vcpus": 1,
+    "memory_mib": 128,
+    "rootfs": "Disposable 64 MiB writable BusyBox ext4 plus binary and its GNU loader/libraries",
+    "configured_network_interfaces": 0
+  },
+  "privileged_linux_tests": {
+    "passed": 7,
+    "failed": 0,
+    "ignored": 0,
+    "file": "crates/sandbox-guest/tests/linux_runner.rs"
+  },
+  "portable_model_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "microvm_receipts": [
+    {
+      "version": 1,
+      "context": {
+        "allocation_id": "alc_01996110-7c00-7000-8000-000000000001",
+        "generation": 1,
+        "boot_id": "8fcac610-b93b-4550-afc4-5f9496f7cd47"
+      },
+      "operation_id": "op_01996110-7c00-7000-8000-000000000001",
+      "digest": [
+        19,
+        76,
+        188,
+        69,
+        135,
+        202,
+        140,
+        129,
+        217,
+        169,
+        193,
+        214,
+        216,
+        45,
+        206,
+        181,
+        98,
+        95,
+        184,
+        69,
+        185,
+        42,
+        44,
+        253,
+        110,
+        73,
+        51,
+        221,
+        115,
+        134,
+        29,
+        104
+      ],
+      "state": "exited",
+      "deadline_unix_ms": 1789975584000,
+      "output_limit": 1024,
+      "cancel_requested": false,
+      "cleanup_confirmed": true,
+      "exit_code": 7,
+      "signal": null,
+      "stdout": {
+        "seen": 15,
+        "stored": 15,
+        "truncated": false
+      },
+      "stderr": {
+        "seen": 0,
+        "stored": 0,
+        "truncated": false
+      },
+      "reason": null
+    },
+    {
+      "version": 1,
+      "context": {
+        "allocation_id": "alc_01996110-7c00-7000-8000-000000000001",
+        "generation": 1,
+        "boot_id": "8fcac610-b93b-4550-afc4-5f9496f7cd47"
+      },
+      "operation_id": "op_01996110-7c00-7000-8000-000000000002",
+      "digest": [
+        157,
+        185,
+        29,
+        213,
+        181,
+        116,
+        117,
+        72,
+        199,
+        144,
+        46,
+        83,
+        236,
+        25,
+        170,
+        122,
+        6,
+        206,
+        147,
+        164,
+        148,
+        59,
+        174,
+        174,
+        189,
+        27,
+        132,
+        14,
+        245,
+        152,
+        77,
+        243
+      ],
+      "state": "timed_out",
+      "deadline_unix_ms": 1789975525500,
+      "output_limit": 1024,
+      "cancel_requested": false,
+      "cleanup_confirmed": true,
+      "exit_code": null,
+      "signal": null,
+      "stdout": {
+        "seen": 0,
+        "stored": 0,
+        "truncated": false
+      },
+      "stderr": {
+        "seen": 0,
+        "stored": 0,
+        "truncated": false
+      },
+      "reason": null
+    },
+    {
+      "version": 1,
+      "context": {
+        "allocation_id": "alc_01996110-7c00-7000-8000-000000000001",
+        "generation": 1,
+        "boot_id": "8fcac610-b93b-4550-afc4-5f9496f7cd47"
+      },
+      "operation_id": "op_01996110-7c00-7000-8000-000000000003",
+      "digest": [
+        227,
+        78,
+        227,
+        120,
+        248,
+        92,
+        126,
+        137,
+        73,
+        208,
+        104,
+        52,
+        89,
+        93,
+        35,
+        128,
+        95,
+        68,
+        220,
+        29,
+        170,
+        178,
+        107,
+        57,
+        189,
+        174,
+        78,
+        33,
+        146,
+        62,
+        24,
+        211
+      ],
+      "state": "unknown",
+      "deadline_unix_ms": 1789975585000,
+      "output_limit": 1024,
+      "cancel_requested": false,
+      "cleanup_confirmed": true,
+      "exit_code": null,
+      "signal": null,
+      "stdout": {
+        "seen": 0,
+        "stored": 0,
+        "truncated": false
+      },
+      "stderr": {
+        "seen": 0,
+        "stored": 0,
+        "truncated": false
+      },
+      "reason": "agent_restart_after_launch_intent"
+    }
+  ],
+  "observations": {
+    "command_stdout": "actual-guest\n0\n",
+    "root_writable": true,
+    "interrupted_command_launches": 1,
+    "actual_firecracker_child_exit_code": 0,
+    "after_firecracker_exit": "populated 0\nfrozen 0",
+    "guest_shutdown": true,
+    "test_cgroup_removed": true,
+    "disposable_rootfs_removed": true
+  },
+  "limits": [
+    "No API or supervisor dispatch path",
+    "No authenticated guest wire protocol",
+    "No independent host watchdog in the shipped runner",
+    "Guest root can tamper with guest-local state and controls",
+    "No hostile resource, egress, cross-tenant or guest-agent protection gate",
+    "No supported x86_64 validation",
+    "One-off microVM fixture, not a production image or automated VM test"
+  ]
+}
