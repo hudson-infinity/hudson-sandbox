@@ -36,3 +36,5 @@ pub mod output;
 pub mod live_output;
 
 pub mod files;
+
+pub mod file_wire;

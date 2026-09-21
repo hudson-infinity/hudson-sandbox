@@ -13,7 +13,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .build_client(false)
         .build_server(false)
-        .skip_debug([".hudson.guest.v1.Execute", ".hudson.guest.v1.OutputChunk"])
+        .skip_debug([
+            ".hudson.guest.v1.Execute",
+            ".hudson.guest.v1.OutputChunk",
+            ".hudson.guest.v1.WriteFile",
+            ".hudson.guest.v1.FileChunk",
+        ])
         .compile_protos(&["../../proto/guest.proto"], &["../../proto"])?;
     Ok(())
 }

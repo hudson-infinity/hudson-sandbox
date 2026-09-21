@@ -1781,3 +1781,118 @@ async fn public_stream(app: &axum::Router, token: &str, operation: &str, expecte
     }
     assert_eq!(stdout, expected);
 }
+
+#[tokio::test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and aarch64 KVM artifacts"]
+async fn real_guest_file_upload_execute_and_captured_download_round_trip() {
+    use sandbox_protocol::{files as files_model, guest_model as m};
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new().await;
+    let mut c = f.client().await;
+    let request = f.request();
+    let owner = request.ownership.as_ref().unwrap().clone();
+    let _ = c.create(request).await;
+    f.ready(&mut c, &owner).await;
+    let guest = f.manifest(&owner).guest_client().unwrap();
+    let bytes: Vec<u8> = (0..(96 * 1024 + 3)).map(|n| (n % 251) as u8).collect();
+    let input = files_model::Upload {
+        operation_id: OperationId::generate(),
+        path: "input.bin".into(),
+        size: bytes.len() as u64,
+        sha256: Sha256::digest(&bytes).into(),
+        mode: 0o644,
+    };
+    guest.begin_upload(&input).await.unwrap();
+    for (i, data) in bytes.chunks(files_model::MAX_CHUNK_BYTES).enumerate() {
+        guest
+            .write_file(&input, (i * files_model::MAX_CHUNK_BYTES) as u64, data)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        guest.commit_upload(&input).await.unwrap().state,
+        files_model::State::Committed
+    );
+    let script=b"#!/bin/busybox sh\n/bin/busybox cp input.bin result.bin\nprintf mutated > input.bin\nprintf 'once\\n' >> marker\n";
+    let code = files_model::Upload {
+        operation_id: OperationId::generate(),
+        path: "transform.sh".into(),
+        size: script.len() as u64,
+        sha256: Sha256::digest(script).into(),
+        mode: 0o755,
+    };
+    guest.begin_upload(&code).await.unwrap();
+    guest.write_file(&code, 0, script).await.unwrap();
+    guest.commit_upload(&code).await.unwrap();
+    let command = m::Execute {
+        operation_id: OperationId::generate(),
+        argv: vec!["/workspace/transform.sh".into()],
+        env: BTreeMap::new(),
+        cwd: "/workspace".into(),
+        deadline_unix_ms: guardian::wall_ms() + 10000,
+        output_limit: 1024,
+    };
+    guest.execute(&command).await.unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let receipt = guest.inspect(command.operation_id).await.unwrap();
+        if receipt.cleanup_confirmed {
+            assert_eq!(receipt.exit_code, Some(0));
+            break;
+        }
+        assert!(Instant::now() < until);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(guest.execute(&command).await.unwrap().exit_code, Some(0));
+    // Retrying a completed upload must not undo the executed script's mutation.
+    guest.begin_upload(&input).await.unwrap();
+    guest.commit_upload(&input).await.unwrap();
+    let changed = guest.capture_file("input.bin").await.unwrap();
+    assert_eq!(
+        guest.read_file(&changed, 0, 32).await.unwrap().data,
+        b"mutated"
+    );
+    guest.release_file(&changed).await.unwrap();
+    let marker = guest.capture_file("marker").await.unwrap();
+    assert_eq!(
+        guest.read_file(&marker, 0, 32).await.unwrap().data,
+        b"once\n"
+    );
+    guest.release_file(&marker).await.unwrap();
+    let captured = guest.capture_file("result.bin").await.unwrap();
+    let mut retrieved = Vec::new();
+    while (retrieved.len() as u64) < captured.size {
+        let chunk = guest
+            .read_file(
+                &captured,
+                retrieved.len() as u64,
+                files_model::MAX_CHUNK_BYTES as u32,
+            )
+            .await
+            .unwrap();
+        retrieved.extend_from_slice(&chunk.data);
+    }
+    assert_eq!(retrieved, bytes);
+    assert_eq!(Sha256::digest(&retrieved).as_slice(), captured.sha256);
+    guest.release_file(&captured).await.unwrap();
+    assert!(guest.read_file(&captured, 0, 32).await.is_err());
+    let mut conflict = input.clone();
+    conflict.mode = 0o755;
+    assert!(guest.begin_upload(&conflict).await.is_err());
+    assert!(
+        guest
+            .capture_file("../run/hudson/agent/context.json")
+            .await
+            .is_err()
+    );
+    let _ = c
+        .stop(StopRequest {
+            ownership: Some(owner.clone()),
+        })
+        .await;
+    f.released(&mut c, &owner).await;
+    println!(
+        "real_file_transfer_observation={}",
+        serde_json::json!({"simulated":false,"round_trip_bytes":bytes.len(),"sha256_verified":true,"uploaded_script_executed":true,"execution_marker_once":true,"upload_retry_preserved_later_change":true,"released_capture_not_recreated":true,"vm_cleanup_confirmed":true})
+    );
+}

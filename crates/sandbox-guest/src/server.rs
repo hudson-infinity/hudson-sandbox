@@ -1,5 +1,5 @@
 //! Guest-only vsock listener. mTLS is mandatory even after host-CID validation.
-use crate::runner::Runner;
+use crate::{file_service::FileService, runner::Runner};
 use anyhow::{Context as _, Result, ensure};
 use sandbox_protocol::{
     OperationId, guest as w, guest_model as m,
@@ -17,16 +17,28 @@ pub async fn serve_connection<S: AsyncRead + AsyncWrite + Unpin>(
     tls: &ServerTls,
     stream: S,
 ) -> Result<()> {
+    serve_connection_with_files(runner, None, tls, stream).await
+}
+pub async fn serve_connection_with_files<S: AsyncRead + AsyncWrite + Unpin>(
+    runner: &Runner,
+    files: Option<&FileService>,
+    tls: &ServerTls,
+    stream: S,
+) -> Result<()> {
     tokio::time::timeout(wire::CONNECTION_TIMEOUT, async {
         let mut stream = tls.accept(stream).await?;
         let request: w::Request = wire::read_frame(&mut stream).await?;
-        let response = dispatch(runner, request).await?;
+        let response = dispatch(runner, files, request).await?;
         wire::write_frame(&mut stream, &response).await
     })
     .await
     .context("guest connection deadline")?
 }
-async fn dispatch(runner: &Runner, request: w::Request) -> Result<w::Response> {
+async fn dispatch(
+    runner: &Runner,
+    files: Option<&FileService>,
+    request: w::Request,
+) -> Result<w::Response> {
     use w::{request::Action as A, response::Result as R};
     ensure!(
         request.version == wire::VERSION,
@@ -45,6 +57,9 @@ async fn dispatch(runner: &Runner, request: w::Request) -> Result<w::Response> {
             || (matches!(action, A::Hello(_)) && context.boot_id.is_empty()),
         "wrong boot identity"
     );
+    if let Some(files) = files {
+        ensure!(files.context() == actual, "file service context mismatch");
+    }
     let result = match action {
         A::Hello(_) => R::Hello(w::Hello {}),
         A::Execute(value) => match m::Execute::try_from(value) {
@@ -80,6 +95,24 @@ async fn dispatch(runner: &Runner, request: w::Request) -> Result<w::Response> {
                 code: w::ErrorCode::Invalid as i32,
             }),
         },
+        action @ (A::BeginUpload(_)
+        | A::WriteFile(_)
+        | A::InspectUpload(_)
+        | A::CommitUpload(_)
+        | A::AbortUpload(_)
+        | A::CaptureFile(_)
+        | A::ReadFile(_)
+        | A::ReleaseFile(_)) => match files {
+            Some(files) => match files.call(action).await {
+                Ok(value) => value,
+                Err(_) => R::Error(w::Error {
+                    code: w::ErrorCode::Uncertain as i32,
+                }),
+            },
+            None => R::Error(w::Error {
+                code: w::ErrorCode::Rejected as i32,
+            }),
+        },
         A::Output(value) => match runner.output(&value).await {
             Ok(output) => R::Output(output),
             Err(_) => R::Error(w::Error {
@@ -97,6 +130,14 @@ async fn dispatch(runner: &Runner, request: w::Request) -> Result<w::Response> {
 
 /// No TCP/Unix listener option. Only host CID 2 is accepted on this production entry point.
 pub async fn serve_vsock(runner: Runner, tls: ServerTls, port: u32) -> Result<()> {
+    serve_vsock_with_files(runner, None, tls, port).await
+}
+pub async fn serve_vsock_with_files(
+    runner: Runner,
+    files: Option<FileService>,
+    tls: ServerTls,
+    port: u32,
+) -> Result<()> {
     use tokio_vsock::{VMADDR_CID_ANY, VMADDR_CID_HOST, VsockAddr, VsockListener};
     ensure!(port > 0 && port < u32::MAX, "invalid vsock port");
     let listener = VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, port))?;
@@ -110,8 +151,8 @@ pub async fn serve_vsock(runner: Runner, tls: ServerTls, port: u32) -> Result<()
                 let (stream,peer)=accepted?;
                 if peer.cid()!=VMADDR_CID_HOST {continue;}
                 let Ok(permit)=capacity.clone().try_acquire_owned() else {continue};
-                let runner=runner.clone();let tls=tls.clone();
-                tasks.spawn(async move {let _permit=permit;let _=serve_connection(&runner,&tls,stream).await;});
+                let runner=runner.clone();let tls=tls.clone();let files=files.clone();
+                tasks.spawn(async move {let _permit=permit;let _=serve_connection_with_files(&runner,files.as_ref(),&tls,stream).await;});
             }
         }
     }

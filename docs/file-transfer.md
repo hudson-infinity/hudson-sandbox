@@ -4,7 +4,7 @@
 
 The Linux guest library implements bounded upload staging, atomic file publication, retained mutation receipts and captured downloads. Shared descriptors live in [`sandbox-protocol::files`](../crates/sandbox-protocol/src/files.rs); the engine is [`sandbox-guest::files::Transfers`](../crates/sandbox-guest/src/files/mod.rs).
 
-This foundation is not yet exposed through the guest wire protocol, supervisor RPCs or public API. The guest boot path does not instantiate it. Public file transfer remains unfinished under [issue #62](https://github.com/hudson-infinity/hudson-sandbox/issues/62). It needs authenticated admission, original allocation/boot ownership, dispatch fencing, staging transport, aggregate service quotas, retention, destroy coordination and real microVM acceptance before customers can use it.
+The [authenticated guest protocol](guest-protocol.md#file-transfer-messages) and host `GuestClient` expose this engine. Guest boot creates `/workspace` and binds the file service to the same allocation/generation/boot as command execution. Supervisor file RPCs and the public API remain unfinished under [issue #62](https://github.com/hudson-infinity/hudson-sandbox/issues/62). It still needs authenticated public admission, durable host/controller dispatch fencing, aggregate service quotas, retention and public destroy coordination before customers can use it.
 
 ## Workspace and path contract
 
@@ -45,9 +45,9 @@ A failed receipt persistence fences the current engine until it is reopened. Sta
 | Live captured downloads | Eight per workspace, each at most 8 MiB plus a one-byte growth check |
 | Persisted metadata | At most 16 KiB per JSON file; bounded directory scanning |
 
-A capture holds workspace ownership until dropped, including when the engine itself has been dropped. Reopening cannot bypass the live-capture bound. Returned chunks are borrowed slices; the transport must bound copies, connections, request lifetimes and total workspaces separately. The synchronous engine belongs in a bounded blocking worker. Byte bounds do not imply a disk-I/O deadline on a stalled filesystem.
+A capture holds workspace ownership until dropped, including when the engine itself has been dropped. Reopening cannot bypass the live-capture bound. Returned chunks are borrowed slices; the transport must bound copies, connections, request lifetimes and total workspaces separately. The [file transport service](../crates/sandbox-guest/src/file_service.rs) uses one blocking worker and bounds its caller wait. Byte bounds and caller deadlines cannot interrupt stalled filesystem I/O.
 
-Uploaded destination files consume the guest filesystem's ordinary capacity. The transfer reservation is not a substitute for disk quotas, and it cannot limit files that workload processes write themselves. A dedicated local writable filesystem with working `openat2`, directory fsync, file locks and same-filesystem rename is required; guest init and release packaging still need to enforce that configuration.
+Uploaded destination files consume the guest filesystem's ordinary capacity. The transfer reservation is not a substitute for disk quotas, and it cannot limit files that workload processes write themselves. A dedicated local writable filesystem with working `openat2`, directory fsync, file locks and same-filesystem rename is required; guest init creates the workspace, while release packaging and supported-host acceptance still need to verify this filesystem configuration.
 
 ## Trust and evidence
 
@@ -59,4 +59,14 @@ The guest runs customer commands as guest root. They can tamper with workspace d
 cargo test -p sandbox-guest --test files
 ```
 
-The suite uses temporary directories and needs neither root nor KVM. These tests do not exercise the future authenticated transfer route or prove supported-host isolation. Cross-project authorization, concurrent transport limits, mount-policy acceptance, destroy interaction and real microVM upload/execute/download remain acceptance work for the complete feature.
+The suite uses temporary directories and needs neither root nor KVM. [Authenticated transport evidence](evidence/2026-09-21-aarch64-file-transport.json) separately records guest TLS and a real Firecracker upload/execute/download round trip. These tests do not exercise the future authenticated transfer route or prove supported-host isolation. Cross-project authorization, concurrent transport limits, mount-policy acceptance, destroy interaction and real microVM upload/execute/download remain acceptance work for the complete feature.
+
+## Transport handles and service lifecycle
+
+The [file service](../crates/sandbox-guest/src/file_service.rs) dispatches typed requests into the engine after the listener has authenticated the peer and checked allocation/boot context. One semaphore permit bounds blocking file work. A busy worker rejects additional work without queuing it. A caller waits at most five seconds; a worker that outlives that wait or a disconnected caller retains the permit and workspace ownership until it actually finishes. These deadlines do not authorize replay of an uncertain mutation.
+
+Each capture request is a **fresh read** and creates a fresh guest-generated capture ID. A capture response binds that ID to path, size and SHA-256. Range requests bind the handle and digest; the host validates the expected length, offset, next offset, total size and end marker. Callers assembling a whole file must also verify its full SHA-256. Echoing a digest in a range response is not whole-file verification.
+
+Captures expire after 60 seconds of monotonic service time. The reported Unix deadline is a hint; it is not host-owned resource evidence. An idle reaper checks once per second without waiting behind file I/O, and requests prune expired entries before use. A stuck worker may delay physical buffer disposal while keeping all further file work blocked; the eight-handle bound still applies. Explicit release drops a matching capture, and repeated release is harmless. Missing, expired, released or pre-restart handles fail on read and never reopen their old path. A lost capture response can occupy one slot until expiry; making a new capture is a new read that may observe different bytes. Capture IDs and data are not persisted across agent restart.
+
+Shutdown closes admission before draining the existing worker and clearing captures. If draining cannot be confirmed within five seconds, shutdown reports failure. Command shutdown is still attempted independently. The host guardian remains responsible for terminating a guest that cannot finish shutdown.

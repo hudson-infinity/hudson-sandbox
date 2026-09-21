@@ -1,5 +1,6 @@
 //! Authenticated host-to-guest calls over Firecracker's operator-owned Unix socket.
 //! No automatic retry: a lost response cannot determine whether a command ran.
+mod files;
 use anyhow::{Context as _, Result, ensure};
 use sandbox_protocol::{
     Id, OperationId, guest as w, guest_model as m,

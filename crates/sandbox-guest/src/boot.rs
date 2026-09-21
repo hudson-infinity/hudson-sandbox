@@ -33,6 +33,7 @@ pub fn init() -> Result<()> {
         "/run/hudson",
         "/root",
         "/tmp",
+        "/workspace",
         "/sys/fs/cgroup/system",
         "/sys/fs/cgroup/workloads",
     ] {
@@ -112,6 +113,7 @@ pub fn serve() -> Result<()> {
                 },
             })
             .await?;
+            let files = crate::file_service::FileService::open(Path::new("/workspace").into(), runner.context().clone()).await?;
             use tokio::signal::unix::{SignalKind, signal};
             let mut stop = signal(SignalKind::terminate())?;
             let mut interrupt = signal(SignalKind::interrupt())?;
@@ -120,12 +122,15 @@ pub fn serve() -> Result<()> {
                 .saturating_sub(crate::runner::now_ms());
             ensure!(remaining > 0, "guest identity expired during boot");
             let served = tokio::select! {
-                result=crate::server::serve_vsock(runner.clone(),tls,52)=>result,
+                result=crate::server::serve_vsock_with_files(runner.clone(),Some(files.clone()),tls,52)=>result,
                 _=stop.recv()=>Ok(()),
                 _=interrupt.recv()=>Ok(()),
                 _=tokio::time::sleep(std::time::Duration::from_millis(remaining as u64))=>Ok(()),
             };
-            runner.shutdown().await?;
+            let files_stopped = files.shutdown().await;
+            let commands_stopped = runner.shutdown().await;
+            files_stopped?;
+            commands_stopped?;
             served
         })
 }
