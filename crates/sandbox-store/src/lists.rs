@@ -81,7 +81,9 @@ impl Store {
         limit: PageLimit,
     ) -> Result<Page<OperationView>, StoreError> {
         let mut query = QueryBuilder::new(
-            "SELECT id,sandbox_id,kind,status,phase,result,error,created_at,completed_at
+            "SELECT id,sandbox_id,kind,status,phase,result,error,created_at,completed_at,
+                CASE WHEN output_status<>'none' AND (output_expires_at<=clock_timestamp() OR response_expires_at<=clock_timestamp())
+                    THEN 'expired' ELSE output_status END AS output_status
             FROM operations WHERE project_id=",
         );
         query.push_bind(project.uuid());

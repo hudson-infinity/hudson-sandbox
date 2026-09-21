@@ -11,6 +11,7 @@ pub mod dispatch;
 pub mod execute;
 pub mod leases;
 pub mod lists;
+pub mod output;
 pub mod placement;
 pub mod projects;
 pub mod provision;

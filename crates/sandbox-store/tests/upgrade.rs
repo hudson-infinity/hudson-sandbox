@@ -96,8 +96,12 @@ async fn execution_upgrade_preserves_legacy_rows_without_inventing_ownership(poo
             .fetch_one(&pool)
             .await
             .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
+    let target = Migrator {
+        migrations: Cow::Owned(MIGRATOR.iter().take(5).cloned().collect()),
+        ..Migrator::DEFAULT
+    };
+    target.run(&pool).await.unwrap();
+    target.run(&pool).await.unwrap();
     let (after,): (serde_json::Value,) = sqlx::query_as(
         "SELECT jsonb_agg(to_jsonb(o)-'execution_allocation_id' ORDER BY id) FROM operations o",
     )

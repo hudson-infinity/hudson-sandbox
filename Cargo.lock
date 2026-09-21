@@ -2271,6 +2271,7 @@ version = "0.0.0"
 dependencies = [
  "hex",
  "sandbox-protocol",
+ "serde",
  "serde_json",
  "sqlx",
  "thiserror",

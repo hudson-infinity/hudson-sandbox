@@ -151,6 +151,8 @@ Admission returns `202` with the same operation/status-handle shape as create. I
 
 Poll `GET /v1/operations/{operation_id}`. Confirmed exits provide `result.exit_code` or `result.signal`, `result.stdout` and `result.stderr` statistics (`seen`, `stored`, `truncated`), `result.simulated`, and `result.guest_reported=true`. Exit zero is `succeeded`; nonzero or signal is `failed` with `command_failed`; a deadline termination is `failed` with `deadline_exceeded`. Missing execution evidence is `unknown`, never a guessed exit. A durable host fence proving the command never started fails with `command_not_started`. HTTP request completion, disconnection or client timeout does not cancel admitted work.
 
+Execute operation status and list responses also include `output_status`: `none`, `pending`, `uploading`, `published`, or `expired`. This is independent of the process outcome. A confirmed exit initially reports `pending`; the archival worker is not yet connected. Private object references are never returned in these status bodies. [Output storage](output-storage.md#database-publication) defines publication and expiry.
+
 Output bytes are not returned by these routes. Public output retrieval/streaming, file transfer, and cancellation remain unfinished. The host retains at most 32 command records and reserves at most 64 MiB of combined output limits per allocation without eviction; repeated work eventually requires a new sandbox. Exceeding journal capacity after dispatch intent can leave the command unknown; destroy remains available. This is a development limit, not a complete retention service. See [command ownership](controller.md#command-admission-and-dispatch-ownership) for recovery details.
 
 ## Output, files, and reconnects

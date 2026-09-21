@@ -32,6 +32,61 @@ pub struct OutputOwner {
     pub host_epoch: i64,
     pub boot_id: String,
 }
+impl OutputOwner {
+    fn validate(&self) -> Result<(), InvalidOutput> {
+        if self.generation <= 0
+            || self.host_epoch <= 0
+            || self.boot_id.is_empty()
+            || self.boot_id.len() > 64
+            || self.boot_id.chars().any(char::is_control)
+        {
+            return Err(InvalidOutput);
+        }
+        Ok(())
+    }
+}
+
+/// Service-assigned identity/retention before collecting the final bytes.
+/// Replacement workers must retain this ticket, including its attempt ID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputTicket {
+    pub version: u32,
+    pub owner: OutputOwner,
+    pub upload_attempt: OperationId,
+    pub output_limit: u64,
+    pub created_unix_ms: i64,
+    pub expires_unix_ms: i64,
+    pub delete_after_unix_ms: i64,
+}
+impl OutputTicket {
+    pub fn validate(&self) -> Result<(), InvalidOutput> {
+        self.owner.validate()?;
+        if self.version != 1
+            || !(1..=MAX_OUTPUT).contains(&self.output_limit)
+            || self.created_unix_ms <= 0
+            || self.expires_unix_ms <= self.created_unix_ms
+            || self.delete_after_unix_ms < self.expires_unix_ms
+        {
+            return Err(InvalidOutput);
+        }
+        Ok(())
+    }
+
+    pub fn validate_plans(&self, plans: &OutputPlans) -> Result<(), InvalidOutput> {
+        self.validate()?;
+        plans.validate(&self.owner, self.output_limit)?;
+        let a = &plans.stdout;
+        if a.upload_attempt != self.upload_attempt
+            || a.created_unix_ms != self.created_unix_ms
+            || a.expires_unix_ms != self.expires_unix_ms
+            || a.delete_after_unix_ms != self.delete_after_unix_ms
+        {
+            return Err(InvalidOutput);
+        }
+        Ok(())
+    }
+}
 
 /// Persist this plan before uploading. Reconciliation must reuse it exactly.
 /// Only final captured output can use this format; live output uses guest reads.
@@ -58,12 +113,8 @@ pub struct InvalidOutput;
 
 impl OutputPlan {
     pub fn validate(&self) -> Result<(), InvalidOutput> {
+        self.owner.validate()?;
         if self.version != 1
-            || self.owner.generation <= 0
-            || self.owner.host_epoch <= 0
-            || self.owner.boot_id.is_empty()
-            || self.owner.boot_id.len() > 64
-            || self.owner.boot_id.chars().any(char::is_control)
             || self.size > MAX_OUTPUT
             || self.seen < self.size
             || self.truncated != (self.seen > self.size)
@@ -134,25 +185,55 @@ pub struct OutputRefs {
     pub stdout: OutputRef,
     pub stderr: OutputRef,
 }
+
+/// Persisted together before any external upload can be authorized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputPlans {
+    pub stdout: OutputPlan,
+    pub stderr: OutputPlan,
+}
+impl OutputPlans {
+    pub fn validate(&self, owner: &OutputOwner, output_limit: u64) -> Result<(), InvalidOutput> {
+        self.stdout.validate()?;
+        self.stderr.validate()?;
+        validate_pair(&self.stdout, &self.stderr, owner, output_limit)
+    }
+}
+
 impl OutputRefs {
     pub fn validate(&self, owner: &OutputOwner, output_limit: u64) -> Result<(), InvalidOutput> {
         self.stdout.validate()?;
         self.stderr.validate()?;
-        let a = &self.stdout.plan;
-        let b = &self.stderr.plan;
-        if a.name != OutputName::Stdout
-            || b.name != OutputName::Stderr
-            || &a.owner != owner
-            || &b.owner != owner
-            || a.upload_attempt != b.upload_attempt
-            || a.created_unix_ms != b.created_unix_ms
-            || a.expires_unix_ms != b.expires_unix_ms
-            || a.delete_after_unix_ms != b.delete_after_unix_ms
-            || !(1..=MAX_OUTPUT).contains(&output_limit)
-            || a.size + b.size > output_limit
-        {
-            return Err(InvalidOutput);
-        }
-        Ok(())
+        validate_pair(&self.stdout.plan, &self.stderr.plan, owner, output_limit)
     }
+
+    pub fn plans(&self) -> OutputPlans {
+        OutputPlans {
+            stdout: self.stdout.plan.clone(),
+            stderr: self.stderr.plan.clone(),
+        }
+    }
+}
+
+fn validate_pair(
+    a: &OutputPlan,
+    b: &OutputPlan,
+    owner: &OutputOwner,
+    output_limit: u64,
+) -> Result<(), InvalidOutput> {
+    if a.name != OutputName::Stdout
+        || b.name != OutputName::Stderr
+        || &a.owner != owner
+        || &b.owner != owner
+        || a.upload_attempt != b.upload_attempt
+        || a.created_unix_ms != b.created_unix_ms
+        || a.expires_unix_ms != b.expires_unix_ms
+        || a.delete_after_unix_ms != b.delete_after_unix_ms
+        || !(1..=MAX_OUTPUT).contains(&output_limit)
+        || a.size + b.size > output_limit
+    {
+        return Err(InvalidOutput);
+    }
+    Ok(())
 }

@@ -116,6 +116,8 @@ API ID: `op_<uuidv7>`.
 | `status`, `phase`, `result`, `error`, `output_refs` | Progress, bounded results, and stored-output metadata |
 | `attempt_count`, `attempt_receipts`, `receipt_history_ref` (nullable) | Dispatch, acknowledgement, reconnect, and completion evidence, including allocation and claim revision |
 | `claim_revision`, `lease_expires_at`, `next_retry_at`, `deadline` | Controller ownership and bounded scheduling/retries |
+| `output_status`, `output_claim_revision`, `output_lease_expires_at`, `output_next_retry_at` | Independent archival progress and publisher ownership after command completion |
+| `output_ticket`, `output_plan`, `output_expires_at` | Stable upload attempt, immutable pair of final stream plans, and byte-retention expiry |
 | `response_expires_at`, `completed_at` (nullable) | Result retention and completion time |
 
 Enforce `UNIQUE (project_id, idempotency_key)` on this table; [API admission](api-contract.md#retries-and-admission) defines matching, conflicts, and tombstone behavior. Every client-admitted operation records its initiating project/admin credential ID and optional UI session reference. Only authenticated internal maintenance may omit the credential ID. Null fields never create service authority, and client payloads cannot assign initiator identity. Admin actions on a sandbox retain that sandbox's project ownership.
@@ -124,7 +126,7 @@ Persist phase and confirmed execution evidence without treating desired state as
 
 Bound retries and receipt metadata. Preserve earlier allocation receipts when reconnecting after resume. If history exceeds the inline bound, publish an immutable history object and persist its reference before removing inline entries; do not discard unresolved execution evidence. No separate attempt table is required initially.
 
-The shared retained-output descriptors and conditional S3 transport are implemented in [output storage](output-storage.md). Their fenced publication into `operations.output_refs`, retention cleanup and public retrieval remain unfinished; a successful upload does not change an operation's execution status or authorize reads.
+The shared retained-output descriptors, conditional S3 transport and independently fenced publication into `operations.output_refs` are implemented in [output storage](output-storage.md). The array holds exactly the selected stdout and stderr references, while tickets and plans remain available for reconciliation and cleanup. Supervisor archival, retention cleanup and public byte retrieval remain unfinished; a successful upload does not change an operation's execution status or authorize reads.
 
 Keep compact operation tombstones with identity, ownership, retry key, request digest/version, and outcome for the project's lifetime; detailed payload/output retention may be shorter. Active/unknown operations retain reconciliation evidence. See [API retention behavior](api-contract.md#errors-and-retention) for how clients observe expiry.
 
