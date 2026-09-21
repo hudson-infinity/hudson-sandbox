@@ -49,6 +49,10 @@ async fn cleanup(store: &Store, project_id: ProjectId) {
     }
 }
 
+fn images() -> sandbox_protocol::images::ImageAllowlist {
+    sandbox_protocol::images::ImageAllowlist::new([format!("sha256:{}", "a".repeat(64))]).unwrap()
+}
+
 fn request(project_id: ProjectId, key: &str, payload: serde_json::Value) -> CreateSandbox {
     let token = ProjectToken::generate().expect("generate");
     CreateSandbox {
@@ -73,11 +77,10 @@ async fn admits_a_new_request() {
     let project_id = project(&store).await;
 
     let admitted = store
-        .admit_create_sandbox(&request(
-            project_id,
-            "first-request-key-01",
-            json!({"vcpu": 2}),
-        ))
+        .admit_create_sandbox(
+            &request(project_id, "first-request-key-01", json!({"vcpu": 2})),
+            &images(),
+        )
         .await
         .expect("admit");
 
@@ -97,12 +100,18 @@ async fn an_identical_retry_returns_the_original() {
     let Admission::Admitted {
         sandbox_id,
         operation_id,
-    } = store.admit_create_sandbox(&req).await.expect("first")
+    } = store
+        .admit_create_sandbox(&req, &images())
+        .await
+        .expect("first")
     else {
         panic!("first request was not admitted");
     };
 
-    let second = store.admit_create_sandbox(&req).await.expect("retry");
+    let second = store
+        .admit_create_sandbox(&req, &images())
+        .await
+        .expect("retry");
     assert_eq!(
         second,
         Admission::Existing {
@@ -139,9 +148,12 @@ async fn field_order_alone_is_still_the_same_request() {
         json!({"name": "x", "vcpu": 2}),
     );
 
-    store.admit_create_sandbox(&first).await.expect("first");
+    store
+        .admit_create_sandbox(&first, &images())
+        .await
+        .expect("first");
     let second = store
-        .admit_create_sandbox(&reordered)
+        .admit_create_sandbox(&reordered, &images())
         .await
         .expect("second");
 
@@ -160,13 +172,18 @@ async fn a_changed_payload_under_the_same_key_conflicts() {
     let first = request(project_id, "changed-payload-key-1", json!({"vcpu": 2}));
     let changed = request(project_id, "changed-payload-key-1", json!({"vcpu": 4}));
 
-    let Admission::Admitted { operation_id, .. } =
-        store.admit_create_sandbox(&first).await.expect("first")
+    let Admission::Admitted { operation_id, .. } = store
+        .admit_create_sandbox(&first, &images())
+        .await
+        .expect("first")
     else {
         panic!("first request was not admitted");
     };
 
-    let second = store.admit_create_sandbox(&changed).await.expect("second");
+    let second = store
+        .admit_create_sandbox(&changed, &images())
+        .await
+        .expect("second");
     assert_eq!(
         second,
         Admission::DigestConflict { operation_id },
@@ -193,11 +210,11 @@ async fn the_same_key_in_two_projects_is_two_requests() {
     let b = project(&store).await;
 
     let first = store
-        .admit_create_sandbox(&request(a, "shared-across-projects", json!({})))
+        .admit_create_sandbox(&request(a, "shared-across-projects", json!({})), &images())
         .await
         .expect("project a");
     let second = store
-        .admit_create_sandbox(&request(b, "shared-across-projects", json!({})))
+        .admit_create_sandbox(&request(b, "shared-across-projects", json!({})), &images())
         .await
         .expect("project b");
 
@@ -220,7 +237,7 @@ async fn concurrent_identical_requests_admit_exactly_one() {
     for _ in 0..8 {
         let store = store.clone();
         let req = req.clone();
-        set.spawn(async move { store.admit_create_sandbox(&req).await });
+        set.spawn(async move { store.admit_create_sandbox(&req, &images()).await });
     }
 
     let mut admitted = 0;

@@ -30,20 +30,24 @@ async fn host(pool: &PgPool) -> HostId {
 async fn claim(store: &Store, project: ProjectId, token: &ProjectToken, seconds: u32) -> Claim {
     let payload = json!({"image_digest":format!("sha256:{}","a".repeat(64))});
     store
-        .admit_create_sandbox(&CreateSandbox {
-            project_id: project,
-            key_id: token.key_id().clone(),
-            idempotency_key: IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string()).unwrap(),
-            request_digest: RequestDigest::compute("POST", "/v1/sandboxes", &payload).unwrap(),
-            image_digest: format!("sha256:{}", "a".repeat(64)),
-            name: None,
-            resources: Resources {
-                vcpu: 2,
-                memory_mib: 2048,
-                disk_mib: 8192,
+        .admit_create_sandbox(
+            &CreateSandbox {
+                project_id: project,
+                key_id: token.key_id().clone(),
+                idempotency_key: IdempotencyKey::parse(&uuid::Uuid::now_v7().to_string()).unwrap(),
+                request_digest: RequestDigest::compute("POST", "/v1/sandboxes", &payload).unwrap(),
+                image_digest: format!("sha256:{}", "a".repeat(64)),
+                name: None,
+                resources: Resources {
+                    vcpu: 2,
+                    memory_mib: 2048,
+                    disk_mib: 8192,
+                },
+                payload,
             },
-            payload,
-        })
+            &sandbox_protocol::images::ImageAllowlist::new([format!("sha256:{}", "a".repeat(64))])
+                .unwrap(),
+        )
         .await
         .unwrap();
     store

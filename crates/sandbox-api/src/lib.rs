@@ -20,6 +20,8 @@ use sandbox_store::Store;
 pub struct AppState {
     /// The durable store.
     pub store: Store,
+    /// Operator-approved rootfs digests. Required even in development.
+    pub images: sandbox_protocol::images::ImageAllowlist,
 }
 
 impl FromRef<AppState> for Store {

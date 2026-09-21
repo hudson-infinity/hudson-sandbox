@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, http::header};
 use sandbox_protocol::RequestDigest;
+use sandbox_protocol::images::valid_image_digest;
 use sandbox_store::admission::{Admission, CreateSandbox, Resources};
 use serde::{Deserialize, Serialize};
 
@@ -59,12 +60,9 @@ pub struct AdmittedResponse {
 /// Check what the service can answer for without touching the database.
 fn validate(request: &CreateRequest) -> Result<Resources, Problem> {
     let digest = &request.image_digest;
-    let valid_digest = digest
-        .strip_prefix("sha256:")
-        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
-    if !valid_digest {
+    if !valid_image_digest(digest) {
         return Err(Problem::BadRequest(
-            "image_digest must be sha256: followed by 64 hex characters",
+            "image_digest must be sha256: followed by 64 lowercase hex characters",
         ));
     }
 
@@ -112,16 +110,19 @@ pub async fn create(
 
     let admission = state
         .store
-        .admit_create_sandbox(&CreateSandbox {
-            project_id: caller.project_id,
-            key_id: caller.key_id,
-            idempotency_key,
-            request_digest: digest,
-            image_digest: request.image_digest.clone(),
-            name: request.name.clone(),
-            resources,
-            payload,
-        })
+        .admit_create_sandbox(
+            &CreateSandbox {
+                project_id: caller.project_id,
+                key_id: caller.key_id,
+                idempotency_key,
+                request_digest: digest,
+                image_digest: request.image_digest.clone(),
+                name: request.name.clone(),
+                resources,
+                payload,
+            },
+            &state.images,
+        )
         .await
         .map_err(|error| {
             tracing::error!(%error, "admission failed");
@@ -129,6 +130,7 @@ pub async fn create(
         })?;
 
     Ok(match admission {
+        Admission::ImageDenied => return Err(Problem::ImageDenied),
         Admission::Admitted {
             sandbox_id,
             operation_id,

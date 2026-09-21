@@ -22,6 +22,8 @@ pub enum Problem {
     Unauthenticated,
     /// A valid credential without the required access.
     Forbidden,
+    /// The requested image is not approved by the operator.
+    ImageDenied,
     /// Missing, or belonging to another project. Indistinguishable on purpose.
     NotFound,
     /// The same key was used for a different request, or a conflicting
@@ -41,7 +43,7 @@ impl Problem {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::ImageDenied => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) | Self::TransitionInProgress(_) => StatusCode::CONFLICT,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
@@ -56,6 +58,7 @@ impl Problem {
             Self::BadRequest(_) => "bad_request",
             Self::Unauthenticated => "unauthenticated",
             Self::Forbidden => "forbidden",
+            Self::ImageDenied => "image_not_allowed",
             Self::NotFound => "not_found",
             Self::Conflict(_) | Self::TransitionInProgress(_) => "conflict",
             Self::Unavailable => "unavailable",
@@ -70,6 +73,7 @@ impl Problem {
             Self::BadRequest(detail) => detail,
             Self::Unauthenticated => "Authentication is required",
             Self::Forbidden => "This credential does not have the required access",
+            Self::ImageDenied => "The requested image is not allowed",
             Self::NotFound => "No such resource",
             Self::Conflict(detail) => detail,
             Self::TransitionInProgress(_) => "Another lifecycle operation is in progress",
