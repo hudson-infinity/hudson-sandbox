@@ -42,6 +42,7 @@ struct State {
     sandboxes: HashMap<String, (String, String, i64)>,
     fences: HashMap<String, Fence>,
     lose_next_create_reply: bool,
+    lose_next_stop_reply: bool,
     total_starts: u64,
 }
 
@@ -111,6 +112,11 @@ impl FakeHost {
     /// Fault injection: apply one create, then lose its acknowledgement.
     pub async fn lose_next_create_reply(&self) {
         self.state.lock().await.lose_next_create_reply = true;
+    }
+
+    /// Fault injection: apply a stop/fence, then lose its acknowledgement.
+    pub async fn lose_next_stop_reply(&self) {
+        self.state.lock().await.lose_next_stop_reply = true;
     }
 
     /// Also called by the binary's independent watchdog when no RPCs arrive.
@@ -222,16 +228,42 @@ impl FakeHost {
         if stop && let Some(fence) = state.fences.get_mut(&owner.allocation_id) {
             fence.stopped = true;
         }
+        if stop {
+            state
+                .sandboxes
+                .entry(owner.sandbox_id.clone())
+                .or_insert_with(|| {
+                    (
+                        owner.project_id.clone(),
+                        owner.allocation_id.clone(),
+                        owner.generation,
+                    )
+                });
+        }
+        let fenced = state
+            .fences
+            .get(&owner.allocation_id)
+            .is_some_and(|f| f.stopped);
         let record = state.allocations.get_mut(&owner.allocation_id);
-        if let Some(record) = record {
+        let observation = if let Some(record) = record {
             if stop {
                 record.state = AllocationState::Released;
                 record.reason = "simulated stop";
             }
-            Ok(Self::observation(owner, Some(record), now))
+            Self::observation(owner, Some(record), now)
         } else {
-            Ok(Self::observation(owner, None, now))
+            let mut observation = Self::observation(owner, None, now);
+            if fenced {
+                observation.state = AllocationState::FencedAbsent as i32;
+                observation.reason =
+                    "simulated absence confirmed and future starts fenced in this epoch".into();
+            }
+            observation
+        };
+        if stop && std::mem::take(&mut state.lose_next_stop_reply) {
+            return Err(Status::unavailable("injected lost stop acknowledgement"));
         }
+        Ok(observation)
     }
 }
 
@@ -301,10 +333,10 @@ impl Supervisor for FakeHost {
         if let Some((project, previous, generation)) = state.sandboxes.get(&owner.sandbox_id)
             && (owner.project_id != *project
                 || owner.generation <= *generation
-                || state
-                    .allocations
-                    .get(previous)
-                    .is_none_or(|r| r.state != AllocationState::Released))
+                || state.allocations.get(previous).map_or_else(
+                    || !state.fences.get(previous).is_some_and(|f| f.stopped),
+                    |r| r.state != AllocationState::Released,
+                ))
         {
             return Err(Status::failed_precondition(
                 "previous generation not released",

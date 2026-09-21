@@ -40,18 +40,22 @@ pub enum DispatchError {
 }
 
 #[derive(Debug)]
-struct Context {
-    op: PgRow,
-    sandbox: PgRow,
-    allocation: PgRow,
-    owner: Ownership,
+pub(crate) struct Context {
+    pub(crate) op: PgRow,
+    pub(crate) sandbox: PgRow,
+    pub(crate) allocation: PgRow,
+    pub(crate) owner: Ownership,
 }
 
 fn millis(stamp: OffsetDateTime) -> Result<i64, DispatchError> {
     i64::try_from(stamp.unix_timestamp_nanos() / 1_000_000).map_err(|_| DispatchError::InvalidData)
 }
 
-async fn context(db: &mut PgConnection, claim: &Claim) -> Result<Context, DispatchError> {
+pub(crate) async fn context(
+    db: &mut PgConnection,
+    claim: &Claim,
+    kind: &str,
+) -> Result<Context, DispatchError> {
     let op = sqlx::query(
         "SELECT * FROM operations WHERE id=$1 AND claim_revision=$2
         AND lease_expires_at > clock_timestamp() AND status IN ('running','unknown') FOR UPDATE",
@@ -63,6 +67,17 @@ async fn context(db: &mut PgConnection, claim: &Claim) -> Result<Context, Dispat
     .ok_or(DispatchError::LostClaim)?;
     let project: uuid::Uuid = op.try_get("project_id")?;
     let sandbox_id: uuid::Uuid = op.try_get("sandbox_id")?;
+    if kind == "destroy" {
+        let payload: Value = op.try_get("payload")?;
+        if let Some(previous) = payload
+            .get("supersedes_operation_id")
+            .and_then(Value::as_str)
+        {
+            let previous: uuid::Uuid = previous.parse().map_err(|_| DispatchError::InvalidData)?;
+            sqlx::query("SELECT id FROM operations WHERE id=$1 AND project_id=$2 AND sandbox_id=$3 AND kind='create' AND phase='cleanup_owned_by_destroy' FOR UPDATE")
+                .bind(previous).bind(project).bind(sandbox_id).fetch_optional(&mut *db).await?.ok_or(DispatchError::Conflict)?;
+        }
+    }
     sqlx::query("SELECT id FROM projects WHERE id=$1 FOR UPDATE")
         .bind(project)
         .fetch_one(&mut *db)
@@ -71,7 +86,7 @@ async fn context(db: &mut PgConnection, claim: &Claim) -> Result<Context, Dispat
         .bind(sandbox_id)
         .fetch_one(&mut *db)
         .await?;
-    if op.try_get::<String, _>("kind")? != "create"
+    if op.try_get::<String, _>("kind")? != kind
         || sandbox.try_get::<Option<uuid::Uuid>, _>("active_transition_operation_id")?
             != Some(claim.operation_id.uuid())
     {
@@ -117,7 +132,7 @@ async fn context(db: &mut PgConnection, claim: &Claim) -> Result<Context, Dispat
 }
 
 /// Final fence after any lock wait. All state changes remain in the same transaction.
-async fn fence(db: &mut PgConnection, claim: &Claim) -> Result<(), DispatchError> {
+pub(crate) async fn fence(db: &mut PgConnection, claim: &Claim) -> Result<(), DispatchError> {
     let valid: (bool,) = sqlx::query_as(
         "SELECT claim_revision=$2 AND lease_expires_at > clock_timestamp()
         AND status IN ('running','unknown') FROM operations WHERE id=$1",
@@ -132,7 +147,7 @@ async fn fence(db: &mut PgConnection, claim: &Claim) -> Result<(), DispatchError
     Ok(())
 }
 
-fn evidence(owner: &Ownership, simulated: Option<bool>, phase: &str) -> Value {
+pub(crate) fn evidence(owner: &Ownership, simulated: Option<bool>, phase: &str) -> Value {
     json!({"phase":phase,"host_id":owner.host_id,"project_id":owner.project_id,"sandbox_id":owner.sandbox_id,
         "operation_id":owner.operation_id,"allocation_id":owner.allocation_id,"generation":owner.generation,
         "supervisor_epoch":owner.supervisor_epoch,"claim_revision":owner.claim_revision,"simulated":simulated})
@@ -167,7 +182,7 @@ impl Store {
         images: &BTreeSet<String>,
     ) -> Result<CreateAction, DispatchError> {
         let mut tx = self.pool().begin().await?;
-        let ctx = context(&mut tx, claim).await?;
+        let ctx = context(&mut tx, claim, "create").await?;
         // A prior durable intent is uncertainty even if its RPC was never sent.
         if ctx.op.try_get::<i32, _>("attempt_count")? > 0
             || ctx.op.try_get::<String, _>("status")? == "unknown"
@@ -238,7 +253,7 @@ impl Store {
     /// receipt. Retry scheduling is bounded; repeated polls do not grow receipts.
     pub async fn record_create_unknown(&self, claim: &Claim) -> Result<(), DispatchError> {
         let mut tx = self.pool().begin().await?;
-        let ctx = context(&mut tx, claim).await?;
+        let ctx = context(&mut tx, claim, "create").await?;
         sqlx::query("UPDATE sandboxes SET observed_state='unknown',state_revision=state_revision+1,updated_at=clock_timestamp() WHERE id=$1")
             .bind(ctx.sandbox.try_get::<uuid::Uuid,_>("id")?).execute(&mut *tx).await?;
         fence(&mut tx, claim).await?;
@@ -266,7 +281,7 @@ impl Store {
             return Err(DispatchError::SimulationDenied);
         }
         let mut tx = self.pool().begin().await?;
-        let ctx = context(&mut tx, claim).await?;
+        let ctx = context(&mut tx, claim, "create").await?;
         if observation.ownership.as_ref() != Some(&ctx.owner)
             || observation.create_operation_id != ctx.owner.operation_id
             || observation.observed_unix_ms <= 0

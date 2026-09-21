@@ -2,7 +2,7 @@
 
 Status: partially implemented; the create control-plane path has tests, while VM execution and the remaining lifecycle still need implementation. This document owns state transitions, completion evidence, pause/resume, deadlines, cancellation, and recovery. [API contract](api-contract.md) owns client retries and HTTP behavior; [data models](data-models.md) owns persisted fields and constraints.
 
-Implemented so far: [controller claim storage](../crates/sandbox-store/src/claims.rs), its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs), and [single-host reservation storage](data-models.md#implemented-single-host-reservation). The [create controller](controller.md) now persists dispatch intent, communicates over mTLS, and reconciles fake-host observations. No VM execution or isolation has been verified.
+Implemented so far: [controller claim storage](../crates/sandbox-store/src/claims.rs), its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs), and [single-host reservation storage](data-models.md#implemented-single-host-reservation). The [create/destroy controller](controller.md) persists dispatch and stop intent, communicates over mTLS, and reconciles fake-host observations. No VM execution or isolation has been verified.
 
 ## Identity through a sandbox session
 
@@ -39,7 +39,7 @@ Persist desired state, last confirmed observed state/time, and the active transi
 | Error or unknown observation | Reconcile before admitting ordinary work | Recover last confirmed facts; do not infer safe replacement from desired state |
 | `destroyed` | Inspect tombstone only; execute/resume prohibited | Identity stays permanently retired |
 
-Destruction from an error/unknown state must acquire lifecycle ownership and use the same stop/fencing procedure. It cannot free an uncertain reservation on assumption. Safety cleanup may run independently of a caller's lost connection or revoked credential.
+The [implemented destroy path](controller.md#destroy-admission-and-cleanup) can take cleanup ownership from an unknown create while preserving its uncertain history. Destruction from an error/unknown state must acquire lifecycle ownership and use the same stop/fencing procedure. It cannot free an uncertain reservation on assumption. Safety cleanup may run independently of a caller's lost connection or revoked credential.
 
 Serialize lifecycle transitions and workspace-mutating commands initially. Reject execution during create, pause, paused, resume, destroy, and unresolved error/unknown states. An execute operation is not the lifecycle lock: a running command may be frozen by a separate pause operation.
 

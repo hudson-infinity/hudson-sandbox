@@ -5,6 +5,7 @@
 //! client cannot tell the difference.
 
 pub mod auth;
+pub mod destroy;
 pub mod headers;
 pub mod problem;
 pub mod reads;
@@ -32,5 +33,6 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(sandboxes::routes())
         .merge(reads::routes())
+        .merge(destroy::routes())
         .with_state(state)
 }

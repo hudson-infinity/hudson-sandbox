@@ -1,6 +1,6 @@
 # Supervisor protocol and development fake
 
-Status: the versioned gRPC transport and an in-memory fake are implemented. The [create controller](controller.md) now uses this transport. Authenticated host registration, certificate provisioning, and the real Firecracker supervisor remain unfinished. A fake observation never establishes that a VM exists, ran code, enforced limits, or released real resources.
+Status: the versioned gRPC transport and an in-memory fake are implemented. The [lifecycle controller](controller.md) now uses this transport. Authenticated host registration, certificate provisioning, and the real Firecracker supervisor remain unfinished. A fake observation never establishes that a VM exists, ran code, enforced limits, or released real resources.
 
 ## Contract and identity
 
@@ -20,7 +20,9 @@ Create, inspect, and stop carry the host, project, sandbox, allocation, operatio
 
 Claim deadlines must be in the future and at most 300 seconds away when the supervisor handles the request. Allocation lease deadlines have the same bound. Wall clocks must be synchronized; after validation, the fake converts the allocation deadline to a monotonic local timer. Controller claim expiry never extends an allocation lease.
 
-An observation echoes the requested ownership tuple, names the original create operation when known, includes its observation time, and distinguishes `absent`, `ready`, and `released`. The controller must verify the complete tuple and expected evidence before changing PostgreSQL state. `unspecified` is never a usable result. Every fake response sets `simulated=true`, including health. The create controller requires explicit development opt-in before accepting simulated evidence and preserves that distinction in receipts and public state.
+An observation echoes the requested ownership tuple, names the original create operation when known, includes its observation time, and distinguishes `absent`, `ready`, `released`, and `fenced_absent`. The controller must verify the complete tuple and expected evidence before changing PostgreSQL state. `unspecified` is never a usable result. Every fake response sets `simulated=true`, including health. The controller requires explicit development opt-in before accepting simulated evidence and preserves that distinction in receipts and public state.
+
+`Fenced_absent` is an explicit, epoch-bound proof that no incarnation exists and future starts of that allocation have been fenced. It can complete destroy after a committed create intent was never sent. It must not be inferred from missing records alone. The fake preserves that fence for its process lifetime; production requires durable fencing and a new epoch after restart.
 
 `Absent` means this supervisor has no evidence for that allocation. It is not confirmation that another epoch stopped the VM, permission to free its reservation, or permission to repeat an uncertain command. Database intent, authenticated observations, and the [lifecycle reconciliation contract](lifecycle.md#destroy-and-recovery) govern the next action.
 
@@ -30,11 +32,11 @@ An observation echoes the requested ownership tuple, names the original create o
 
 - A repeated create for the same allocation, operation, image, resources, and original allocation deadline returns the existing result. It neither starts again nor extends the lease. Changed create input conflicts.
 - A higher observed claim revision fences older requests for that operation, including when inspection found no allocation. Identity bindings and fences survive simulated release.
-- A stop received before create prevents a delayed create from starting that allocation. Stopping a known allocation is idempotent; replaying its old create returns released state.
+- A stop received before create prevents a delayed create from starting that allocation and reports `fenced_absent`; later inspections preserve that proof. Stopping a known allocation is idempotent; replaying its old create returns released state.
 - A sandbox can have a new generation only after the previous recorded incarnation is released. Changing project, sandbox, or generation under an allocation ID is rejected.
 - An explicit digest allowlist, per-sandbox resource bounds, and aggregate CPU/RAM/disk capacity checks control simulated admission. They do not verify image bytes or enforce hardware resources.
 - The binary checks allocation leases independently every 100 ms; expired allocations become simulated released records. Calls also check expiry before serving observations. There is no lease-renewal RPC yet.
-- A test hook can lose a create acknowledgement after recording the start. Inspection then reports the original single start.
+- Test hooks can lose create or stop acknowledgements after applying the action. Inspection reports the same start, released incarnation, or fenced absence.
 
 The fake bounds retained allocation/fence records to 10,000 and operation revisions to 64 per allocation. It rejects additional records rather than evicting deduplication or fencing evidence. Restart clears memory: supply a new externally assigned epoch. Do not reuse an epoch to make lost evidence appear authoritative. Production epoch issuance and durable supervisor receipts are still required.
 

@@ -1,13 +1,17 @@
-//! One configured host, durable create dispatch, and reconciliation over mTLS.
+//! One configured host, durable create/destroy dispatch, and reconciliation over mTLS.
 //! The supervisor is trusted only after its certificate, host ID, and epoch match.
 
 use sandbox_protocol::{
     HostId,
-    supervisor::{HealthRequest, InspectRequest, supervisor_client::SupervisorClient},
+    supervisor::{
+        AllocationState, HealthRequest, InspectRequest, StopRequest,
+        supervisor_client::SupervisorClient,
+    },
 };
 use sandbox_store::{
     Store,
     claims::{Claim, ClaimError, OperationKind},
+    destroy::DestroyAction,
     dispatch::{CreateAction, CreateRejection, DispatchError},
     placement::{PlacementError, Reservation},
 };
@@ -53,13 +57,13 @@ pub enum Tick {
 }
 
 #[derive(Debug)]
-pub struct CreateController {
+pub struct Controller {
     store: Store,
     config: ControllerConfig,
     client: SupervisorClient<Channel>,
 }
 
-impl CreateController {
+impl Controller {
     pub async fn connect(
         store: Store,
         config: ControllerConfig,
@@ -140,10 +144,100 @@ impl CreateController {
         }
     }
 
+    async fn destroy_unknown(&self, claim: &Claim) -> Result<Tick, ControllerError> {
+        match self.store.record_destroy_unknown(claim).await {
+            Ok(()) => Ok(Tick::Unknown),
+            Err(DispatchError::LostClaim) => Ok(Tick::LostOwnership),
+            Err(DispatchError::Conflict) => self.defer(claim).await,
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn destroy_tick(&mut self, claim: &Claim) -> Result<Tick, ControllerError> {
+        let action = match self.store.prepare_destroy(claim, false).await {
+            Ok(action) => action,
+            Err(DispatchError::LostClaim) => return Ok(Tick::LostOwnership),
+            Err(DispatchError::Conflict) => return self.defer(claim).await,
+            Err(error) => return Err(error.into()),
+        };
+        let owner = match &action {
+            DestroyAction::Stop(owner) | DestroyAction::Inspect(owner) => owner,
+        };
+        if owner.host_id != self.config.host.to_string()
+            || owner.supervisor_epoch != self.config.epoch
+        {
+            return self.defer(claim).await;
+        }
+        let response = match action {
+            DestroyAction::Stop(owner) => {
+                self.client
+                    .stop(StopRequest {
+                        ownership: Some(owner),
+                    })
+                    .await
+            }
+            DestroyAction::Inspect(owner) => {
+                match self
+                    .client
+                    .inspect(InspectRequest {
+                        ownership: Some(owner.clone()),
+                    })
+                    .await
+                {
+                    Ok(response)
+                        if response.get_ref().ownership.as_ref() == Some(&owner)
+                            && matches!(
+                                AllocationState::try_from(response.get_ref().state),
+                                Ok(AllocationState::Ready | AllocationState::Absent)
+                            ) =>
+                    {
+                        // Stop is an idempotent fence for this exact incarnation,
+                        // but each transport attempt still commits intent first.
+                        let next = match self.store.prepare_destroy(claim, true).await {
+                            Ok(next) => next,
+                            Err(DispatchError::LostClaim) => return Ok(Tick::LostOwnership),
+                            Err(DispatchError::Conflict) => return self.defer(claim).await,
+                            Err(error) => return Err(error.into()),
+                        };
+                        let DestroyAction::Stop(owner) = next else {
+                            return self.destroy_unknown(claim).await;
+                        };
+                        self.client
+                            .stop(StopRequest {
+                                ownership: Some(owner),
+                            })
+                            .await
+                    }
+                    other => other,
+                }
+            }
+        };
+        let observation = match response {
+            Ok(response) => response.into_inner(),
+            Err(_) => return self.destroy_unknown(claim).await,
+        };
+        match self
+            .store
+            .record_destroy_observation(claim, &observation, self.config.allow_simulated)
+            .await
+        {
+            Ok(()) => Ok(Tick::Confirmed),
+            Err(DispatchError::LostClaim) => Ok(Tick::LostOwnership),
+            Err(DispatchError::BadEvidence | DispatchError::SimulationDenied) => {
+                self.destroy_unknown(claim).await
+            }
+            Err(DispatchError::Conflict) => self.defer(claim).await,
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// At most one claimed operation per tick. Cancellation after durable intent
     /// leaves work reclaimable; the next owner inspects instead of replaying it.
     pub async fn tick(&mut self) -> Result<Tick, ControllerError> {
         self.check_host().await?;
+        if let Some(claim) = self.store.claim_next(OperationKind::Destroy, 30).await? {
+            return self.destroy_tick(&claim).await;
+        }
         let Some(claim) = self.store.claim_next(OperationKind::Create, 30).await? else {
             return Ok(Tick::Idle);
         };

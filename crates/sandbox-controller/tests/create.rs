@@ -1,204 +1,20 @@
-//! PostgreSQL + the actual HTTP router + loopback gRPC/mTLS. No VM is used.
+//! Create lifecycle through PostgreSQL, the HTTP router, and gRPC/mTLS.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use axum::{
-    Router,
-    body::{Body, to_bytes},
-};
-use http::{Request, StatusCode};
-use rcgen::{
-    BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa, KeyPair,
-    KeyUsagePurpose,
-};
-use sandbox_api::{AppState, router};
-use sandbox_controller::{ControllerConfig, ControllerError, CreateController, Tick};
-use sandbox_fake_host::{FakeConfig, FakeHost};
+mod common;
+use common::Fixture;
+use http::StatusCode;
+use sandbox_controller::{Controller, ControllerError, Tick};
 use sandbox_protocol::{
-    HostId, Id, OperationId, ProjectId, ProjectToken, SandboxId,
-    supervisor::{
-        CreateRequest, StopRequest,
-        supervisor_server::{Supervisor, SupervisorServer},
-    },
+    HostId, Id, OperationId, ProjectId, SandboxId,
+    supervisor::{StopRequest, supervisor_server::Supervisor},
 };
 use sandbox_store::{
-    Store,
-    claims::{Claim, OperationKind},
+    claims::OperationKind,
     dispatch::{CreateAction, CreateRejection, DispatchError},
 };
-use sandbox_supervisor::transport::{self, ControllerIdentity, MAX_MESSAGE_BYTES};
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use serde_json::Value;
 use sqlx::PgPool;
 use std::collections::BTreeSet;
-use tokio::{net::TcpListener, task::JoinHandle};
-use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{service::interceptor::InterceptedService, transport::Server};
-use tower::ServiceExt;
-
-struct Fixture {
-    store: Store,
-    app: Router,
-    token: String,
-    config: ControllerConfig,
-    ca: String,
-    cert: String,
-    key: String,
-    fake: FakeHost,
-    task: JoinHandle<()>,
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-impl Fixture {
-    async fn new(pool: &PgPool) -> Self {
-        let project = ProjectId::generate();
-        let token = ProjectToken::generate().unwrap();
-        sqlx::query("INSERT INTO projects(id,name,status,limits,api_tokens) VALUES($1,'controller-test','active','{}',$2)")
-            .bind(project.uuid()).bind(json!([{"key_id":token.key_id().as_str(),"hash":hex::encode(token.hash().as_bytes())}])).execute(pool).await.unwrap();
-        let host = HostId::generate();
-        sqlx::query("INSERT INTO hosts(id,status,cpu_capacity,memory_capacity_mib,disk_capacity_mib,supervisor_epoch) VALUES($1,'ready',4,8192,65536,1)")
-            .bind(host.uuid()).execute(pool).await.unwrap();
-        let digest = format!("sha256:{}", "a".repeat(64));
-        let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
-        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-        let ca = CertifiedIssuer::self_signed(ca_params, KeyPair::generate().unwrap()).unwrap();
-        let controller_key = KeyPair::generate().unwrap();
-        let mut controller_params =
-            CertificateParams::new(vec!["controller.sandbox.internal".into()]).unwrap();
-        controller_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-        let controller_cert = controller_params.signed_by(&controller_key, &ca).unwrap();
-        let server_key = KeyPair::generate().unwrap();
-        let mut server_params =
-            CertificateParams::new(vec![transport::host_server_name(host)]).unwrap();
-        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-        let server_cert = server_params.signed_by(&server_key, &ca).unwrap();
-        let fake = FakeHost::new(FakeConfig {
-            host,
-            epoch: 1,
-            images: BTreeSet::from([digest.clone()]),
-            capacity: sandbox_protocol::supervisor::Resources {
-                vcpu: 4,
-                memory_mib: 8192,
-                disk_mib: 65536,
-            },
-        })
-        .unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("https://{}", listener.local_addr().unwrap());
-        let service = SupervisorServer::new(fake.clone())
-            .max_decoding_message_size(MAX_MESSAGE_BYTES)
-            .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        let service = InterceptedService::new(
-            service,
-            ControllerIdentity::new(vec![Sha256::digest(controller_cert.der()).into()]).unwrap(),
-        );
-        let tls = transport::server_tls(
-            ca.pem().as_bytes(),
-            server_cert.pem().as_bytes(),
-            server_key.serialize_pem().as_bytes(),
-        );
-        let task = tokio::spawn(async move {
-            Server::builder()
-                .tls_config(tls)
-                .unwrap()
-                .add_service(service)
-                .serve_with_incoming(TcpListenerStream::new(listener))
-                .await
-                .unwrap();
-        });
-        let store = Store::from_pool(pool.clone());
-        Self {
-            app: router(AppState {
-                store: store.clone(),
-            }),
-            store,
-            token: token.render_once(),
-            config: ControllerConfig {
-                endpoint,
-                host,
-                epoch: 1,
-                allowed_images: BTreeSet::from([digest]),
-                allow_simulated: true,
-            },
-            ca: ca.pem(),
-            cert: controller_cert.pem(),
-            key: controller_key.serialize_pem(),
-            fake,
-            task,
-        }
-    }
-    async fn controller(&self) -> CreateController {
-        CreateController::connect(
-            self.store.clone(),
-            self.config.clone(),
-            self.ca.as_bytes(),
-            self.cert.as_bytes(),
-            self.key.as_bytes(),
-        )
-        .await
-        .unwrap()
-    }
-    async fn send(&self, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
-        let request = Request::builder()
-            .method(method)
-            .uri(path)
-            .header("authorization", format!("Bearer {}", self.token))
-            .header("content-type", "application/json")
-            .header("idempotency-key", uuid::Uuid::now_v7().to_string())
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        let response = self.app.clone().oneshot(request).await.unwrap();
-        let status = response.status();
-        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
-        (status, serde_json::from_slice(&body).unwrap())
-    }
-    async fn admit(&self) -> (OperationId, SandboxId) {
-        let (status, body) = self
-            .send(
-                "POST",
-                "/v1/sandboxes",
-                json!({"image_digest":format!("sha256:{}","a".repeat(64)),
-            "resources":{"vcpu":2,"memory_mib":2048,"disk_mib":8192}}),
-            )
-            .await;
-        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-        (
-            body["operation_id"].as_str().unwrap().parse().unwrap(),
-            body["sandbox_id"].as_str().unwrap().parse().unwrap(),
-        )
-    }
-    async fn reclaim_now(&self) {
-        sqlx::query("UPDATE operations SET lease_expires_at=clock_timestamp()-interval '1 second',next_retry_at=NULL WHERE completed_at IS NULL")
-            .execute(self.store.pool()).await.unwrap();
-    }
-    async fn prepared(&self) -> (Claim, CreateRequest) {
-        self.store
-            .observe_configured_host(self.config.host, 1)
-            .await
-            .unwrap();
-        let claim = self
-            .store
-            .claim_next(OperationKind::Create, 30)
-            .await
-            .unwrap()
-            .unwrap();
-        self.store
-            .reserve_create(&claim, self.config.host, 1)
-            .await
-            .unwrap();
-        let CreateAction::Start(request) = self
-            .store
-            .prepare_create_dispatch(&claim, &self.config.allowed_images)
-            .await
-            .unwrap()
-        else {
-            panic!("fresh start")
-        };
-        (claim, request)
-    }
-}
 
 #[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
 async fn admitted_http_create_reaches_confirmed_simulated_state(pool: PgPool) {
@@ -327,7 +143,7 @@ async fn simulated_host_requires_explicit_opt_in_before_claiming(pool: PgPool) {
     f.admit().await;
     f.config.allow_simulated = false;
     assert!(matches!(
-        CreateController::connect(
+        Controller::connect(
             f.store.clone(),
             f.config.clone(),
             f.ca.as_bytes(),
@@ -641,7 +457,7 @@ async fn host_health_cannot_change_epoch_or_promote_a_draining_host(pool: PgPool
     f.admit().await;
     f.config.epoch = 2;
     assert!(matches!(
-        CreateController::connect(
+        Controller::connect(
             f.store.clone(),
             f.config.clone(),
             f.ca.as_bytes(),

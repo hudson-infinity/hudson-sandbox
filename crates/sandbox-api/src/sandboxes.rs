@@ -148,7 +148,7 @@ pub async fn create(
     })
 }
 
-fn accepted(sandbox_id: &str, operation_id: &str, status: &str) -> Response {
+pub(crate) fn accepted(sandbox_id: &str, operation_id: &str, status: &str) -> Response {
     let body = Json(AdmittedResponse {
         sandbox_id: sandbox_id.to_owned(),
         operation_id: operation_id.to_owned(),

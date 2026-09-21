@@ -47,6 +47,9 @@ enum AllocationState {
   ALLOCATION_STATE_READY = 2;
   // VM stopped and all capacity released; not merely stop requested.
   ALLOCATION_STATE_RELEASED = 3;
+  // This epoch confirmed absence AND fenced all future starts of this allocation.
+  // Stronger evidence than ABSENT. Lost process state in a new epoch cannot supply it.
+  ALLOCATION_STATE_FENCED_ABSENT = 4;
 }
 message Observation {
   Ownership ownership = 1;

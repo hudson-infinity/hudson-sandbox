@@ -1,6 +1,6 @@
 # API contract
 
-Status: selected behavioral contract with proposed HTTP routes/examples; no service or OpenAPI file is implemented. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
+Status: partially implemented. Create, destroy, sandbox status, and operation status have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
 
 ## API surfaces
 
@@ -179,3 +179,7 @@ Before implementation, define SDK distribution per registry, CLI syntax, credent
 ## Observation source
 
 Sandbox status responses optionally include `observation_simulated`: true for confirmed development fake-host observations, false for real supervisor evidence, and absent before an observation source is confirmed. Successful fake create operations also return `result.simulated=true`. The [create controller](controller.md#simulated-observations-remain-visible) requires explicit simulation opt-in; these responses do not establish VM execution or isolation.
+
+## Implemented destroy admission
+
+The [destroy controller contract](controller.md#destroy-admission-and-cleanup) owns implemented stop and release evidence. `POST /v1/sandboxes/{sandbox_id}/destroy` accepts `{}` or an optional `correlation_id` up to 200 bytes, requires the ordinary project token and idempotency key, and returns `202` with an operation handle. Exact retries resolve first. A live transition returns `409` with its authorized `operation_id`; an unknown create can transfer cleanup ownership. A new key on a tombstone returns an already succeeded no-op operation. Completion retains the original sandbox identity permanently.

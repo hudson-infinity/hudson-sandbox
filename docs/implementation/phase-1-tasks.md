@@ -12,7 +12,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Pin the Rust toolchain. `rustfmt` and `clippy` configured, clippy warnings denied in CI.
 - [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
 - [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
-- [ ] Extend the integrated [create controller and fake](../controller.md) for execute, files, outputs, and destroy.
+- [ ] Extend the integrated [create controller and fake](../controller.md) for execute, files, and outputs.
 - [ ] Self-hosted runner for VM tests, once a host exists. Fork pull requests never run on it.
 
 ---
@@ -31,12 +31,12 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Project bearer token authentication, hashed storage, constant-time comparison.
 - [x] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
 - [x] `problem+json` errors with the machine-readable code list. Codes are added as routes need them.
-- [ ] Create, get sandbox, get operation (done); execute, outputs, file PUT, destroy.
+- [ ] Create, destroy, get sandbox, get operation (done); execute, outputs, file PUT.
 - [ ] SSE output stream with sequence cursors and resume.
 
 ## Controller
 
-- [ ] Extend the implemented create loop with lease renewal, expired-allocation reconciliation, and the remaining operation kinds.
+- [ ] Extend the implemented create/destroy loop with lease renewal, expired-allocation reconciliation, and the remaining operation kinds.
 - [ ] Add authenticated host registration and verified image/host compatibility to the initial operator-provisioned create path.
 - [ ] Extend the implemented [create intent and evidence transactions](../controller.md#completion-and-uncertainty) to the remaining lifecycle actions.
 
