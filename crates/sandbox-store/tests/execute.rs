@@ -15,6 +15,8 @@ use serde_json::json;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
+#[path = "support/cancel.rs"]
+mod cancellation;
 #[path = "support/execution_capacity.rs"]
 mod capacity;
 

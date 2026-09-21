@@ -16,6 +16,9 @@ impl FakeHost {
     pub async fn lose_next_command_reply(&self) {
         self.state.lock().await.lose_next_command_reply = true;
     }
+    pub async fn lose_next_cancel_reply(&self) {
+        self.state.lock().await.lose_next_cancel_reply = true;
+    }
     pub async fn finish_command(&self, id: OperationId, exit: i32) -> Result<(), Status> {
         if !(0..=255).contains(&exit) {
             return Err(Status::invalid_argument("invalid exit"));
@@ -43,6 +46,7 @@ impl FakeHost {
         ownership: Option<Ownership>,
         payload: Option<m::Execute>,
         digest: [u8; 32],
+        cancel: bool,
     ) -> Result<CommandObservation, Status> {
         let mut state = self.state.lock().await;
         Self::expire(&mut state);
@@ -65,6 +69,7 @@ impl FakeHost {
             .get(&owner.allocation_id)
             .is_some_and(|a| a.state == AllocationState::Ready);
         let held = state.hold_next_command;
+        let lose_cancel_reply = cancel && std::mem::take(&mut state.lose_next_cancel_reply);
         let fence = state
             .fences
             .get_mut(&owner.allocation_id)
@@ -87,6 +92,19 @@ impl FakeHost {
             {
                 receipt.state = m::State::TimedOut;
                 receipt.cleanup_confirmed = true;
+            }
+            if cancel
+                && ready
+                && !fence.stopped
+                && let Some(receipt) = record.receipt.as_mut()
+                && receipt.state == m::State::LaunchIntent
+            {
+                receipt.cancel_requested = true;
+                receipt.state = m::State::Cancelled;
+                receipt.cleanup_confirmed = true;
+            }
+            if lose_cancel_reply {
+                return Err(Status::unavailable("injected lost cancel reply"));
             }
             return Ok(record.observation(owner, true, now));
         }
@@ -159,7 +177,8 @@ impl FakeHost {
         let digest = payload
             .digest()
             .map_err(|_| Status::invalid_argument("invalid command digest"))?;
-        self.command(r.ownership, Some(payload), digest).await
+        self.command(r.ownership, Some(payload), digest, false)
+            .await
     }
     pub(super) async fn inspect_command_inner(
         &self,
@@ -169,6 +188,16 @@ impl FakeHost {
             .command_digest
             .try_into()
             .map_err(|_| Status::invalid_argument("invalid command digest"))?;
-        self.command(r.ownership, None, digest).await
+        self.command(r.ownership, None, digest, false).await
+    }
+    pub(super) async fn cancel_command_inner(
+        &self,
+        r: CommandInspection,
+    ) -> Result<CommandObservation, Status> {
+        let digest: [u8; 32] = r
+            .command_digest
+            .try_into()
+            .map_err(|_| Status::invalid_argument("invalid command digest"))?;
+        self.command(r.ownership, None, digest, true).await
     }
 }

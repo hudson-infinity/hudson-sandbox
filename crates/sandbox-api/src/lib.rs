@@ -5,6 +5,7 @@
 //! client cannot tell the difference.
 
 pub mod auth;
+pub mod cancel;
 pub mod destroy;
 pub mod execute;
 pub mod headers;
@@ -62,6 +63,7 @@ pub fn router_with_streams(
         .merge(lists::routes())
         .merge(destroy::routes())
         .merge(execute::routes())
+        .merge(cancel::routes())
         .with_state(state)
         .merge(outputs)
         .merge(streams)

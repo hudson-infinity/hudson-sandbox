@@ -52,6 +52,10 @@ pub enum ExecuteAction {
         owner: Ownership,
         digest: [u8; 32],
     },
+    Cancel {
+        owner: Ownership,
+        digest: [u8; 32],
+    },
     /// Proven never dispatched. No VM reservation or lifecycle state changes.
     Rejected,
 }
@@ -239,7 +243,7 @@ impl Store {
         })
     }
 
-    /// Commit exactly one dispatch intent. All later calls inspect, including
+    /// Commit exactly one dispatch intent. Later calls inspect or cancel, including
     /// unknown outcomes and calls after revocation, expiry, destroy, or host loss.
     pub async fn prepare_execute(
         &self,
@@ -262,11 +266,47 @@ impl Store {
         } = ctx;
         let dispatched = op.try_get::<i32, _>("attempt_count")? > 0
             || op.try_get::<String, _>("status")? == "unknown";
+        let cancellation: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM operations
+            WHERE target_operation_id=$1 AND kind='cancel' AND phase='cancel_requested'
+            AND status IN ('queued','running','unknown'))",
+        )
+        .bind(claim.operation_id.uuid())
+        .fetch_one(&mut *tx)
+        .await?;
         if dispatched {
             validate_intent(&op, &owner, &digest)?;
             dispatch::fence(&mut tx, claim).await?;
             tx.commit().await?;
-            return Ok(ExecuteAction::Inspect { owner, digest });
+            return Ok(if cancellation {
+                ExecuteAction::Cancel { owner, digest }
+            } else {
+                ExecuteAction::Inspect { owner, digest }
+            });
+        }
+        if cancellation {
+            if op.try_get::<serde_json::Value, _>("attempt_receipts")? != json!([]) {
+                return Err(DispatchError::InvalidData);
+            }
+            // The target row is locked and has no dispatch intent. No earlier
+            // claimant could have received a Dispatch action without that intent.
+            dispatch::fence(&mut tx, claim).await?;
+            let changed = sqlx::query(
+                r#"UPDATE operations SET status='cancelled',phase='cancelled_before_dispatch',
+                completed_at=clock_timestamp(),lease_expires_at=NULL,next_retry_at=NULL,error=NULL,
+                result='{"dispatch_intent_absent":true}',updated_at=clock_timestamp()
+                WHERE id=$1 AND claim_revision=$2 AND lease_expires_at>clock_timestamp()"#,
+            )
+            .bind(claim.operation_id.uuid())
+            .bind(claim.revision)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if changed != 1 {
+                return Err(DispatchError::LostClaim);
+            }
+            tx.commit().await?;
+            return Ok(ExecuteAction::Rejected);
         }
         if allocation_host != host.uuid() || owner.supervisor_epoch != epoch {
             return Err(DispatchError::HostUnavailable);
@@ -583,6 +623,9 @@ impl Store {
                 receipt = Some(r);
             }
         }
+        let cancellation:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM operations WHERE target_operation_id=$1
+            AND kind='cancel' AND phase='cancel_requested' AND status IN ('queued','running','unknown'))")
+            .bind(claim.operation_id.uuid()).fetch_one(&mut *tx).await?;
         let (status, phase, error) = match receipt.as_ref().map(|r| r.state) {
             Some(State::Exited) if receipt.as_ref().is_some_and(|r| r.exit_code == Some(0)) => {
                 ("succeeded", "exited", None)
@@ -591,6 +634,7 @@ impl Store {
             Some(State::TimedOut) => ("failed", "timed_out", Some("deadline_exceeded")),
             Some(State::Cancelled) => ("cancelled", "cancelled", None),
             Some(State::LaunchIntent) => ("running", "executing", None),
+            _ if not_started && cancellation => ("cancelled", "cancelled_before_start", None),
             _ if not_started => ("failed", "not_started", Some("command_not_started")),
             _ => ("unknown", "reconciling", Some("outcome_unknown")),
         };

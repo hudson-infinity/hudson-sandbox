@@ -27,6 +27,8 @@ pub struct OperationBody {
     response_expired: bool,
     operation_id: String,
     sandbox_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_operation_id: Option<String>,
     kind: String,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +114,7 @@ pub(crate) fn body_for(view: OperationView) -> Result<OperationBody, Problem> {
         response_expired: expired,
         operation_id: view.id.to_string(),
         sandbox_id: view.sandbox_id.to_string(),
+        target_operation_id: view.target_operation_id.map(|id| id.to_string()),
         kind: view.kind,
         status: view.status,
         phase: view.phase,

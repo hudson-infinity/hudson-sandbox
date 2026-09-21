@@ -94,6 +94,7 @@ impl Store {
                 SELECT id, status AS previous_status
                   FROM operations
                  WHERE kind = $1
+                   AND ($1 <> 'cancel' OR phase = 'cancel_requested')
                    AND status IN ('queued', 'running', 'unknown')
                    AND phase IS DISTINCT FROM 'cleanup_owned_by_destroy'
                    AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())

@@ -87,6 +87,14 @@ fn validate_request(row: &PgRow) -> Result<(), OutputError> {
         ("execute", "project" | "admin") => {
             ("POST", format!("/v1/sandboxes/{sandbox}/execute"), payload)
         }
+        ("cancel", "project") => (
+            "POST",
+            format!(
+                "/v1/operations/{}/cancel",
+                OperationId::from_uuid(row.try_get("target_operation_id")?)
+            ),
+            payload,
+        ),
         ("destroy", "project" | "admin") => (
             "POST",
             format!("/v1/sandboxes/{sandbox}/destroy"),
@@ -111,7 +119,7 @@ impl Store {
         let mut tx = self.pool().begin().await?;
         let row=sqlx::query("SELECT o.* FROM operations o
             WHERE o.payload_compacted_at IS NULL AND o.response_expires_at<=clock_timestamp()
-            AND o.status IN ('succeeded','failed','cancelled') AND o.kind IN ('create','execute','destroy')
+            AND o.status IN ('succeeded','failed','cancelled') AND o.kind IN ('create','execute','destroy','cancel')
             AND o.completed_at IS NOT NULL AND o.lease_expires_at IS NULL AND o.next_retry_at IS NULL
             AND (o.payload_compaction_next_at IS NULL OR o.payload_compaction_next_at<=clock_timestamp())
             AND (o.output_status IN ('none','pending') OR
