@@ -62,7 +62,7 @@ The separate [allocation guardian](../allocation-guardian.md) implements verifie
 - [x] Allocation-scoped credentials, read-only bootstrap device, guest init and durable boot binding; [component evidence](../guest-bootstrap.md).
 - [ ] Guest image: Debian slim, our init, our guest agent, `system` and `workload` cgroups, agent in its own PID namespace.
 - [ ] Guest kernel build: modules off, lockdown on, pinned and digest-published.
-- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). Lifecycle boot binding is integrated; public command dispatch is integrated; public file routes are integrated; source cleanup remains open.
+- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). Lifecycle boot binding is integrated; public command dispatch is integrated; public file routes are integrated; source cleanup is opt-in and history reclamation remains open.
 - [x] Guest-local spawn, process-tree cleanup, bounded output and exit/restart receipts; [component contract and evidence](../guest-runner.md). The command wire, lifecycle boot binding and local guardian watchdog are implemented; public command dispatch is integrated; the full host-fault gates remain open above.
 - [x] File write into the workspace with path and size validation; [bounded transfer](../file-transfer.md).
 

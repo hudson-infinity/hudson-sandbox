@@ -2219,6 +2219,7 @@ dependencies = [
  "reqwest",
  "sandbox-api",
  "sandbox-artifacts",
+ "sandbox-cleanup",
  "sandbox-fake-host",
  "sandbox-protocol",
  "sandbox-store",

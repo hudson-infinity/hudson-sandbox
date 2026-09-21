@@ -108,7 +108,13 @@ impl Store {
         let mut tx = self.pool().begin().await?;
         let c = context(&mut tx, claim).await?;
         source.validate().map_err(|_| DispatchError::BadEvidence)?;
-        if source.plan != c.plan || c.begun()? || c.source.as_ref().is_some_and(|r| r != source) {
+        if source.plan != c.plan
+            || c.begun()?
+            || c.source.as_ref().is_some_and(|r| r != source)
+            || c.file
+                .try_get::<Option<OffsetDateTime>, _>("source_frozen_at")?
+                .is_some()
+        {
             return Err(DispatchError::BadEvidence);
         }
         let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")

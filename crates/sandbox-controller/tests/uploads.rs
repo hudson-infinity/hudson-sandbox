@@ -842,3 +842,6 @@ async fn expiry_during_host_lock_wait_rolls_back_begin_intent(pool: PgPool) {
     );
     assert_eq!(f.fake.total_file_commits().await, 0);
 }
+
+#[path = "common/source_cleanup.rs"]
+mod cleanup;
