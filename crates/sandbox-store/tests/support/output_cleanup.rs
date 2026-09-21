@@ -352,6 +352,7 @@ async fn cleanup_migration_preserves_existing_publication_and_execution(pool: Pg
         "payload_compacted_at",
         "command_summary",
         "payload_compaction_next_at",
+        "file_allocation_id",
     ] {
         assert_eq!(
             after.as_object_mut().unwrap().remove(key),

@@ -287,6 +287,7 @@ async fn compaction_upgrade_preserves_old_payload_and_then_reclaims_it(pool: PgP
         "payload_compacted_at",
         "command_summary",
         "payload_compaction_next_at",
+        "file_allocation_id",
     ] {
         assert_eq!(
             after.as_object_mut().unwrap().remove(key),

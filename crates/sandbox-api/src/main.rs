@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use sandbox_api::{
     AppState,
     provision::provision,
-    router_with_files,
+    router_with_uploads,
     server::{ServerLimits, serve, tls_acceptor},
 };
 use sandbox_protocol::images::ImageAllowlist;
@@ -44,6 +44,9 @@ struct ServeArgs {
     /// Private service-owned S3 JSON configuration; provision read-only credentials.
     #[arg(long)]
     output_config: Option<PathBuf>,
+    /// Private source-store credentials for file ingestion.
+    #[arg(long)]
+    file_source_config: Option<PathBuf>,
     /// Operator-selected live-output host; never accepted from API callers.
     #[arg(long, requires_all = ["live_endpoint", "live_ca_cert", "live_client_cert", "live_client_key"])]
     live_host_id: Option<sandbox_protocol::HostId>,
@@ -91,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
                 tls_key,
                 image_digest,
                 output_config,
+                file_source_config,
                 live_host_id,
                 live_endpoint,
                 live_ca_cert,
@@ -136,6 +140,13 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             let files = (*files).build()?;
+            let sources = file_source_config
+                .map(|p| sandbox_artifacts::S3Config::read_private(&p)?.build_sources())
+                .transpose()?
+                .map(|v| {
+                    std::sync::Arc::new(v)
+                        as std::sync::Arc<dyn sandbox_artifacts::sources::SourceBackend>
+                });
             let listener = tokio::net::TcpListener::bind(bind)
                 .await
                 .context("binding HTTPS listener")?;
@@ -143,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
             serve(
                 listener,
                 acceptor,
-                router_with_files(AppState { store, images }, output, live, files),
+                router_with_uploads(AppState { store, images }, output, live, files, sources),
                 ServerLimits::default(),
                 shutdown,
             )

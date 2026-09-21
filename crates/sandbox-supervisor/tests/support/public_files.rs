@@ -45,10 +45,21 @@ pub(super) async fn round_trip(
     bearer: &str,
     controller: &mut sandbox_controller::Controller,
     sandbox: &str,
+    upload: bool,
 ) -> String {
+    let mut expected = vec![0; 65536];
+    expected.extend_from_slice(b"\0\xffa");
+    if upload {
+        upload_file(app, bearer, controller, sandbox, &expected).await;
+    }
     let key = OperationId::generate().to_string();
+    let command = if upload {
+        "/bin/busybox cp /workspace/uploaded.bin /workspace/public.bin"
+    } else {
+        "/bin/busybox dd if=/dev/zero of=/workspace/public.bin bs=65536 count=1; /bin/busybox printf '\\000\\377a' >> /workspace/public.bin"
+    };
     let (status, admission) = super::http(app, bearer, "POST", &format!("/v1/sandboxes/{sandbox}/execute"), &key,
-        json!({"argv":["/bin/busybox","sh","-c","/bin/busybox dd if=/dev/zero of=/workspace/public.bin bs=65536 count=1; /bin/busybox printf '\\000\\377a' >> /workspace/public.bin"],"deadline_unix_ms":guardian::wall_ms()+10000,"output_limit":1024})).await;
+        json!({"argv":["/bin/busybox","sh","-c",command],"deadline_unix_ms":guardian::wall_ms()+10000,"output_limit":1024})).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{admission}");
     let operation = admission["operation_id"].as_str().unwrap();
     let until = Instant::now() + Duration::from_secs(15);
@@ -72,8 +83,6 @@ pub(super) async fn round_trip(
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let mut expected = vec![0; 65536];
-    expected.extend_from_slice(b"\0\xffa");
     let (status, captured) = super::http(
         app,
         bearer,
@@ -146,7 +155,7 @@ pub(super) async fn round_trip(
     assert_ne!(fresh["capture"], captured["capture"]);
     eprintln!(
         "real_public_file_observation={}",
-        json!({"bytes":bytes.len(),"full_sha256_verified":true,"public_execute":true,"public_capture_ranges_release":true,"simulated":false})
+        json!({"bytes":bytes.len(),"full_sha256_verified":true,"public_execute":true,"public_upload":upload,"public_capture_ranges_release":true,"simulated":false})
     );
     fresh["capture"].as_str().unwrap().into()
 }
@@ -158,4 +167,64 @@ pub(super) async fn after_destroy(app: &Router, bearer: &str, sandbox: &str, cap
         serde_json::from_slice::<Value>(&body).unwrap()["code"],
         "not_found"
     );
+}
+
+async fn upload_file(
+    app: &Router,
+    bearer: &str,
+    controller: &mut sandbox_controller::Controller,
+    sandbox: &str,
+    bytes: &[u8],
+) {
+    let key = OperationId::generate().to_string();
+    let mut operation = String::new();
+    for _ in 0..2 {
+        let req = Request::builder()
+            .method("PUT")
+            .uri(format!("/v1/sandboxes/{sandbox}/files?path=uploaded.bin"))
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("idempotency-key", &key)
+            .header("content-type", "application/octet-stream")
+            .header("x-file-size", bytes.len())
+            .header("x-file-sha256", hex::encode(Sha256::digest(bytes)))
+            .body(Body::from(bytes.to_vec()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+        let result: Value =
+            serde_json::from_slice(&to_bytes(res.into_body(), 65536).await.unwrap()).unwrap();
+        if operation.is_empty() {
+            operation = result["operation_id"].as_str().unwrap().into();
+        } else {
+            assert_eq!(result["operation_id"], operation);
+        }
+    }
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        controller.tick().await.unwrap();
+        let (_, result) = super::http(
+            app,
+            bearer,
+            "GET",
+            &format!("/v1/operations/{operation}"),
+            &key,
+            Value::Null,
+        )
+        .await;
+        if result["status"] == "succeeded" {
+            assert_eq!(result["phase"], "file_committed");
+            assert_eq!(result["result"]["simulated"], false);
+            assert_eq!(result["result"]["guest_reported"], true);
+            assert_eq!(
+                result["result"]["sha256"],
+                hex::encode(Sha256::digest(bytes))
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "public upload did not settle: {result}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

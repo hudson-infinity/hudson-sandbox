@@ -126,3 +126,52 @@ async fn execution_upgrade_preserves_legacy_rows_without_inventing_ownership(poo
         Err(sandbox_store::dispatch::DispatchError::InvalidData)
     ));
 }
+
+#[sqlx::test(migrations = false)]
+async fn file_upload_upgrade_preserves_legacy_rows_without_dispatch_authority(pool: PgPool) {
+    let previous = Migrator {
+        migrations: Cow::Owned(MIGRATOR.iter().take(12).cloned().collect()),
+        ..Migrator::DEFAULT
+    };
+    previous.run(&pool).await.unwrap();
+    let project = uuid::Uuid::now_v7();
+    let sandbox = uuid::Uuid::now_v7();
+    sqlx::query("INSERT INTO projects(id,name,status,limits) VALUES($1,'upgrade','active','{}')")
+        .bind(project)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO sandboxes(id,project_id,image_digest,resources,desired_state,observed_state) VALUES($1,$2,'sha256:legacy','{}','running','unknown')").bind(sandbox).bind(project).execute(&pool).await.unwrap();
+    for _ in 0..2 {
+        sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,idempotency_key,request_digest,digest_version,payload,status) VALUES($1,$2,$3,'file_write','service',$4,$5,1,'{}','unknown')")
+            .bind(uuid::Uuid::now_v7()).bind(project).bind(sandbox).bind(uuid::Uuid::now_v7().to_string()).bind(vec![0u8;32]).execute(&pool).await.unwrap();
+    }
+    let before: serde_json::Value =
+        sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(o) ORDER BY id) FROM operations o")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    MIGRATOR.run(&pool).await.unwrap();
+    MIGRATOR.run(&pool).await.unwrap();
+    let after: serde_json::Value = sqlx::query_scalar(
+        "SELECT jsonb_agg(to_jsonb(o)-'file_allocation_id' ORDER BY id) FROM operations o",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before, after);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM file_uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        sandbox_store::Store::from_pool(pool)
+            .claim_next(sandbox_store::claims::OperationKind::FileWrite, 30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

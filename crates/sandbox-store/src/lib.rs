@@ -22,6 +22,7 @@ pub mod provision;
 pub mod reads;
 pub mod retention;
 pub mod stream;
+pub mod uploads;
 
 use std::time::Duration;
 

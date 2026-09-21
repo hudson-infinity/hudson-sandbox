@@ -315,7 +315,7 @@ async fn capacity_upgrade_preserves_history_and_fences_legacy_queued_dispatch(po
             .unwrap();
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
     let after: Vec<serde_json::Value> =
-        sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o ORDER BY id")
+        sqlx::query_scalar("SELECT to_jsonb(o)-'file_allocation_id' FROM operations o ORDER BY id")
             .fetch_all(&pool)
             .await
             .unwrap();

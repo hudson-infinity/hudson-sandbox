@@ -9,6 +9,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+sandbox-artifacts.workspace = true
+sha2.workspace = true
+time.workspace = true
 sandbox-protocol = { workspace = true }
 sandbox-store = { workspace = true }
 sandbox-supervisor = { workspace = true }
@@ -20,7 +23,7 @@ tonic = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-sandbox-artifacts = { workspace = true }
+reqwest.workspace = true
 sandbox-api = { path = "../sandbox-api" }
 sandbox-fake-host = { path = "../sandbox-fake-host" }
 axum = { workspace = true }
@@ -28,7 +31,6 @@ http = { workspace = true }
 hex = { workspace = true }
 rcgen = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio-stream = { workspace = true }
 tower = { workspace = true, features = ["util"] }

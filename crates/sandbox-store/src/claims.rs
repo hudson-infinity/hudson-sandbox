@@ -88,13 +88,20 @@ impl Store {
         seconds: u32,
     ) -> Result<Option<Claim>, ClaimError> {
         let seconds = lease_seconds(seconds)?;
-        let row = sqlx::query(
+        // Only the file dispatcher depends on the new ownership column.
+        let file_filter = if matches!(kind, OperationKind::FileWrite) {
+            "AND file_allocation_id IS NOT NULL"
+        } else {
+            ""
+        };
+        let query = format!(
             r"
             WITH candidate AS (
                 SELECT id, status AS previous_status
                   FROM operations
                  WHERE kind = $1
                    AND ($1 <> 'cancel' OR phase = 'cancel_requested')
+                   {file_filter}
                    AND status IN ('queued', 'running', 'unknown')
                    AND phase IS DISTINCT FROM 'cleanup_owned_by_destroy'
                    AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
@@ -113,11 +120,12 @@ impl Store {
              WHERE o.id = c.id
             RETURNING o.*, c.previous_status
             ",
-        )
-        .bind(kind.as_str())
-        .bind(seconds)
-        .fetch_optional(self.pool())
-        .await?;
+        );
+        let row = sqlx::query(&query)
+            .bind(kind.as_str())
+            .bind(seconds)
+            .fetch_optional(self.pool())
+            .await?;
 
         row.map(|r| {
             Ok(Claim {

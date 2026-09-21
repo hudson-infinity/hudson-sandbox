@@ -282,3 +282,9 @@ Open work: SQLx version/features and query-check setup, fresh and upgrade databa
 ## Collection read indexes
 
 [Migration 0004](../migrations/0004_collection_indexes.sql) adds `(project_id, created_at DESC, id DESC)` indexes for sandboxes and operations, plus `(project_id, sandbox_id, created_at DESC, id DESC)` for filtered operation history. [Collection reads](api-contract.md#implemented-collection-reads) use strictly older key boundaries and bounded pages; they never use a cursor as authorization. Resource timestamps, state, and tombstones are unchanged by this migration.
+
+## File upload reservations
+
+[Migration 0013](../migrations/0013_file_uploads.sql) adds nullable `operations.file_allocation_id` and private `file_uploads` state. Composite foreign keys bind each file record to the same operation, project, sandbox and original allocation; only `file_write` operations may carry this pin. A partial unique index permits one active pinned file write per sandbox. Existing generic file rows remain unpinned and undispatched.
+
+Each record holds the initiating token hash, normalized source plan/reference, declared size, acknowledged cursor, begin/commit/abort intent flags, inspection requirement and compact latest receipt. Bytes stay in private object storage. Constraints bound size/cursor and prevent commit without a complete admitted source. Application checks independently reconstruct ownership and request digests rather than trusting JSON fields. Global, project and allocation reservations are serialized at admission and count retained terminal/unknown rows. Completion and destruction do not reclaim those reservations; source cleanup and history reclamation remain future work. The [file-transfer contract](file-transfer.md#public-upload-orchestration) owns dispatch and recovery behavior.

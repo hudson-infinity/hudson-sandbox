@@ -153,7 +153,7 @@ Poll `GET /v1/operations/{operation_id}`. Confirmed exits provide `result.exit_c
 
 Execute operation status and list responses also include `output_status`: `none`, `pending`, `uploading`, `published`, or `expired`. This is independent of the process outcome. A confirmed exit initially reports `pending`; the opt-in independent archival worker can subsequently publish verified private references. Private object references are never returned in these status bodies. [Output storage](output-storage.md#database-publication) defines publication and expiry.
 
-Output bytes are not returned by these routes. Retained output is available through the separate endpoint below; public file transfer remains unfinished (the [guest file engine](file-transfer.md) is implemented); live output uses the SSE endpoint below and command interruption uses the [cancellation route](command-cancellation.md).
+Output bytes are not returned by these routes. Retained output is available through the separate endpoint below; file transfer uses the bounded upload and capture routes below; live output uses the SSE endpoint below and command interruption uses the [cancellation route](command-cancellation.md).
 
 New execute admission reserves one of 32 command slots and its full `output_limit` within a 64 MiB budget per allocation. A request exceeding either bound returns `409 execution_capacity_exhausted`, with no operation ID, operation insertion or retry-key consumption. A smaller output limit can fit remaining bytes; exhausted command slots require a new sandbox. Existing identical retries still resolve to their original handle (or `410 response_expired`); changed retries still conflict. Destroy remains available.
 
@@ -167,9 +167,31 @@ Stored output is retrieved by authorized operation and output name. The service 
 
 The implemented SSE wire format is specified below. Authentication and periodic rechecks remain authoritative in [auth design](auth-design.md#live-output-and-revocation).
 
+## Implemented file uploads
+
+`PUT /v1/sandboxes/{sandbox_id}/files?path=relative/file.bin` admits one complete binary file for publication in the current running allocation's `/workspace`. It requires a project bearer token and [source storage configuration](api-server.md#file-source-configuration). The path follows the [workspace rules](file-transfer.md#workspace-and-path-contract); the parent must already exist. Only the controller can mutate the guest.
+
+| Header | Value |
+| --- | --- |
+| `Idempotency-Key` | One stable key for the logical upload |
+| `Content-Type` | Exactly `application/octet-stream` |
+| `X-File-Size` | Decimal byte length, zero through 8,388,608 |
+| `X-File-SHA256` | Exactly 64 lowercase hexadecimal characters |
+| `X-File-Mode` | Optional `0644` (default) or `0755` |
+
+Send the file bytes as the body. The route rejects duplicate metadata/key headers, unknown or duplicate query fields, content encoding, HTTP Range, invalid paths and size/digest mismatches. It buffers at most 8 MiB per request, allows four concurrent ingestions per API process and waits at most ten seconds for the body. Invalid bodies create no operation or source reservation. The HTTPS transport's overall deadline still applies.
+
+`202` returns the standard `sandbox_id`, `operation_id`, `status` and `status_url` handles. It means **durable admission**, not guest publication. After admission the API attempts immutable source storage for at most 15 seconds. Storage timeout or lost acknowledgement still returns the handles; the controller reconciles the exact retained source. Retry the same key, path, mode, size, digest and body to resend an unstarted source while its five-minute write window remains open. Retries retain one operation/source attempt; a changed descriptor under the same key returns `409`. Poll `status_url` until completion. `succeeded` with phase `file_committed` reports `result.size`, hex `result.sha256`, `result.simulated` and `result.guest_reported=true`. Paths, object keys, references, credentials and bytes are absent from status responses.
+
+An operation has at most ten minutes, capped by sandbox expiry. Missing source or revoked authority before guest begin fails as `file_not_started`. After begin, loss of authority requests abort once and reconciles the original receipt. Lost commit outcomes remain `unknown` until evidence resolves them; neither a retry nor destruction authorizes another publication. A committed receipt describes this upload, not the current contents after another workload changes the file.
+
+Missing/foreign sandboxes return `404`; invalid credentials return `401`; malformed requests return `400`; oversized bodies return `413`; an unwritable sandbox, active file operation, changed idempotency payload or exhausted retained capacity returns `409`. Disabled storage, ingestion capacity or body timeout returns `503`. A corrupt successful source reference returns `502`. As with other durable mutations, disconnection or a non-success response after admission can leave an operation: retry with the original key. All responses use `Cache-Control: no-store`.
+
+Admission permits one active file write per sandbox. Retained source reservations include terminal and unknown work: 16 operations / 64 MiB per allocation, 128 / 256 MiB per project, and 1,024 / 1 GiB globally. These fixed limits are shared through PostgreSQL across API replicas. Completion, expiry and destroy do not refund them. Source cleanup and safe history reclamation remain unfinished; do not manually delete receipts or reset counters to recover capacity. See [file transfer](file-transfer.md#public-upload-orchestration) for recovery and validation.
+
 ## Implemented file downloads
 
-The authenticated route `/v1/sandboxes/{sandbox_id}/files/captures` exposes short-lived captured reads from the current running allocation. Configure the API's separate [file-reader connection](api-server.md#file-reader-configuration) first. Public uploads and their durable controller orchestration remain unfinished under [issue #62](https://github.com/hudson-infinity/hudson-sandbox/issues/62).
+The authenticated route `/v1/sandboxes/{sandbox_id}/files/captures` exposes short-lived captured reads from the current running allocation. Configure the API's separate [file-reader connection](api-server.md#file-reader-configuration) first. Uploads use the separate durable operation route below; source cleanup remains tracked by [issue #62](https://github.com/hudson-infinity/hudson-sandbox/issues/62).
 
 | Method | Request | Successful response |
 | --- | --- | --- |
