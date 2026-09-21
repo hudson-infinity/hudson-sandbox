@@ -32,6 +32,7 @@ struct Fixture {
     config: Config,
     config_path: PathBuf,
     tls: tls::Fixture,
+    reader: tls::Leaf,
     child: Child,
     url: String,
     address: String,
@@ -70,6 +71,7 @@ impl Fixture {
             },
         };
         let tls = tls::Fixture::new();
+        let reader = tls::Leaf::new(&tls.ca, "reader.sandbox.internal".into(), true);
         let server = tls::Leaf::new(&tls.ca, transport::host_server_name(config.host), false);
         for (name, value) in [
             ("ca.pem", tls.ca.pem()),
@@ -103,12 +105,13 @@ impl Fixture {
             .unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let child = Self::spawn(&vm, &config_path, &address, &tls);
+        let child = Self::spawn(&vm, &config_path, &address, &tls, &reader);
         let f = Self {
             vm,
             config,
             config_path,
             tls,
+            reader,
             child,
             url: format!("https://{address}"),
             address,
@@ -116,7 +119,13 @@ impl Fixture {
         f.client().await;
         f
     }
-    fn spawn(vm: &vm::Fixture, config: &PathBuf, address: &str, tls: &tls::Fixture) -> Child {
+    fn spawn(
+        vm: &vm::Fixture,
+        config: &PathBuf,
+        address: &str,
+        tls: &tls::Fixture,
+        reader: &tls::Leaf,
+    ) -> Child {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sandbox-host"));
         let output = vm.temp.path().join("output.json");
         if output.exists() {
@@ -135,6 +144,8 @@ impl Fixture {
             .arg(vm.temp.path().join("server.key"))
             .arg("--controller-cert-sha256")
             .arg(hex::encode(tls.host.pin()))
+            .arg("--output-reader-cert-sha256")
+            .arg(hex::encode(reader.pin()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -258,7 +269,13 @@ impl Fixture {
         );
         self.config.epoch += 1;
         fs::write(&self.config_path, serde_json::to_vec(&self.config).unwrap()).unwrap();
-        self.child = Self::spawn(&self.vm, &self.config_path, &self.address, &self.tls);
+        self.child = Self::spawn(
+            &self.vm,
+            &self.config_path,
+            &self.address,
+            &self.tls,
+            &self.reader,
+        );
         self.client().await;
     }
 }
@@ -1239,5 +1256,226 @@ async fn public_output(
             .unwrap()
             .as_ref(),
         expected
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and aarch64 KVM artifacts"]
+async fn real_live_output_reads_binary_reconnects_without_journal_mutation_or_reexecution() {
+    use sandbox_protocol::{
+        guest as w, guest_model as m,
+        live_output::LiveOutputScope,
+        output::OutputOwner,
+        supervisor::{CommandRequest, LiveOutputRequest},
+    };
+    let mut f = Fixture::new().await;
+    let mut controller = f.client().await;
+    let create = f.request();
+    let allocation = create.ownership.as_ref().unwrap().clone();
+    let _ = controller.create(create).await;
+    f.ready(&mut controller, &allocation).await;
+    let mut owner = allocation.clone();
+    owner.operation_id = OperationId::generate().to_string();
+    let command=m::Execute {operation_id:owner.operation_id.parse().unwrap(),argv:vec![
+        "/bin/busybox".into(),"sh".into(),"-c".into(),
+        "echo once >> /live-marker; printf '\\000\\377a'; printf '\\376e' >&2; /bin/busybox sleep 3; printf z; exit 7".into()],
+        env:Default::default(),cwd:"/".into(),deadline_unix_ms:guardian::wall_ms()+20000,output_limit:1024};
+    let reply = controller
+        .execute_command(CommandRequest {
+            ownership: Some(owner.clone()),
+            command: Some((&command).into()),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let receipt: m::Receipt = reply.receipt.unwrap().try_into().unwrap();
+    let scope = LiveOutputScope {
+        version: 1,
+        owner: OutputOwner {
+            project_id: owner.project_id.parse().unwrap(),
+            sandbox_id: owner.sandbox_id.parse().unwrap(),
+            operation_id: command.operation_id,
+            allocation_id: receipt.context.allocation_id,
+            generation: receipt.context.generation,
+            boot_id: receipt.context.boot_id,
+            host_id: f.config.host,
+            host_epoch: f.config.epoch,
+        },
+        command_digest: command.digest().unwrap(),
+        output_limit: command.output_limit,
+        deadline_unix_ms: command.deadline_unix_ms,
+    };
+    let mut request = LiveOutputRequest {
+        scope_json: serde_json::to_vec(&scope).unwrap(),
+        output: Some(w::ReadOutput {
+            operation_id: command.operation_id.to_string(),
+            stream: w::Stream::Stdout as i32,
+            offset: 0,
+            limit: 32,
+        }),
+        expires_unix_ms: guardian::wall_ms() + 30000,
+    };
+    // A controller certificate cannot read even though it can execute.
+    let mut denied = transport::connect_output_reader(
+        &f.url,
+        f.config.host,
+        f.tls.ca.pem().as_bytes(),
+        f.tls.host.cert.pem().as_bytes(),
+        f.tls.host.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        denied.read(request.clone()).await.unwrap_err().code(),
+        Code::PermissionDenied
+    );
+    let mut reader = transport::connect_output_reader(
+        &f.url,
+        f.config.host,
+        f.tls.ca.pem().as_bytes(),
+        f.reader.cert.pem().as_bytes(),
+        f.reader.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    let journal = fs::read(f.config.state_root.join("host.json")).unwrap();
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        let observed = reader.read(request.clone()).await.unwrap().into_inner();
+        assert!(!observed.simulated);
+        assert_eq!(observed.request, Some(request.clone()));
+        let chunk = observed.chunk.unwrap();
+        assert!(!chunk.complete);
+        if chunk.data == [0, 255, b'a'] {
+            assert!(chunk.at_end);
+            break;
+        }
+        assert!(Instant::now() < until, "first live bytes never arrived");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Reading the captured EOF while running is not final completion.
+    request.output.as_mut().unwrap().offset = 3;
+    let chunk = reader
+        .read(request.clone())
+        .await
+        .unwrap()
+        .into_inner()
+        .chunk
+        .unwrap();
+    assert!(chunk.data.is_empty() && chunk.at_end && !chunk.complete);
+    drop(reader);
+    let mut reader = transport::connect_output_reader(
+        &f.url,
+        f.config.host,
+        f.tls.ca.pem().as_bytes(),
+        f.reader.cert.pem().as_bytes(),
+        f.reader.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(8);
+    loop {
+        let observed = reader.read(request.clone()).await.unwrap().into_inner();
+        let chunk = observed.chunk.unwrap();
+        if chunk.complete {
+            assert_eq!(chunk.data, b"z");
+            assert!(chunk.at_end);
+            assert_eq!(chunk.next_offset, 4);
+            assert_eq!(observed.receipt.unwrap().exit_code, Some(7));
+            break;
+        }
+        assert!(Instant::now() < until, "final output never arrived");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    request.output.as_mut().unwrap().offset = 4;
+    let end = reader
+        .read(request.clone())
+        .await
+        .unwrap()
+        .into_inner()
+        .chunk
+        .unwrap();
+    assert!(end.data.is_empty() && end.at_end && end.complete);
+    request.output.as_mut().unwrap().offset = 0;
+    request.output.as_mut().unwrap().stream = w::Stream::Stderr as i32;
+    let stderr = reader
+        .read(request.clone())
+        .await
+        .unwrap()
+        .into_inner()
+        .chunk
+        .unwrap();
+    assert_eq!(stderr.data, [254, b'e']);
+    assert!(stderr.complete && stderr.at_end);
+    assert_eq!(
+        journal,
+        fs::read(f.config.state_root.join("host.json")).unwrap(),
+        "read changed host journal"
+    );
+    // A direct guest read verifies the side effect stayed one line across reconnects.
+    let guest = f.manifest(&allocation).guest_client().unwrap();
+    let verify = m::Execute {
+        operation_id: OperationId::generate(),
+        argv: vec!["/bin/busybox".into(), "cat".into(), "/live-marker".into()],
+        env: Default::default(),
+        cwd: "/".into(),
+        deadline_unix_ms: guardian::wall_ms() + 5000,
+        output_limit: 1024,
+    };
+    guest.execute(&verify).await.unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while !guest
+        .inspect(verify.operation_id)
+        .await
+        .unwrap()
+        .cleanup_confirmed
+    {
+        assert!(Instant::now() < until);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        guest
+            .output(w::ReadOutput {
+                operation_id: verify.operation_id.to_string(),
+                stream: w::Stream::Stdout as i32,
+                offset: 0,
+                limit: 32
+            })
+            .await
+            .unwrap()
+            .data,
+        b"once\n"
+    );
+    let mut stop = allocation.clone();
+    stop.operation_id = OperationId::generate().to_string();
+    // Stop can acknowledge uncertainty while the guardian is still cleaning up.
+    // Only subsequent release evidence establishes completion.
+    let _ = controller
+        .stop(StopRequest {
+            ownership: Some(stop.clone()),
+        })
+        .await;
+    f.released(&mut controller, &stop).await;
+    assert_eq!(
+        reader.read(request.clone()).await.unwrap_err().code(),
+        Code::Unavailable
+    );
+    f.restart().await;
+    let mut reader = transport::connect_output_reader(
+        &f.url,
+        f.config.host,
+        f.tls.ca.pem().as_bytes(),
+        f.reader.cert.pem().as_bytes(),
+        f.reader.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    request.expires_unix_ms = guardian::wall_ms() + 5000;
+    assert_eq!(
+        reader.read(request).await.unwrap_err().code(),
+        Code::FailedPrecondition
+    );
+    eprintln!(
+        "real_live_output_observation {{\"binary_stdout_stderr\":true,\"pending_eof_distinct\":true,\"reconnect_no_reexecution\":true,\"journal_unchanged\":true,\"destroy_and_old_epoch_rejected\":true}}"
     );
 }

@@ -1,6 +1,6 @@
 # Private output storage
 
-Status: shared output metadata, the S3 transport library, independently fenced PostgreSQL publication, and the supervisor archival worker are implemented. Operation status responses expose output progress. Authenticated retained-byte retrieval is connected. Live streaming and cleanup remain unfinished. [Issue #46](https://github.com/hudson-infinity/hudson-sandbox/issues/46) tracks that integration and authenticated streaming. Upload success alone is neither execution success nor publication.
+Status: shared output metadata, the S3 transport library, independently fenced PostgreSQL publication, and the supervisor archival worker are implemented. Operation status responses expose output progress. Authenticated retained-byte retrieval is connected. A separate [supervisor read-only live-output RPC](supervisor-protocol.md#read-only-live-output) now supplies the guest transport; authenticated public live streaming and cleanup remain unfinished. [Issue #46](https://github.com/hudson-infinity/hudson-sandbox/issues/46) tracks that integration and authenticated streaming. Upload success alone is neither execution success nor publication.
 
 ## Object identity and integrity
 

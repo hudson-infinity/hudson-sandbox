@@ -16,6 +16,26 @@ service Supervisor {
   rpc InspectLease(LeaseInspection) returns (LeaseObservation);
 }
 
+// A separate read-only service, authenticated with distinct API-reader pins.
+// No command dispatch, journal mutation or allocation maintenance methods.
+service LiveOutput {
+  rpc Read(LiveOutputRequest) returns (LiveOutputObservation);
+}
+message LiveOutputRequest {
+  bytes scope_json = 1;
+  hudson.guest.v1.ReadOutput output = 2;
+  int64 expires_unix_ms = 3;
+}
+message LiveOutputObservation {
+  LiveOutputRequest request = 1;
+  string host_id = 2;
+  int64 supervisor_epoch = 3;
+  bool simulated = 4;
+  int64 observed_unix_ms = 5;
+  hudson.guest.v1.OutputChunk chunk = 6;
+  hudson.guest.v1.Receipt receipt = 7;
+}
+
 // Independent publication ownership, never an execution revision. JSON fields
 // contain only bounded versioned OutputTicket/OutputPlans/OutputRefs metadata.
 // Output bytes and credentials never cross this interface.

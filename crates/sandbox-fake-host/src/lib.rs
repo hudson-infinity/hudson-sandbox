@@ -4,6 +4,7 @@
 
 mod archive;
 mod commands;
+mod live_output;
 use sandbox_protocol::{
     AllocationId, HostId, OperationId, ProjectId, SandboxId,
     supervisor::{
@@ -38,6 +39,7 @@ pub struct FakeHost {
     state: Arc<Mutex<State>>,
     artifacts: Option<sandbox_artifacts::ArtifactStore>,
     archive_workers: Arc<tokio::sync::Semaphore>,
+    output_readers: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Debug, Default)]
@@ -116,6 +118,7 @@ impl FakeHost {
             state: Arc::new(Mutex::new(State::default())),
             artifacts: None,
             archive_workers: Arc::new(tokio::sync::Semaphore::new(2)),
+            output_readers: Arc::new(tokio::sync::Semaphore::new(4)),
         })
     }
 

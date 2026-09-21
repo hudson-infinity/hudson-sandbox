@@ -33,7 +33,7 @@ pub struct OutputOwner {
     pub boot_id: String,
 }
 impl OutputOwner {
-    fn validate(&self) -> Result<(), InvalidOutput> {
+    pub fn validate(&self) -> Result<(), InvalidOutput> {
         if self.generation <= 0
             || self.host_epoch <= 0
             || self.boot_id.is_empty()
