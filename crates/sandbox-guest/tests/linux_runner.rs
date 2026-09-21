@@ -139,7 +139,7 @@ async fn marker(path: &std::path::Path) {
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| panic!("marker missing: {path:?}"));
 }
 
 #[tokio::test]
@@ -320,5 +320,234 @@ async fn dropping_caller_keeps_work_owned_and_failed_spawn_is_not_success() {
     let receipt = finished(&observer, r.operation_id).await;
     assert_eq!(receipt.state, State::Unknown);
     assert_eq!(receipt.exit_code, None);
+    f.assert_empty();
+}
+
+#[path = "../../sandbox-protocol/tests/support/guest_tls.rs"]
+mod wire_tls;
+
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn authenticated_host_calls_execute_inspect_cancel_output_and_survive_disconnect() {
+    use sandbox_protocol::{
+        guest as w,
+        guest_wire::{self as wire, ClientTls},
+    };
+    use sandbox_supervisor::guest::GuestClient;
+    use tokio::{io::AsyncReadExt, net::UnixListener};
+    let mut f = Fixture::new();
+    let certs = wire_tls::Fixture::new();
+    f.context.allocation_id = certs.allocation;
+    let runner = Runner::open(f.config()).await.unwrap();
+    let socket_dir = tempfile::tempdir().unwrap();
+    let socket = socket_dir.path().join("vsock.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server_runner = runner.clone();
+    let tls = certs.server();
+    let serving = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let runner = server_runner.clone();
+            let tls = tls.clone();
+            tokio::spawn(async move {
+                let mut header = [0; 11];
+                stream.read_exact(&mut header).await.unwrap();
+                assert_eq!(&header, b"CONNECT 52\n");
+                use tokio::io::AsyncWriteExt;
+                stream.write_all(b"OK 12345\n").await.unwrap();
+                let _ = sandbox_guest::server::serve_connection(&runner, &tls, stream).await;
+            });
+        }
+    });
+    let make = |context: Context, tls: ClientTls| {
+        GuestClient::new(socket.clone(), 52, tls, context).unwrap()
+    };
+    let mut discovery = f.context.clone();
+    discovery.boot_id.clear();
+    let unbound = make(discovery, certs.client());
+    assert!(unbound.execute(&f.request("true")).await.is_err());
+    let bound = unbound.hello().await.unwrap();
+    assert_eq!(bound, f.context);
+    let client = make(bound, certs.client());
+    let r = f.request("printf wire-output; touch wire-started; sleep 30");
+    client.execute(&r).await.unwrap();
+    marker(&f.state.path().join("wire-started")).await;
+    assert_eq!(
+        client.execute(&r).await.unwrap().operation_id,
+        r.operation_id
+    );
+    let mut changed = r.clone();
+    changed.argv.push("conflict".into());
+    assert!(client.execute(&changed).await.is_err());
+    assert_eq!(
+        client.inspect(r.operation_id).await.unwrap().state,
+        State::LaunchIntent
+    );
+    client.cancel(r.operation_id).await.unwrap();
+    finished(&runner, r.operation_id).await;
+    assert_eq!(
+        client.inspect(r.operation_id).await.unwrap().state,
+        State::Cancelled
+    );
+    let output = client
+        .output(w::ReadOutput {
+            operation_id: r.operation_id.to_string(),
+            stream: w::Stream::Stdout as i32,
+            offset: 0,
+            limit: 4,
+        })
+        .await
+        .unwrap();
+    assert_eq!(output.data, b"wire");
+    assert!(!output.at_end);
+    assert!(output.complete);
+    let output = client
+        .output(w::ReadOutput {
+            operation_id: r.operation_id.to_string(),
+            stream: w::Stream::Stdout as i32,
+            offset: 4,
+            limit: 32,
+        })
+        .await
+        .unwrap();
+    assert_eq!(output.data, b"-output");
+    assert!(output.at_end);
+    let mut stale = f.context.clone();
+    stale.boot_id = "stale".into();
+    assert!(
+        make(stale, certs.client())
+            .inspect(r.operation_id)
+            .await
+            .is_err()
+    );
+    let mut wrong = f.context.clone();
+    wrong.allocation_id = AllocationId::generate();
+    assert!(
+        make(wrong, certs.client())
+            .inspect(r.operation_id)
+            .await
+            .is_err()
+    );
+    // Send a complete execute then close without reading its acknowledgement.
+    let lost = f.request("echo once >> wire-lost; touch wire-lost-started; sleep .1");
+    let (a, b) = tokio::io::duplex(32768);
+    let server_runner = runner.clone();
+    let tls = certs.server();
+    let task = tokio::spawn(async move {
+        let _ = sandbox_guest::server::serve_connection(&server_runner, &tls, a).await;
+    });
+    let mut stream = certs.client().connect(b).await.unwrap();
+    wire::write_frame(
+        &mut stream,
+        &w::Request {
+            version: 1,
+            request_id: OperationId::generate().to_string(),
+            context: Some((&f.context).into()),
+            action: Some(w::request::Action::Execute((&lost).into())),
+        },
+    )
+    .await
+    .unwrap();
+    // Establish admission from the guest-side marker, while deliberately never reading the reply.
+    marker(&f.state.path().join("wire-lost-started")).await;
+    drop(stream);
+    finished(&runner, lost.operation_id).await;
+    task.await.unwrap();
+    assert_eq!(client.execute(&lost).await.unwrap().exit_code, Some(0));
+    assert_eq!(
+        fs::read_to_string(f.state.path().join("wire-lost")).unwrap(),
+        "once\n"
+    );
+    serving.abort();
+    runner.shutdown().await.unwrap();
+    f.assert_empty();
+}
+
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn output_rejects_symlinks_nonregular_files_and_offsets_outside_retained_bytes() {
+    use sandbox_protocol::guest as w;
+    let f = Fixture::new();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let r = f.request("printf retained");
+    runner.start(r.clone()).await.unwrap();
+    finished(&runner, r.operation_id).await;
+    let request = w::ReadOutput {
+        operation_id: r.operation_id.to_string(),
+        stream: w::Stream::Stdout as i32,
+        offset: 100,
+        limit: 32,
+    };
+    assert!(runner.output(&request).await.is_err());
+    let path = f.state.path().join(format!("{}.stdout", r.operation_id));
+    fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", &path).unwrap();
+    let mut request = request;
+    request.offset = 0;
+    assert!(runner.output(&request).await.is_err());
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(runner.output(&request).await.is_err());
+    fs::remove_dir(&path).unwrap();
+    request.operation_id = "../../etc/passwd".into();
+    assert!(runner.output(&request).await.is_err());
+    let active = f.request("sleep 30");
+    runner.start(active.clone()).await.unwrap();
+    runner.shutdown().await.unwrap();
+    assert_eq!(
+        runner.inspect(active.operation_id).await.unwrap().state,
+        State::Cancelled
+    );
+    let empty = runner
+        .output(&w::ReadOutput {
+            operation_id: active.operation_id.to_string(),
+            stream: w::Stream::Stdout as i32,
+            offset: 0,
+            limit: 32,
+        })
+        .await
+        .unwrap();
+    assert!(empty.data.is_empty() && empty.complete && empty.at_end);
+    assert!(
+        runner
+            .start(f.request("touch after-shutdown"))
+            .await
+            .is_err()
+    );
+    assert!(!f.state.path().join("after-shutdown").exists());
+    f.assert_empty();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn shutdown_fences_concurrent_admission_before_releasing_ownership() {
+    let f = Fixture::new();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let request = f.request("sleep 30");
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+    let admitting = runner.clone();
+    let gate = barrier.clone();
+    let input = request.clone();
+    let start = tokio::spawn(async move {
+        gate.wait().await;
+        admitting.start(input).await
+    });
+    let draining = runner.clone();
+    let gate = barrier.clone();
+    let stop = tokio::spawn(async move {
+        gate.wait().await;
+        draining.shutdown().await
+    });
+    barrier.wait().await;
+    let admitted = start.await.unwrap();
+    let stopped = stop.await.unwrap();
+    stopped.unwrap();
+    if admitted.is_ok() {
+        assert_eq!(
+            runner.inspect(request.operation_id).await.unwrap().state,
+            State::Cancelled
+        );
+    }
+    assert!(runner.start(f.request("true")).await.is_err());
     f.assert_empty();
 }

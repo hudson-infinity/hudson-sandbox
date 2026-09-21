@@ -2,3 +2,6 @@
 //! The fake host uses this boundary on macOS; the real supervisor will use it on Linux.
 
 pub mod transport;
+
+#[cfg(unix)]
+pub mod guest;

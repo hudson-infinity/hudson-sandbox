@@ -19,3 +19,10 @@ pub use token::{ProjectToken, TokenHash, TokenKeyId, TokenParseError};
 pub mod supervisor {
     tonic::include_proto!("hudson.supervisor.v1");
 }
+
+/// Versioned guest command wire messages. Treat all guest reports as untrusted.
+pub mod guest {
+    tonic::include_proto!("hudson.guest.v1");
+}
+pub mod guest_model;
+pub mod guest_wire;

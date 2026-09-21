@@ -4,3 +4,6 @@ pub mod launcher;
 pub mod model;
 #[cfg(target_os = "linux")]
 pub mod runner;
+
+#[cfg(target_os = "linux")]
+pub mod server;
