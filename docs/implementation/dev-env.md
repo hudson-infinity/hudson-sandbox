@@ -6,7 +6,7 @@ The service runs customer code in Firecracker microVMs, which needs Linux with K
 
 ## Stage 0 — everything except a real VM, on macOS
 
-The Rust libraries and local dependencies run natively today. The process layout below is the target: the API binary, controller loop, and CLI remain incomplete. [The authenticated fake supervisor](../supervisor-protocol.md) now runs on loopback with operator-supplied certificates. Install `protoc` before building (`brew install protobuf` on macOS).
+The Rust libraries and local dependencies run natively today. The process layout below is the target: the API binary and CLI remain incomplete; the [create controller](../controller.md) now runs against one operator-provisioned host. [The authenticated fake supervisor](../supervisor-protocol.md) now runs on loopback with operator-supplied certificates. Install `protoc` before building (`brew install protobuf` on macOS).
 
 ```text
 macOS
@@ -26,7 +26,7 @@ make down    # stop, keeping data
 
 The stack binds PostgreSQL on 55432 and MinIO on 59000, not their defaults. If you already run PostgreSQL natively, the container binds `::` while `127.0.0.1` stays with your own server, and every connection from the host quietly reaches the wrong database — which surfaces as a missing role rather than a port conflict. Non-default ports remove the ambiguity. `make reset-db` drops the development schema when a migration changes underneath you.
 
-Authentication, admission, claims, reservations, and read handlers have executable tests. The fake provides the shared gRPC create/inspect/stop service over mTLS and always reports simulated evidence. It starts no VM or process. Controller integration, streaming, the CLI, and real execution remain unfinished.
+Authentication, admission, claims, reservations, and read handlers have executable tests. The fake provides the shared gRPC create/inspect/stop service over mTLS and always reports simulated evidence. It starts no VM or process. Create is integrated through the controller; other operation kinds, streaming, the CLI, and real execution remain unfinished.
 
 The fake models bounded resource accounting, stale ownership, lease expiry, duplicate requests, and lost acknowledgements for control-plane tests. Those models do not test host resource enforcement or hardware isolation; those require stage 1 and supported hardware.
 

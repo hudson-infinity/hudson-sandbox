@@ -41,6 +41,8 @@ pub struct OperationBody {
 /// A sandbox, as returned.
 #[derive(Debug, Serialize)]
 pub struct SandboxBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation_simulated: Option<bool>,
     sandbox_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -134,6 +136,7 @@ pub async fn sandbox(
 
 fn sandbox_body_for(view: SandboxView) -> Result<SandboxBody, Problem> {
     Ok(SandboxBody {
+        observation_simulated: view.observation_simulated,
         sandbox_id: view.id.to_string(),
         name: view.name,
         desired_state: view.desired_state,

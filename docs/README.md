@@ -50,3 +50,5 @@ If a note and a contract disagree, the contract is right.
 `artitecture.md`, `identity-and-resources.md`, and `implementation.md` were retired into the documents above rather than maintained in parallel. Their contents live in Architecture, Lifecycle, Data models, API contract, and Roadmap; the originals remain in Git history. The chosen stack, standalone service boundary, mandatory authentication, planned resource/security models, and pause/resume contracts remain; Product goal and Roadmap now prioritize a usable secure runtime before pause/resume and the management UI. Remove this section once the first runtime code lands and the old filenames stop appearing in open branches.
 
 The implemented internal transport and development fake are described in [supervisor protocol](supervisor-protocol.md), with links to their state-machine and mTLS tests.
+
+The [create controller](controller.md) documents the integrated dispatch/reconciliation path, its public evidence markers, and remaining runtime gaps.

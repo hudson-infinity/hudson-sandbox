@@ -12,7 +12,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Pin the Rust toolchain. `rustfmt` and `clippy` configured, clippy warnings denied in CI.
 - [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
 - [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
-- [ ] Integrate the controller with the implemented [authenticated fake supervisor](../supervisor-protocol.md); extend its shared protocol for execute, files, and outputs.
+- [ ] Extend the integrated [create controller and fake](../controller.md) for execute, files, outputs, and destroy.
 - [ ] Self-hosted runner for VM tests, once a host exists. Fork pull requests never run on it.
 
 ---
@@ -24,7 +24,6 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] First migration for `projects`, `sandboxes`, `operations`, `allocations`, `hosts` — the five records this phase touches. Snapshots wait for Phase 3.
 - [x] The constraints from [data models](../data-models.md#database-rules): `UNIQUE (project_id, idempotency_key)`, `UNIQUE (sandbox_id, generation)`, one unreleased allocation per sandbox, composite keys keeping sandbox-local links in the same sandbox.
 - [x] Typed UUIDv7 IDs with prefixes attached at the API boundary.
-- [x] Fresh-install migration test. Upgrade tests arrive with the second migration, which is the first one that can break an existing database.
 
 ## API
 
@@ -37,10 +36,9 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 ## Controller
 
-- [ ] Integrate the implemented claim storage into a controller scheduling loop; claim semantics and evidence now live in [lifecycle](../lifecycle.md#operations-and-controller-ownership).
-- [ ] Integrate the implemented [single-host reservation storage](../data-models.md#implemented-single-host-reservation) with authenticated host registration, image compatibility, and dispatch.
-- [ ] gRPC client over mTLS to the supervisor.
-- [ ] Persist intent before every external action and confirmed evidence after it. This is gate 1a work even though gate 1b is what proves it.
+- [ ] Extend the implemented create loop with lease renewal, expired-allocation reconciliation, and the remaining operation kinds.
+- [ ] Add authenticated host registration and verified image/host compatibility to the initial operator-provisioned create path.
+- [ ] Extend the implemented [create intent and evidence transactions](../controller.md#completion-and-uncertainty) to the remaining lifecycle actions.
 
 ## Supervisor
 

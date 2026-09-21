@@ -1698,6 +1698,28 @@ version = "0.0.0"
 [[package]]
 name = "sandbox-controller"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "hex",
+ "http",
+ "rcgen",
+ "sandbox-api",
+ "sandbox-fake-host",
+ "sandbox-protocol",
+ "sandbox-store",
+ "sandbox-supervisor",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower",
+ "uuid",
+]
 
 [[package]]
 name = "sandbox-fake-host"

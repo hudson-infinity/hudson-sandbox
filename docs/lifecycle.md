@@ -1,8 +1,8 @@
 # Sandbox lifecycle and recovery
 
-Status: selected contract; implementation and tests pending. This document owns state transitions, completion evidence, pause/resume, deadlines, cancellation, and recovery. [API contract](api-contract.md) owns client retries and HTTP behavior; [data models](data-models.md) owns persisted fields and constraints.
+Status: partially implemented; the create control-plane path has tests, while VM execution and the remaining lifecycle still need implementation. This document owns state transitions, completion evidence, pause/resume, deadlines, cancellation, and recovery. [API contract](api-contract.md) owns client retries and HTTP behavior; [data models](data-models.md) owns persisted fields and constraints.
 
-Implemented so far: [controller claim storage](../crates/sandbox-store/src/claims.rs), its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs), and [single-host reservation storage](data-models.md#implemented-single-host-reservation). Claims and reservations are not dispatch or VM readiness; controller scheduling, host communication, and lifecycle completion remain unimplemented.
+Implemented so far: [controller claim storage](../crates/sandbox-store/src/claims.rs), its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs), and [single-host reservation storage](data-models.md#implemented-single-host-reservation). The [create controller](controller.md) now persists dispatch intent, communicates over mTLS, and reconciles fake-host observations. No VM execution or isolation has been verified.
 
 ## Identity through a sandbox session
 
@@ -166,7 +166,7 @@ Stop admitting new allocations on draining hosts. Keep existing work reachable w
 
 ## Acceptance checks
 
-No executable tests exist yet. Implement tests for:
+The [create controller tests](../crates/sandbox-controller/tests/create.rs) cover the implemented create subset using a fake host. The remaining contracts, including real runtime behavior, require tests for:
 
 1. Create → execute → pause → release compute → resume → destroy without Hudson or Temporal.
 2. Memory, files, process identity, and the original command deadline survive a completed pause/resume.

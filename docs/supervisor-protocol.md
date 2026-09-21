@@ -1,6 +1,6 @@
 # Supervisor protocol and development fake
 
-Status: the versioned gRPC transport and an in-memory fake are implemented. The controller dispatch loop, authenticated host registration, certificate provisioning, and real Firecracker supervisor remain unfinished. A fake observation never establishes that a VM exists, ran code, enforced limits, or released real resources.
+Status: the versioned gRPC transport and an in-memory fake are implemented. The [create controller](controller.md) now uses this transport. Authenticated host registration, certificate provisioning, and the real Firecracker supervisor remain unfinished. A fake observation never establishes that a VM exists, ran code, enforced limits, or released real resources.
 
 ## Contract and identity
 
@@ -20,7 +20,7 @@ Create, inspect, and stop carry the host, project, sandbox, allocation, operatio
 
 Claim deadlines must be in the future and at most 300 seconds away when the supervisor handles the request. Allocation lease deadlines have the same bound. Wall clocks must be synchronized; after validation, the fake converts the allocation deadline to a monotonic local timer. Controller claim expiry never extends an allocation lease.
 
-An observation echoes the requested ownership tuple, names the original create operation when known, includes its observation time, and distinguishes `absent`, `ready`, and `released`. The controller must verify the complete tuple and expected evidence before changing PostgreSQL state. `unspecified` is never a usable result. Every fake response sets `simulated=true`, including health. A future controller must require explicit development opt-in before accepting simulated evidence and preserve that distinction in persisted receipts.
+An observation echoes the requested ownership tuple, names the original create operation when known, includes its observation time, and distinguishes `absent`, `ready`, and `released`. The controller must verify the complete tuple and expected evidence before changing PostgreSQL state. `unspecified` is never a usable result. Every fake response sets `simulated=true`, including health. The create controller requires explicit development opt-in before accepting simulated evidence and preserves that distinction in receipts and public state.
 
 `Absent` means this supervisor has no evidence for that allocation. It is not confirmation that another epoch stopped the VM, permission to free its reservation, or permission to repeat an uncertain command. Database intent, authenticated observations, and the [lifecycle reconciliation contract](lifecycle.md#destroy-and-recovery) govern the next action.
 
@@ -56,4 +56,4 @@ The default listen address is `127.0.0.1:7443`; non-loopback addresses are rejec
 
 [State-machine tests](../crates/sandbox-fake-host/tests/state.rs) cover concurrent duplicates, changed retries, lost acknowledgements, stale claims after absence, stop-before-create, cross-project/allocation identity, generation replacement, limits, deadlines, and monotonic lease expiry. [Loopback TLS tests](../crates/sandbox-fake-host/tests/tls.rs) exercise actual gRPC calls, configured certificate rotation, same-CA unauthorized peers, missing/untrusted client certificates, wrong host identities, plaintext rejection, and server message bounds.
 
-These tests establish the modeled behavior and transport checks only. PostgreSQL/controller integration, real certificate lifecycle, host watchdog fencing under partitions, Firecracker/jailer, image-byte verification, filesystem isolation, resource enforcement, and network policy require their own evidence. [Phase 1](roadmap.md#scope-discipline-for-phase-1) cannot pass on fake-host tests.
+These tests establish the modeled behavior and transport checks only. Further lifecycle integration, real certificate lifecycle, host watchdog fencing under partitions, Firecracker/jailer, image-byte verification, filesystem isolation, resource enforcement, and network policy require their own evidence. [Phase 1](roadmap.md#scope-discipline-for-phase-1) cannot pass on fake-host tests.
