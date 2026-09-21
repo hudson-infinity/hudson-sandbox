@@ -43,7 +43,7 @@ Spike on a real Linux/KVM host, with throwaway code that is not intended to merg
 | What do a pause and a cold cross-host restore actually cost in seconds and bytes? | Phase 4 | Sets whether the [performance](performance.md) resume budgets are reachable |
 | How well can the guest agent be shielded from a root customer in the same VM? | Phases 1 and 4 | [Decision 0003](decisions/0003-guest-root-with-our-kernel.md) grants root deliberately. Measure what a hostile root can actually do to the agent: kill sweeps, reaching its control socket, forging a handshake |
 
-Exit gate: a written findings document per question, with the commands run and the host configuration recorded. A negative answer is a successful spike; it redirects the design before the dependent phase rather than during it. If process-continuous resume proves unreachable on this stack, reopen [alternatives](alternatives.md#revisit-triggers).
+The [spike sheet](implementation/phase-0-spikes.md) carries the method for each one. Exit gate: a written findings document per question, with the commands run and the host configuration recorded. A negative answer is a successful spike; it redirects the design before the dependent phase rather than during it. If process-continuous resume proves unreachable on this stack, reopen [alternatives](alternatives.md#revisit-triggers).
 
 ## Scope discipline for Phase 1
 
@@ -99,7 +99,9 @@ Two decisions remain, and both are procurement rather than design. Phase 0 canno
 
 ## Work breakdown
 
-Phase 0 and Phase 1 are concrete enough to become issues now, and the decisions above remove the remaining excuse for not writing them. Open one issue per spike question and one per Phase 1 scope item, and keep later phases as planning documents until their predecessor's gate passes.
+Phase 0 and Phase 1 are concrete enough to become issues now, and the decisions above remove the remaining excuse for not writing them. Both are broken down in [implementation notes](implementation/README.md): a [spike sheet](implementation/phase-0-spikes.md) and a [task list](implementation/phase-1-tasks.md).
+
+Those notes are deliberately temporary and are deleted as the work lands. This document, the contracts, and the decision records are not — the reasoning outlives the build order.
 
 ## Development and operational prerequisites
 
