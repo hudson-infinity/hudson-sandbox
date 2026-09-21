@@ -140,10 +140,20 @@ async fn retention_upgrade_preserves_existing_rows_without_assigning_policy(pool
         .await
         .unwrap();
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
-    let after: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o ORDER BY id")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let mut after: Vec<Value> =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for row in &mut after {
+        for key in [
+            "payload_compacted_at",
+            "command_summary",
+            "payload_compaction_next_at",
+        ] {
+            assert_eq!(row.as_object_mut().unwrap().remove(key), Some(Value::Null));
+        }
+    }
     assert_eq!(before, after);
     assert_eq!(
         Store::from_pool(pool)

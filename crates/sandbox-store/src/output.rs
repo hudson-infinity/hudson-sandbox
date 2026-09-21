@@ -3,7 +3,6 @@
 use crate::{Store, execute::validate_intent};
 use sandbox_protocol::{
     AllocationId, HostId, Id, OperationId, ProjectId, SandboxId,
-    command::CommandInput,
     guest_model::{Receipt, State},
     output::{InvalidOutput, OutputOwner, OutputPlans, OutputRefs, OutputTicket},
     supervisor::Ownership,
@@ -127,11 +126,8 @@ pub(crate) async fn execution_evidence(
         .ok_or(OutputError::Corrupt)?;
     let pinned = sqlx::query("SELECT host_id,generation,supervisor_epoch FROM allocations WHERE id=$1 AND project_id=$2 AND sandbox_id=$3")
         .bind(allocation).bind(project_id.uuid()).bind(sandbox_id.uuid()).fetch_optional(&mut *db).await?.ok_or(OutputError::Corrupt)?;
-    let command: CommandInput =
-        serde_json::from_value(row.try_get("payload")?).map_err(|_| OutputError::Corrupt)?;
-    command.validate().map_err(|_| OutputError::Corrupt)?;
-    let command = command.for_operation(operation_id);
-    let digest = command.digest().map_err(|_| OutputError::Corrupt)?;
+    let command = crate::compaction::command_summary(row)?;
+    let digest = command.digest;
     let owner = Ownership {
         project_id: project_id.to_string(),
         sandbox_id: sandbox_id.to_string(),

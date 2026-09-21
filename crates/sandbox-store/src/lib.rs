@@ -6,6 +6,7 @@
 
 pub mod admission;
 pub mod claims;
+pub mod compaction;
 pub mod destroy;
 pub mod dispatch;
 pub mod execute;

@@ -3,6 +3,9 @@ use sandbox_cleanup::{Cleaner, CleanupError, CleanupTick, Retirement};
 use sandbox_protocol::output::{OutputOwner, OutputRetirement};
 use sandbox_store::output_cleanup::CleanupCompletion;
 
+#[path = "compaction.rs"]
+mod compaction_tests;
+
 fn completion(m: &CleanupManifest) -> CleanupCompletion {
     let Some(plans) = &m.plans else {
         return CleanupCompletion::NoUploadsAuthorized;

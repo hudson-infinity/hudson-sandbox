@@ -20,7 +20,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [API server](api-server.md) | HTTPS transport, offline provisioning, and runnable local setup | How to start and call the implemented API |
 | [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |
 | [Output storage](output-storage.md) | Private artifact identity, archival, publication, verified reads and cleanup worker | How output is retrieved, streamed and retired with recoverable completion receipts |
-| [Operation retention](operation-retention.md) | Terminal response expiry, stable retries and operator policy | How expired results behave and what evidence compaction must preserve |
+| [Operation retention](operation-retention.md) | Terminal response expiry, payload compaction and stable retries | How expired bodies are removed while preserving recovery evidence |
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |
 | [Supported configuration](compatibility.md) | Host and guest envelope, privilege layers, boot inputs | What a supported installation and a sandbox actually are |
 | [Networking](networking.md) | Egress policy, name resolution, ingress, bandwidth | What a sandbox can reach and what can reach it |

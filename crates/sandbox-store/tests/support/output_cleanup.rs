@@ -343,11 +343,21 @@ async fn cleanup_migration_preserves_existing_publication_and_execution(pool: Pg
         .unwrap();
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
-    let after: Value = sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o WHERE id=$1")
+    let mut after: Value = sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o WHERE id=$1")
         .bind(f.operation.uuid())
         .fetch_one(&pool)
         .await
         .unwrap();
+    for key in [
+        "payload_compacted_at",
+        "command_summary",
+        "payload_compaction_next_at",
+    ] {
+        assert_eq!(
+            after.as_object_mut().unwrap().remove(key),
+            Some(Value::Null)
+        );
+    }
     assert_eq!(before, after);
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM output_cleanup")
         .fetch_one(&pool)

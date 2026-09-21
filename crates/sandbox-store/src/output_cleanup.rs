@@ -118,6 +118,29 @@ async fn manifest(db: &mut PgConnection, row: &PgRow) -> Result<CleanupManifest,
     })
 }
 
+/// Compaction may remove the original command only after revalidating the
+/// completed retirement against all retained execution/publication evidence.
+pub(crate) async fn validate_completed(
+    db: &mut PgConnection,
+    row: &PgRow,
+) -> Result<(), OutputError> {
+    let inventory=sqlx::query("SELECT manifest,receipt,eligible_at FROM output_cleanup WHERE operation_id=$1 AND completed_at IS NOT NULL FOR UPDATE")
+        .bind(row.try_get::<uuid::Uuid,_>("id")?).fetch_optional(&mut *db).await?.ok_or(OutputError::Corrupt)?;
+    let current = manifest(db, row).await?;
+    let saved: CleanupManifest =
+        serde_json::from_value(inventory.try_get("manifest")?).map_err(|_| OutputError::Corrupt)?;
+    let receipt: CleanupCompletion =
+        serde_json::from_value(inventory.try_get("receipt")?).map_err(|_| OutputError::Corrupt)?;
+    let eligible = OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(current.ticket.delete_after_unix_ms) * 1_000_000,
+    )
+    .map_err(|_| OutputError::Corrupt)?;
+    if current != saved || inventory.try_get::<OffsetDateTime, _>("eligible_at")? != eligible {
+        return Err(OutputError::Corrupt);
+    }
+    receipt.validate(&current)
+}
+
 impl Store {
     /// Record both streams under the same live cleanup claim. A lost commit
     /// acknowledgement can be reconciled by repeating this exact receipt with

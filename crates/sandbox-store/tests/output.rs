@@ -808,8 +808,17 @@ async fn publication_upgrade_preserves_old_outcomes_and_only_queues_receipt_cand
             .unwrap();
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
-    let after:Value=sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(o)-ARRAY['output_status','output_claim_revision','output_lease_expires_at','output_next_retry_at','output_ticket','output_plan','output_expires_at'] ORDER BY id) FROM operations o")
+    let mut after:Value=sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(o)-ARRAY['output_status','output_claim_revision','output_lease_expires_at','output_next_retry_at','output_ticket','output_plan','output_expires_at'] ORDER BY id) FROM operations o")
         .fetch_one(&pool).await.unwrap();
+    for row in after.as_array_mut().unwrap() {
+        for key in [
+            "payload_compacted_at",
+            "command_summary",
+            "payload_compaction_next_at",
+        ] {
+            assert_eq!(row.as_object_mut().unwrap().remove(key), Some(Value::Null));
+        }
+    }
     assert_eq!(before, after);
     let (status,): (String,) = sqlx::query_as("SELECT output_status FROM operations WHERE id=$1")
         .bind(legacy.uuid())
