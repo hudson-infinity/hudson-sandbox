@@ -2,6 +2,8 @@
 
 Status: selected contract; implementation and tests pending. This document owns state transitions, completion evidence, pause/resume, deadlines, cancellation, and recovery. [API contract](api-contract.md) owns client retries and HTTP behavior; [data models](data-models.md) owns persisted fields and constraints.
 
+Implemented so far: [controller claim storage](../crates/sandbox-store/src/claims.rs) and its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs). Claiming is not dispatch or VM readiness; placement, host communication, and lifecycle completion remain unimplemented.
+
 ## Identity through a sandbox session
 
 The short names in this table are explanatory aliases, not API IDs.
@@ -46,6 +48,8 @@ Serialize lifecycle transitions and workspace-mutating commands initially. Rejec
 Admit a request by transactionally inserting its operation and updating the relevant desired state. The operation table is also the initial pending-work queue; an in-memory notification may accelerate discovery but cannot be the only delivery mechanism.
 
 Controllers claim work with bounded leases, monotonically increasing claim revisions, and conditional database updates. Multiple replicas must not own the same transition concurrently. On controller restart or lease expiry, a new owner first reconciles receipts and host observations, then continues only if safe. Metadata writes and supervisor requests validate the current claim revision as well as the allocation generation, rejecting an old controller even when the VM allocation has not changed.
+
+The implemented storage primitive claims one supported operation kind at a time using `FOR UPDATE SKIP LOCKED`. PostgreSQL time determines eligibility and expiry. Leases are bounded to 1–300 seconds; deferral delays to 1–3600 seconds. Renewal and deferral require both the current revision and an unexpired lease. An expired owner cannot renew even before replacement. Reclaim preserves the phase, receipts, deadline, and unknown outcome; claiming itself does not increment dispatch attempts. Deferral releases controller ownership only, never VM resources or reservations. These bounds govern storage calls; the running controller's scheduling and host-watchdog policy still need implementation.
 
 Persist bounded attempt counts, deadlines, next retry times, and terminal errors. Distinguish queued, running, succeeded, failed, cancelled, and unknown outcomes. A lost network response does not establish failure. Requests return a durable operation handle; clients inspect status or reconnect to progress streams without keeping the original HTTP request alive.
 

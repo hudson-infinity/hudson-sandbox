@@ -5,6 +5,7 @@
 //! the migrations and the code that relies on them stay in one place.
 
 pub mod admission;
+pub mod claims;
 pub mod projects;
 pub mod reads;
 
@@ -44,6 +45,12 @@ pub struct Store {
 }
 
 impl Store {
+    /// Use an existing PostgreSQL pool, including an isolated integration-test database.
+    #[must_use]
+    pub fn from_pool(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+
     /// Connect, without touching the schema.
     ///
     /// Connections are established lazily, so this succeeding does not prove
