@@ -20,7 +20,11 @@ message Request {
   uint32 version = 1;
   string request_id = 2;
   Context context = 3;
-  oneof action { Hello hello = 4; Execute execute = 5; Operation inspect = 6; Operation cancel = 7; ReadOutput output = 8; }
+  oneof action { Hello hello = 4; Execute execute = 5; Operation inspect = 6; Operation cancel = 7; ReadOutput output = 8;
+    FileUpload begin_upload = 9; WriteFile write_file = 10; FileOperation inspect_upload = 11;
+    FileOperation commit_upload = 12; FileOperation abort_upload = 13; CaptureFile capture_file = 14;
+    ReadFile read_file = 15; FileHandle release_file = 16;
+  }
 }
 enum State { STATE_UNSPECIFIED = 0; STATE_LAUNCH_INTENT = 1; STATE_EXITED = 2; STATE_TIMED_OUT = 3; STATE_CANCELLED = 4; STATE_UNKNOWN = 5; }
 message OutputStats { uint64 seen = 1; uint64 stored = 2; bool truncated = 3; }
@@ -48,5 +52,34 @@ enum ErrorCode { ERROR_CODE_UNSPECIFIED = 0; ERROR_CODE_INVALID = 1; ERROR_CODE_
 message Error { ErrorCode code = 1; }
 message Response {
   uint32 version = 1; string request_id = 2; Context context = 3;
-  oneof result { Hello hello = 4; Receipt receipt = 5; OutputChunk output = 6; Error error = 7; }
+  oneof result { Hello hello = 4; Receipt receipt = 5; OutputChunk output = 6; Error error = 7;
+    FileReceipt file_receipt = 8; FileProgress file_progress = 9; FileCapture file_capture = 10;
+    FileChunk file_chunk = 11; FileHandle file_released = 12;
+  }
+}
+
+// File bytes remain bounded chunks. Upload IDs are durable operations; capture IDs
+// are fresh guest-generated read handles and are never recaptured by a range read.
+message FileUpload {
+  string operation_id = 1; string path = 2; uint64 size = 3; bytes sha256 = 4; uint32 mode = 5;
+}
+message FileOperation { string operation_id = 1; bytes digest = 2; }
+message WriteFile { FileOperation operation = 1; uint64 offset = 2; bytes data = 3; }
+enum FileState {
+  FILE_STATE_UNSPECIFIED = 0; FILE_STATE_STAGING = 1; FILE_STATE_COMMIT_INTENT = 2;
+  FILE_STATE_COMMITTED = 3; FILE_STATE_UNKNOWN = 4; FILE_STATE_ABORTED = 5;
+}
+message FileReceipt {
+  uint32 version = 1; Context context = 2; FileUpload upload = 3; bytes digest = 4; FileState state = 5;
+}
+message FileProgress { FileOperation operation = 1; uint64 stored = 2; }
+message CaptureFile { string path = 1; }
+message FileCapture {
+  string capture_id = 1; string path = 2; uint64 size = 3; bytes sha256 = 4; int64 expires_unix_ms = 5;
+}
+message FileHandle { string capture_id = 1; bytes sha256 = 2; }
+message ReadFile { FileHandle handle = 1; uint64 offset = 2; uint32 limit = 3; }
+message FileChunk {
+  FileHandle handle = 1; uint64 offset = 2; bytes data = 3; uint64 next_offset = 4;
+  uint64 size = 5; bool at_end = 6;
 }

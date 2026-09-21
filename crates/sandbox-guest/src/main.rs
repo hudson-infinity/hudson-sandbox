@@ -122,6 +122,9 @@ fn serve_cli() -> anyhow::Result<()> {
         generation: i64,
         #[arg(long, default_value_t = 52)]
         port: u32,
+        /// Existing guest workspace; omitted means command-only service.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         #[arg(long)]
         ca: PathBuf,
         #[arg(long)]
@@ -166,15 +169,22 @@ fn serve_cli() -> anyhow::Result<()> {
                 },
             })
             .await?;
+            let files = match args.workspace {
+                Some(path) => Some(sandbox_guest::file_service::FileService::open(path, runner.context().clone()).await?),
+                None => None,
+            };
             use tokio::signal::unix::{SignalKind, signal};
             let mut interrupt = signal(SignalKind::interrupt())?;
             let mut terminate = signal(SignalKind::terminate())?;
             let served = tokio::select! {
-                result=sandbox_guest::server::serve_vsock(runner.clone(),tls,args.port)=>result,
+                result=sandbox_guest::server::serve_vsock_with_files(runner.clone(),files.clone(),tls,args.port)=>result,
                 _=interrupt.recv()=>Ok(()),
                 _=terminate.recv()=>Ok(()),
             };
-            runner.shutdown().await?;
+            let files_stopped = match files { Some(files) => files.shutdown().await, None => Ok(()) };
+            let commands_stopped = runner.shutdown().await;
+            files_stopped?;
+            commands_stopped?;
             served
         })
 }

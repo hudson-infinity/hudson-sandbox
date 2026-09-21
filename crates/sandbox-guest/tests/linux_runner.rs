@@ -617,3 +617,154 @@ async fn live_capture_counters_bound_reads_before_terminal_receipt() {
     assert!(final_chunk.complete);
     f.assert_empty();
 }
+
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux VM"]
+async fn authenticated_file_upload_lost_commit_and_capture_keep_identity() {
+    use sandbox_guest::file_service::FileService;
+    use sandbox_protocol::{file_wire, files as files_model, guest as w, guest_wire as wire};
+    use sandbox_supervisor::guest::GuestClient;
+    use sha2::{Digest, Sha256};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::UnixListener,
+    };
+    let mut f = Fixture::new();
+    let certs = wire_tls::Fixture::new();
+    f.context.allocation_id = certs.allocation;
+    let runner = Runner::open(f.config()).await.unwrap();
+    let workspace = f.state.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let files = FileService::open(workspace.clone(), f.context.clone())
+        .await
+        .unwrap();
+    let sockets = tempfile::tempdir().unwrap();
+    let socket = sockets.path().join("vsock.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server_runner = runner.clone();
+    let server_files = files.clone();
+    let tls = certs.server();
+    let serving = tokio::spawn(async move {
+        let mut tasks = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                _=tasks.join_next(),if !tasks.is_empty()=>{},
+                accepted=listener.accept()=>{
+                    let (mut stream, _) = accepted.unwrap(); let runner = server_runner.clone(); let files = server_files.clone(); let tls = tls.clone();
+                    tasks.spawn(async move {
+                        let mut header = [0;11]; stream.read_exact(&mut header).await.unwrap(); assert_eq!(&header,b"CONNECT 52\n");
+                        stream.write_all(b"OK 12345\n").await.unwrap();
+                        let _=sandbox_guest::server::serve_connection_with_files(&runner,Some(&files),&tls,stream).await;
+                    });
+                }
+            }
+        }
+    });
+    let client = GuestClient::new(socket.clone(), 52, certs.client(), f.context.clone()).unwrap();
+    let input = files_model::Upload {
+        operation_id: OperationId::generate(),
+        path: "input".into(),
+        size: 7,
+        sha256: Sha256::digest(b"payload").into(),
+        mode: 0o644,
+    };
+    client.begin_upload(&input).await.unwrap();
+    client.write_file(&input, 0, b"payload").await.unwrap();
+    let mut stale = f.context.clone();
+    stale.boot_id = "stale".into();
+    let wrong = GuestClient::new(socket.clone(), 52, certs.client(), stale).unwrap();
+    assert!(wrong.commit_upload(&input).await.is_err());
+    assert!(!workspace.join("input").exists());
+    let mut other = f.context.clone();
+    other.allocation_id = AllocationId::generate();
+    assert!(
+        GuestClient::new(socket, 52, certs.client(), other)
+            .unwrap()
+            .commit_upload(&input)
+            .await
+            .is_err()
+    );
+    let (a, b) = tokio::io::duplex(32768);
+    let r = runner.clone();
+    let file_server = files.clone();
+    let tls = certs.server();
+    let task = tokio::spawn(async move {
+        let _ = sandbox_guest::server::serve_connection_with_files(&r, Some(&file_server), &tls, a)
+            .await;
+    });
+    let mut stream = certs.client().connect(b).await.unwrap();
+    wire::write_frame(
+        &mut stream,
+        &w::Request {
+            version: 1,
+            request_id: OperationId::generate().to_string(),
+            context: Some((&f.context).into()),
+            action: Some(w::request::Action::CommitUpload(
+                file_wire::operation(&input).unwrap(),
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    marker(&workspace.join("input")).await;
+    drop(stream);
+    task.await.unwrap();
+    let until = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Ok(receipt) = client.inspect_upload(&input).await {
+            assert_eq!(receipt.state, files_model::State::Committed);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < until);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    fs::write(workspace.join("input"), b"later").unwrap();
+    assert_eq!(
+        client.commit_upload(&input).await.unwrap().state,
+        files_model::State::Committed
+    );
+    assert_eq!(fs::read(workspace.join("input")).unwrap(), b"later");
+    let captured = client.capture_file("input").await.unwrap();
+    fs::write(workspace.join("input"), b"newer").unwrap();
+    let bytes = client.read_file(&captured, 0, 32).await.unwrap();
+    assert_eq!(bytes.data, b"later");
+    assert_eq!(
+        <[u8; 32]>::from(Sha256::digest(&bytes.data)).as_slice(),
+        captured.sha256
+    );
+    client.release_file(&captured).await.unwrap();
+    assert!(client.read_file(&captured, 0, 32).await.is_err());
+    // Raw authenticated malformed paths are rejected by the guest, independently of client checks.
+    let (a, b) = tokio::io::duplex(32768);
+    let r = runner.clone();
+    let file_server = files.clone();
+    let tls = certs.server();
+    let task = tokio::spawn(async move {
+        sandbox_guest::server::serve_connection_with_files(&r, Some(&file_server), &tls, a).await
+    });
+    let mut stream = certs.client().connect(b).await.unwrap();
+    wire::write_frame(
+        &mut stream,
+        &w::Request {
+            version: 1,
+            request_id: OperationId::generate().to_string(),
+            context: Some((&f.context).into()),
+            action: Some(w::request::Action::CaptureFile(w::CaptureFile {
+                path: "../context.json".into(),
+            })),
+        },
+    )
+    .await
+    .unwrap();
+    let response: w::Response = wire::read_frame(&mut stream).await.unwrap();
+    assert!(matches!(
+        response.result,
+        Some(w::response::Result::Error(_))
+    ));
+    task.await.unwrap().unwrap();
+    serving.abort();
+    let _ = serving.await;
+    files.shutdown().await.unwrap();
+    runner.shutdown().await.unwrap();
+    f.assert_empty();
+}

@@ -13,3 +13,6 @@ pub mod boot;
 
 #[cfg(target_os = "linux")]
 pub mod files;
+
+#[cfg(target_os = "linux")]
+pub mod file_service;
