@@ -119,6 +119,47 @@ async fn once_uses_private_configuration_and_an_isolated_database(pool: PgPool) 
             assert!(stderr.contains("RetentionAssigned(1)"));
         }
     }
+    // The separate compaction flag clears a body whose service request digest
+    // is known, while the preceding retention-only invocations kept it intact.
+    let payload = std::collections::BTreeMap::from([("reason", "private-cli-fixture")]);
+    let digest =
+        sandbox_protocol::RequestDigest::compute("SERVICE", "/allocation-cleanup", &payload)
+            .unwrap();
+    sqlx::query(
+        "UPDATE operations SET kind='destroy',payload=$2::jsonb,request_digest=$3 WHERE id=$1",
+    )
+    .bind(operation.uuid())
+    .bind(r#"{"reason":"private-cli-fixture"}"#)
+    .bind(digest.as_bytes().as_slice())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_sandbox-cleanup"))
+            .env("DATABASE_URL", url.as_str())
+            .args(["--once", "--compact-payloads", "--output-config"])
+            .arg(&config)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("PayloadCompaction(Completed(")
+    );
+    let cleared: bool = sqlx::query_scalar(
+        "SELECT payload='{}' AND payload_compacted_at IS NOT NULL FROM operations WHERE id=$1",
+    )
+    .bind(operation.uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(cleared);
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM output_cleanup")
         .fetch_one(&pool)
         .await

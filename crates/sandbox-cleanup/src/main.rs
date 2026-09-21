@@ -23,6 +23,10 @@ struct Args {
     /// to existing completed work too; never changes already assigned deadlines.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=31_536_000))]
     response_retention_seconds: Option<u32>,
+    /// Remove eligible expired request/result bodies, preserving retry and
+    /// recovery evidence. Disabled by default; removal cannot be undone.
+    #[arg(long, default_value_t = false)]
+    compact_payloads: bool,
 }
 
 #[tokio::main]
@@ -42,6 +46,9 @@ async fn main() -> anyhow::Result<()> {
             ResponseRetention::new(seconds)
                 .ok_or_else(|| anyhow::anyhow!("invalid response retention policy"))?,
         );
+    }
+    if args.compact_payloads {
+        cleaner = cleaner.with_payload_compaction();
     }
     if args.once {
         // Preserve the redacted Display message without attaching provider

@@ -346,3 +346,104 @@ async fn response_expiry_is_rechecked_after_a_database_lock_wait(pool: PgPool) {
         &f.operation.to_string(),
     );
 }
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn compaction_keeps_all_three_mutation_retry_contracts(pool: PgPool) {
+    use sandbox_store::compaction::Compaction;
+    let f = Fixture::new(&pool).await;
+    f.finish().await;
+    let (key, command): (String, Value) =
+        sqlx::query_as("SELECT idempotency_key,payload FROM operations WHERE id=$1")
+            .bind(f.operation.uuid())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    expire(&pool, f.operation).await;
+    assert_eq!(
+        f.store.compact_expired_response().await.unwrap(),
+        Compaction::Completed(f.operation)
+    );
+    let path = format!("/v1/sandboxes/{}/execute", f.sandbox);
+    expired(
+        send(&f.app(None), &f.token, "POST", &path, &key, command.clone()).await,
+        &f.operation.to_string(),
+    );
+    let mut changed = command;
+    changed["argv"] = json!(["different"]);
+    assert_eq!(
+        send(&f.app(None), &f.token, "POST", &path, &key, changed)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    expired(
+        get(&f, &format!("/v1/operations/{}", f.operation)).await,
+        &f.operation.to_string(),
+    );
+    assert_eq!(
+        get(
+            &f,
+            &format!("/v1/operations/{}/outputs/stdout", f.operation)
+        )
+        .await
+        .1["code"],
+        "output_expired"
+    );
+    assert_eq!(
+        get(&f, &format!("/v1/operations/{}/stream", f.operation))
+            .await
+            .1["code"],
+        "output_expired"
+    );
+    let other = Fixture::new(&pool).await;
+    assert_eq!(
+        get(&other, &format!("/v1/operations/{}", f.operation))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+
+    let app = f.app(None);
+    let key = "compacted-create-key";
+    let body = create_body();
+    let created = send(&app, &f.token, "POST", "/v1/sandboxes", key, body.clone()).await;
+    assert_eq!(created.0, StatusCode::ACCEPTED);
+    let create: OperationId = created.1["operation_id"].as_str().unwrap().parse().unwrap();
+    sqlx::query("UPDATE operations SET status='failed',completed_at=clock_timestamp(),error='{}' WHERE id=$1")
+        .bind(create.uuid()).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE sandboxes SET active_transition_operation_id=NULL,desired_state='destroyed',observed_state='destroyed',destroyed_at=clock_timestamp() WHERE id=(SELECT sandbox_id FROM operations WHERE id=$1)")
+        .bind(create.uuid()).execute(&pool).await.unwrap();
+    expire(&pool, create).await;
+    assert_eq!(
+        f.store.compact_expired_response().await.unwrap(),
+        Compaction::Completed(create)
+    );
+    expired(
+        send(&app, &f.token, "POST", "/v1/sandboxes", key, body).await,
+        &create.to_string(),
+    );
+    let path = format!(
+        "/v1/sandboxes/{}/destroy",
+        created.1["sandbox_id"].as_str().unwrap()
+    );
+    let key = "compacted-destroy-key";
+    let destroyed = send(&app, &f.token, "POST", &path, key, json!({})).await;
+    assert_eq!(destroyed.0, StatusCode::ACCEPTED);
+    let destroy: OperationId = destroyed.1["operation_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    expire(&pool, destroy).await;
+    assert_eq!(
+        f.store.compact_expired_response().await.unwrap(),
+        Compaction::Completed(destroy)
+    );
+    expired(
+        send(&app, &f.token, "POST", &path, key, json!({})).await,
+        &destroy.to_string(),
+    );
+    let cleared:i64=sqlx::query_scalar("SELECT count(*) FROM operations WHERE project_id=$1 AND payload_compacted_at IS NOT NULL AND payload='{}' AND result IS NULL AND error IS NULL")
+        .bind(f.project.uuid()).fetch_one(&pool).await.unwrap();
+    assert_eq!(cleared, 3);
+}

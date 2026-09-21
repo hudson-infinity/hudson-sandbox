@@ -119,6 +119,7 @@ API ID: `op_<uuidv7>`.
 | `output_status`, `output_claim_revision`, `output_lease_expires_at`, `output_next_retry_at` | Independent archival progress and publisher ownership after command completion |
 | `output_ticket`, `output_plan`, `output_expires_at` | Stable upload attempt, immutable pair of final stream plans, and byte-retention expiry |
 | `response_expires_at`, `completed_at` (nullable) | Result retention and completion time |
+| `payload_compacted_at`, `command_summary`, `payload_compaction_next_at` | Atomic body removal, private command digest/deadline/limit summary, and corruption deferral |
 
 Enforce `UNIQUE (project_id, idempotency_key)` on this table; [API admission](api-contract.md#retries-and-admission) defines matching, conflicts, and tombstone behavior. Every client-admitted operation records its initiating project/admin credential ID and optional UI session reference. Only authenticated internal maintenance may omit the credential ID. Null fields never create service authority, and client payloads cannot assign initiator identity. Admin actions on a sandbox retain that sandbox's project ownership.
 
@@ -132,7 +133,7 @@ Private `output_cleanup` rows are an auxiliary inventory for expired operation o
 
 Keep compact operation tombstones with identity, ownership, retry key, request digest/version, and outcome for the project's lifetime; detailed payload/output retention may be shorter. Active/unknown operations retain reconciliation evidence. See [API retention behavior](api-contract.md#errors-and-retention) for how clients observe expiry.
 
-[Operation response retention](operation-retention.md) implements opt-in assignment of `response_expires_at` for terminal operations and expiry enforcement on reads and retries. Deadlines are measured from `completed_at`, assigned once, and never changed by later worker policy. [Migration 0009](../migrations/0009_response_retention.sql) indexes terminal rows awaiting assignment without assigning policy during upgrade. This hides expired response bodies; physical compaction of payload/results/receipts remains unfinished, so existing reconciliation evidence is preserved.
+[Operation response retention](operation-retention.md) implements opt-in assignment of `response_expires_at` for terminal operations and expiry enforcement on reads and retries. Deadlines are measured from `completed_at`, assigned once, and never changed by later worker policy. [Migration 0009](../migrations/0009_response_retention.sql) indexes terminal rows awaiting assignment without assigning policy during upgrade. [Migration 0010](../migrations/0010_payload_compaction.sql) enables separately opted-in removal of eligible payload/result/error fields while preserving retry identity and all receipts. Execute rows retain a validated command summary for later evidence verification. Unticketed pending output can be atomically fenced and expired; already authorized output must have verified retirement completion. Receipt-history archival and host/guest journal reclamation remain unfinished.
 
 ### 4. hosts — Linux compute machines
 

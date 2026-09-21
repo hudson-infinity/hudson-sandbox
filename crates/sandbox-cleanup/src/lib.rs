@@ -7,6 +7,7 @@ use sandbox_protocol::{
 };
 use sandbox_store::{
     Store,
+    compaction::Compaction,
     output::OutputError,
     output_cleanup::{CleanupClaim, CleanupCompletion, CleanupPreparation},
     retention::ResponseRetention,
@@ -49,12 +50,14 @@ pub struct Cleaner<R = ArtifactRetirer> {
     retirer: R,
     allow_simulated: bool,
     response_retention: Option<ResponseRetention>,
+    compact_payloads: bool,
 }
 impl<R> fmt::Debug for Cleaner<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cleaner")
             .field("allow_simulated", &self.allow_simulated)
             .field("response_retention", &self.response_retention)
+            .field("compact_payloads", &self.compact_payloads)
             .finish_non_exhaustive()
     }
 }
@@ -63,6 +66,7 @@ impl<R> fmt::Debug for Cleaner<R> {
 pub enum CleanupTick {
     Idle,
     RetentionAssigned(u64),
+    PayloadCompaction(Compaction),
     Waiting(OperationId),
     Completed(OperationId),
 }
@@ -105,6 +109,7 @@ impl<R: Retirement> Cleaner<R> {
             retirer,
             allow_simulated,
             response_retention: None,
+            compact_payloads: false,
         }
     }
 
@@ -112,6 +117,12 @@ impl<R: Retirement> Cleaner<R> {
     /// through this interface; active and unknown operations are left alone.
     pub fn with_response_retention(mut self, policy: ResponseRetention) -> Self {
         self.response_retention = Some(policy);
+        self
+    }
+
+    /// Explicitly enable irreversible removal of eligible expired bodies.
+    pub fn with_payload_compaction(mut self) -> Self {
+        self.compact_payloads = true;
         self
     }
 
@@ -126,9 +137,19 @@ impl<R: Retirement> Cleaner<R> {
         } else {
             0
         };
+        let compacted = if self.compact_payloads {
+            query(self.store.compact_expired_response()).await?
+        } else {
+            Compaction::Idle
+        };
+        if matches!(compacted, Compaction::Deferred(_)) {
+            return Ok(CleanupTick::PayloadCompaction(compacted));
+        }
         query(self.store.enqueue_expired_output(100)).await?;
         let Some(claim) = query(self.store.claim_output_cleanup(CLAIM_SECONDS)).await? else {
-            return Ok(if assigned == 0 {
+            return Ok(if compacted != Compaction::Idle {
+                CleanupTick::PayloadCompaction(compacted)
+            } else if assigned == 0 {
                 CleanupTick::Idle
             } else {
                 CleanupTick::RetentionAssigned(assigned)
