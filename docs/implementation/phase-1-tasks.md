@@ -35,6 +35,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 - [x] Project-scoped sandbox/operation lists with bounded cursor pagination; [collection read contract](../api-contract.md#implemented-collection-reads).
 - [x] `problem+json` errors with the machine-readable code list. Codes are added as routes need them.
 - [ ] Create, execute, destroy, get sandbox, get operation (done); outputs, file PUT remain.
+- [x] Final output archival through the supervisor, independent fenced publication, and recovery of uploaded objects after destroy/restart; [scope and evidence](../output-storage.md).
 - [ ] SSE output stream with sequence cursors and resume.
 
 ## Controller
