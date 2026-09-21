@@ -84,11 +84,18 @@ pub struct Receipt {
     pub firecracker_namespace_pid: Option<u32>,
     pub cgroup_inode: Option<u64>,
     pub reason: Option<String>,
+    #[serde(default)]
+    pub identity_digest: Option<String>,
+    #[serde(default)]
+    pub identity_expires_unix_ms: Option<i64>,
+    #[serde(default)]
+    pub guest_boot_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Action {
     Inspect,
+    BindGuest,
     Renew { revision: u64, expires_unix_ms: i64 },
     Stop,
 }
@@ -324,10 +331,17 @@ impl Manifest {
             firecracker_namespace_pid: None,
             cgroup_inode: None,
             reason: None,
+            identity_digest: None,
+            identity_expires_unix_ms: None,
+            guest_boot_id: None,
         };
         write_json(&self.record_path(), &record)?;
         write_json(&self.directory().join("manifest.json"), self)?;
-        if self.stage().is_err() {
+        if self
+            .stage()
+            .and_then(|()| self.stage_identity(&mut record))
+            .is_err()
+        {
             record.state = State::Fenced;
             record.reason = Some("artifact_staging_failed".into());
             write_json(&self.record_path(), &record)?;
@@ -405,7 +419,7 @@ impl Manifest {
         disk.set_len(disk_bytes)?;
         rustix::fs::fallocate(&disk, rustix::fs::FallocateFlags::empty(), 0, disk_bytes)?;
         disk.sync_all()?;
-        let config = serde_json::json!({"boot-source":{"kernel_image_path":"/vmlinux","boot_args":"keep_bootcon console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init"},"drives":[{"drive_id":"rootfs","path_on_host":"/rootfs.ext4","is_root_device":true,"is_read_only":false}],"machine-config":{"vcpu_count":self.start.vcpu,"mem_size_mib":self.start.memory_mib,"smt":false},"network-interfaces":[],"vsock":{"guest_cid":3,"uds_path":"/vsock.sock"}});
+        let config = serde_json::json!({"boot-source":{"kernel_image_path":"/vmlinux","boot_args":"keep_bootcon console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/init"},"drives":[{"drive_id":"rootfs","path_on_host":"/rootfs.ext4","is_root_device":true,"is_read_only":false},{"drive_id":"bootstrap","path_on_host":"/bootstrap.img","is_root_device":false,"is_read_only":true}],"machine-config":{"vcpu_count":self.start.vcpu,"mem_size_mib":self.start.memory_mib,"smt":false},"network-interfaces":[],"vsock":{"guest_cid":3,"uds_path":"/vsock.sock"}});
         write_json(&jail.join("config.json"), &config)?;
         for name in ["vmlinux", "rootfs.ext4", "config.json"] {
             std::os::unix::fs::chown(
@@ -441,6 +455,108 @@ impl Manifest {
         File::open(&run)?.sync_all()?;
         File::open(self.directory())?.sync_all()?;
         Ok(())
+    }
+    fn stage_identity(&self, receipt: &mut Receipt) -> Result<()> {
+        let identity = crate::identity::Identity::issue(
+            self.start.owner.allocation,
+            self.start.owner.generation,
+            wall_ms(),
+        )?;
+        ensure!(
+            self.start.expires_unix_ms < identity.guest.valid_until_unix_ms,
+            "initial lease exceeds channel validity"
+        );
+        let bytes = serde_json::to_vec(&identity)?;
+        receipt.identity_digest = Some(hex::encode(Sha256::digest(&bytes)));
+        receipt.identity_expires_unix_ms = Some(identity.guest.valid_until_unix_ms);
+        write_json(&self.directory().join("run/identity.json"), &identity)?;
+        let path = self.jail_root().join("bootstrap.img");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(&identity.guest.encode_device()?)?;
+        std::os::unix::fs::chown(
+            &path,
+            Some(self.config.jail_uid),
+            Some(self.config.jail_gid),
+        )?;
+        file.set_permissions(fs::Permissions::from_mode(0o400))?;
+        file.sync_all()?;
+        File::open(self.jail_root())?.sync_all()?;
+        Ok(())
+    }
+    fn identity(&self, receipt: &Receipt) -> Result<crate::identity::Identity> {
+        let identity: crate::identity::Identity =
+            read_json(&self.directory().join("run/identity.json"))?;
+        ensure!(
+            receipt.identity_digest.as_deref()
+                == Some(&hex::encode(Sha256::digest(serde_json::to_vec(&identity)?)))
+                && identity.guest.allocation == self.start.owner.allocation
+                && identity.guest.generation == self.start.owner.generation
+                && receipt.identity_expires_unix_ms == Some(identity.guest.valid_until_unix_ms),
+            "allocation channel identity mismatch"
+        );
+        identity.guest.validate()?;
+        ensure!(
+            wall_ms() < identity.guest.valid_until_unix_ms,
+            "allocation channel identity expired"
+        );
+        Ok(identity)
+    }
+    fn verify_bootstrap(&self, receipt: &Receipt) -> Result<()> {
+        let identity = self.identity(receipt)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+            )
+            .open(self.jail_root().join("bootstrap.img"))?;
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_file()
+                && metadata.len() == sandbox_protocol::bootstrap::DEVICE_BYTES as u64,
+            "invalid bootstrap artifact"
+        );
+        let mut bytes = Vec::new();
+        file.take(sandbox_protocol::bootstrap::DEVICE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes == identity.guest.encode_device()?,
+            "bootstrap artifact changed"
+        );
+        ensure!(
+            receipt.expires_unix_ms < identity.guest.valid_until_unix_ms,
+            "lease exceeds channel validity"
+        );
+        Ok(())
+    }
+    /// A fresh live-owner observation and durable boot binding are required before guest calls.
+    /// This is a host component interface, not public API admission or controller fencing.
+    pub fn guest_client(&self) -> Result<crate::guest::GuestClient> {
+        let response = control(self, Action::Inspect)?;
+        ensure!(response.error.is_none(), "guardian inspection uncertain");
+        let receipt = response.receipt.context("guardian receipt missing")?;
+        ensure!(
+            receipt.state == State::Running && receipt.expires_unix_ms > wall_ms(),
+            "allocation is not live"
+        );
+        let boot_id = receipt
+            .guest_boot_id
+            .clone()
+            .context("guest boot not bound")?;
+        let identity = self.identity(&receipt)?;
+        crate::guest::GuestClient::from_firecracker_directory(
+            self.jail_root(),
+            52,
+            identity.client_tls(wall_ms())?,
+            sandbox_protocol::guest_model::Context {
+                allocation_id: self.start.owner.allocation,
+                generation: self.start.owner.generation,
+                boot_id,
+            },
+        )
     }
     /// Only a free lifecycle lock permits fencing and cleanup. Never signal a saved arbitrary PID.
     pub fn reconcile(&self, reason: &str) -> Result<Receipt> {

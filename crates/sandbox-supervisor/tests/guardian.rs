@@ -27,6 +27,9 @@ fn artifact(path: PathBuf) -> Artifact {
 }
 impl Fixture {
     fn new(ttl_ms: i64) -> Self {
+        Self::build(ttl_ms, false)
+    }
+    fn build(ttl_ms: i64, agent: bool) -> Self {
         assert_eq!(std::env::var("HUDSON_GUARDIAN_TEST_VM").as_deref(), Ok("1"));
         assert!(rustix::process::geteuid().is_root());
         let temp = tempfile::Builder::new().prefix("hg-").tempdir().unwrap();
@@ -41,6 +44,24 @@ impl Fixture {
             "#!/bin/busybox sh\nwhile :; do :; done\n",
         )
         .unwrap();
+        if agent {
+            // Only the locally built, reviewed binary is passed to ldd. Never run
+            // ldd against customer-selected binaries or mount their filesystems.
+            let binary = Path::new("/home/safal.guest/hudson-sandbox/target/release/sandbox-guest");
+            fs::copy(binary, image.join("init")).unwrap();
+            let libraries = Command::new("/usr/bin/ldd").arg(binary).output().unwrap();
+            assert!(libraries.status.success());
+            for word in std::str::from_utf8(&libraries.stdout)
+                .unwrap()
+                .split_whitespace()
+            {
+                if word.starts_with('/') {
+                    let dest = image.join(word.trim_start_matches('/'));
+                    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                    fs::copy(word, dest).unwrap();
+                }
+            }
+        }
         fs::set_permissions(image.join("init"), fs::Permissions::from_mode(0o755)).unwrap();
         let rootfs = root.join("source.ext4");
         fs::File::create(&rootfs)
@@ -139,6 +160,23 @@ impl Fixture {
                 self.record()
             );
             std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    fn ready(&self) -> Receipt {
+        let until = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(response) = guardian::control(&self.manifest, Action::BindGuest)
+                && let Some(receipt) = response.receipt
+                && receipt.guest_boot_id.is_some()
+            {
+                return receipt;
+            }
+            assert!(
+                Instant::now() < until,
+                "guest boot never bound: {:?}",
+                self.record()
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
     fn stopped(&self) -> Receipt {
@@ -461,4 +499,156 @@ fn recovery_of_launch_intent_fences_before_any_new_spawn() {
     let stopped = f.stopped();
     assert!(stopped.guardian_host_pid.is_none());
     assert_eq!(stopped.reason.as_deref(), Some("guardian_recovery_fence"));
+}
+
+#[test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1, release guest binary and aarch64 artifacts"]
+fn bootstrapped_guest_executes_only_after_durable_binding() {
+    use sandbox_protocol::guest::Stream;
+    use sandbox_protocol::guest_model::Execute;
+    let f = Fixture::build(30000, true);
+    let source_digest = f.manifest.config.rootfs.sha256.clone();
+    let prepared = f.manifest.prepare().unwrap();
+    assert_eq!(
+        f.manifest.prepare().unwrap().identity_digest,
+        prepared.identity_digest
+    );
+    let mut child = f.spawn();
+    let running = f.running(&mut child);
+    assert!(running.guest_boot_id.is_none());
+    assert!(f.manifest.guest_client().is_err());
+    let ready = f.ready();
+    assert_eq!(f.record().guest_boot_id, ready.guest_boot_id);
+    assert_eq!(
+        guardian::control(&f.manifest, Action::BindGuest)
+            .unwrap()
+            .receipt
+            .unwrap()
+            .guest_boot_id,
+        ready.guest_boot_id
+    );
+    assert_eq!(f.record().identity_digest, running.identity_digest);
+    assert_eq!(
+        artifact(f.manifest.config.rootfs.path.clone()).sha256,
+        source_digest
+    );
+    let client = f.manifest.guest_client().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let request = Execute {
+            operation_id: OperationId::generate(),
+            argv: vec![
+                "/bin/busybox".into(),
+                "sh".into(),
+                "-c".into(),
+                "if printf nope >/dev/vdb; then exit 99; fi; echo once >> /root/once; /bin/busybox id -u; /bin/busybox cat /root/once; exit 9"
+                    .into(),
+            ],
+            env: Default::default(),
+            cwd: "/root".into(),
+            deadline_unix_ms: guardian::wall_ms() + 10000,
+            output_limit: 4096,
+        };
+        client.execute(&request).await.unwrap();
+        let until = Instant::now() + Duration::from_secs(8);
+        let receipt = loop {
+            let receipt = client.inspect(request.operation_id).await.unwrap();
+            if receipt.state.terminal() {
+                break receipt;
+            }
+            assert!(Instant::now() < until);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(receipt.exit_code, Some(9));
+        assert!(receipt.cleanup_confirmed);
+        assert_eq!(client.execute(&request).await.unwrap().exit_code, Some(9));
+        let output = client
+            .output(sandbox_protocol::guest::ReadOutput {
+                operation_id: request.operation_id.to_string(),
+                stream: Stream::Stdout as i32,
+                offset: 0,
+                limit: 4096,
+            })
+            .await
+            .unwrap();
+        assert_eq!(output.data, b"0\nonce\n");
+        assert!(output.complete);
+        let mut changed = request.clone();
+        changed.argv.push("different".into());
+        assert!(client.execute(&changed).await.is_err());
+    });
+    let _ = guardian::control(&f.manifest, Action::Stop);
+    assert!(child.wait().unwrap().success());
+    f.stopped();
+    assert!(f.manifest.guest_client().is_err());
+}
+#[test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and verified aarch64 Firecracker artifacts"]
+fn changed_bootstrap_is_fenced_before_launch() {
+    let f = Fixture::new(20000);
+    let prepared = f.manifest.prepare().unwrap();
+    assert!(prepared.identity_digest.is_some());
+    let path = f.manifest.jail_root().join("bootstrap.img");
+    let mut changed = fs::read(&path).unwrap();
+    changed[16] ^= 1; // Preserve device length; exercise content verification.
+    fs::write(path, changed).unwrap();
+    let mut child = f.spawn();
+    assert!(child.wait().unwrap().success());
+    let stopped = f.stopped();
+    assert!(stopped.firecracker_namespace_pid.is_none());
+}
+
+#[test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1, release guest binary and aarch64 artifacts"]
+fn shared_base_image_keeps_allocation_credentials_separate() {
+    use sandbox_supervisor::{guest::GuestClient, identity::Identity};
+    let first = Fixture::build(30000, true);
+    let mut first_process = first.spawn();
+    first.running(&mut first_process);
+    let first_ready = first.ready();
+    let first_identity: Identity =
+        guardian::read_json(&first.manifest.directory().join("run/identity.json")).unwrap();
+    let mut second = Fixture::new(30000);
+    second.manifest.config.rootfs = first.manifest.config.rootfs.clone();
+    fs::write(&second.path, serde_json::to_vec(&second.manifest).unwrap()).unwrap();
+    let mut second_process = second.spawn();
+    second.running(&mut second_process);
+    let second_ready = second.ready();
+    assert_ne!(first_ready.identity_digest, second_ready.identity_digest);
+    assert_ne!(first_ready.guest_boot_id, second_ready.guest_boot_id);
+    assert_eq!(
+        first.manifest.config.rootfs.sha256,
+        second.manifest.config.rootfs.sha256
+    );
+    let context = sandbox_protocol::guest_model::Context {
+        allocation_id: second.manifest.start.owner.allocation,
+        generation: 1,
+        boot_id: second_ready.guest_boot_id.unwrap(),
+    };
+    let wrong = GuestClient::from_firecracker_directory(
+        second.manifest.jail_root(),
+        52,
+        first_identity.client_tls(guardian::wall_ms()).unwrap(),
+        context.clone(),
+    )
+    .unwrap();
+    let right = second.manifest.guest_client().unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            assert!(wrong.hello().await.is_err());
+            assert_eq!(right.hello().await.unwrap(), context);
+        });
+    let _ = guardian::control(&second.manifest, Action::Stop);
+    assert!(second_process.wait().unwrap().success());
+    second.stopped();
+    assert!(first.populated());
+    let _ = guardian::control(&first.manifest, Action::Stop);
+    assert!(first_process.wait().unwrap().success());
+    first.stopped();
 }

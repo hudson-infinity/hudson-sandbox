@@ -12,6 +12,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [Authentication](auth-design.md) | Project/Admin permissions, credentials, sessions, CSRF, revocation, audit semantics | Who can do what and how access is enforced |
 | [Lifecycle](lifecycle.md) | State transitions, completion evidence, deadlines, cancellation, recovery | How create/pause/resume/destroy actually work |
 | [Allocation guardian](allocation-guardian.md) | Real VM ownership, independent deadlines, staging and cleanup | How the host component fences and reclaims an allocation |
+| [Guest bootstrap](guest-bootstrap.md) | Allocation credentials, guest init and durable boot binding | How one reusable image becomes an authenticated allocation |
 | [Guest protocol](guest-protocol.md) | Authenticated vsock framing, host client and guest listener | How commands, receipts and bounded output cross the VM boundary |
 | [Guest runner](guest-runner.md) | Guest process execution, bounded output and local recovery receipts | What the command component implements and what host protections remain |
 | [Linux development](linux-development.md) | Nested Linux/KVM setup and real boot evidence | How to develop the guest and real supervisor |

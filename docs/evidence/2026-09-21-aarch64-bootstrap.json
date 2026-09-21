@@ -1,0 +1,97 @@
+{
+  "recorded_at_utc": "2026-09-21T09:06:28.303328+00:00",
+  "scope": "Allocation bootstrap and durable guest binding under a real guardian; isolated nested aarch64 development evidence, not an API or x86_64 release validation.",
+  "source_base_commit": "d0a4d718f51db0261136bf7014b950fabe3263bb",
+  "source_hashes_match_mac_and_linux": true,
+  "environment": {
+    "kernel": "6.8.0-134-generic",
+    "architecture": "aarch64",
+    "source_sha256": {
+      "Cargo.toml": "41a092120d13e8d5f47bac373be780b59501ba88f5ceef87d1787308b1c17c77",
+      "Cargo.lock": "ebf3b8c0aa465d6a857aac5509f27e87079fcca32be6c6d7b5b44a966f6563c0",
+      "crates/sandbox-protocol/Cargo.toml": "7db09ef9359443a70decc088530be7a3cbc5d4562364379979c89b873312f2d3",
+      "crates/sandbox-protocol/src/lib.rs": "e205bbdd82cfce2b3f6e5b4a6a48279aa49ce91cbaa9eb44d3b26f59202096b5",
+      "crates/sandbox-protocol/src/bootstrap.rs": "62de5415b91f5ed0799dab3ec16c2588335579b5494666bf0f5b23541ea0571c",
+      "crates/sandbox-supervisor/Cargo.toml": "d5f815d7521241efff1ae7c26d053c9b1d68d7d6ddc384961002fe4d2bc60d06",
+      "crates/sandbox-supervisor/src/lib.rs": "79067f9b9cecb2766a837f2eeb72054103d36e748bbd1cbc64203c48f4e8fc63",
+      "crates/sandbox-supervisor/src/main.rs": "919a212c7fb3fd32467a9bffcd10ce88ff02bbc1c2a7006a05f7584cc1165fb3",
+      "crates/sandbox-supervisor/src/identity.rs": "76e1c331df65b792cbec35843ed3203730bdfa4d8d6ff5948df16d4e8642f2e9",
+      "crates/sandbox-supervisor/src/guardian/mod.rs": "bc25f5a13b94f04b7cfdf3b32ee5db112a1dbc6cefee33565b30a9c132340526",
+      "crates/sandbox-supervisor/src/guardian/process.rs": "257c0ea26b853d64ccd8d32daecfab39ecd65517d1a8af05960b41e70e9372cb",
+      "crates/sandbox-supervisor/src/guest.rs": "22602d3aa9d9c14052ba4d4057165ef47e88ff5f0cbcebe8c0e5d8ee0d89c046",
+      "crates/sandbox-supervisor/tests/guardian.rs": "f084084e1f37e6cc20e26b0394bd0ef779ed5dc472fd9dc480d1d90b4311756e",
+      "crates/sandbox-guest/Cargo.toml": "8d161488d89fb57773c99dc945ca11689766e65b79aadab03f06ba30c4af238d",
+      "crates/sandbox-guest/src/lib.rs": "8d1af45daadfefd20ed5526cd73856c527a48058712aeb161a8bcf9bff8d8c69",
+      "crates/sandbox-guest/src/main.rs": "c1911b119f1ec204dbd8554b4c5d70a3e198db7f2117332c80d8d89dbfeb2419",
+      "crates/sandbox-guest/src/boot.rs": "51c579e2d20ca607c2c51f063c84a03c0ba6ee234f6c2a1c8e2f97e556569476"
+    },
+    "artifact_sha256": {
+      "/tmp/hudson-fc-artifacts/release-v1.17.0-aarch64/firecracker-v1.17.0-aarch64": "fe726e0b43c04363ac07e358be4dee982c3947c65ed3ae10c770fef5e1cd756c",
+      "/tmp/hudson-fc-artifacts/release-v1.17.0-aarch64/jailer-v1.17.0-aarch64": "4d8d2dd4dfc1d47932b2bd261479181dd0c54f0a2f32714421a7e7f9f07ddec8",
+      "/tmp/hudson-fc-artifacts/vmlinux-6.1.186": "0913a93462f1762581e3b25c434212aeadc06084e97f2e9c21ec4fca3fc54b42",
+      "/home/safal.guest/hudson-sandbox/target/release/sandbox-guest": "c9fa7a2ab7f5745adbb8eb9c69e2a5db97772e4ebb5e54d44495ebb3c70c5ae6"
+    },
+    "remaining_allocation_cgroups": [],
+    "cgroup_events": "populated 0\nfrozen 0\n"
+  },
+  "checks": {
+    "mac_make_check": {
+      "passed": true,
+      "tests_passed": 213
+    },
+    "linux_supervisor_and_guest_clippy_all_targets": {
+      "passed": true
+    },
+    "linux_supervisor_unit_tests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "linux_privileged_guardian_tests": {
+      "passed": 10,
+      "failed": 0,
+      "seconds": 77.95,
+      "cases": [
+        "bootstrapped_guest_executes_only_after_durable_binding",
+        "changed_bootstrap_is_fenced_before_launch",
+        "concurrent_stop_and_renewal_never_revive_the_vm",
+        "killing_namespace_guardian_kills_vm_without_a_surviving_supervisor",
+        "real_vm_stop_renewal_fences_and_exact_retry",
+        "recovery_of_launch_intent_fences_before_any_new_spawn",
+        "shared_base_image_keeps_allocation_credentials_separate",
+        "staging_digest_failure_and_recovery_fence_prevent_delayed_launch",
+        "stalled_control_clients_do_not_disable_expiry",
+        "supervisor_loss_does_not_disable_lease_expiry"
+      ]
+    },
+    "linux_privileged_guest_runner_tests": {
+      "passed": 10,
+      "failed": 0,
+      "seconds": 2.03,
+      "cases": [
+        "authenticated_host_calls_execute_inspect_cancel_output_and_survive_disconnect",
+        "deadlines_cancel_conflicts_and_retry_never_replay",
+        "dropping_caller_keeps_work_owned_and_failed_spawn_is_not_success",
+        "exit_bytes_environment_and_guest_root",
+        "failed_receipt_commit_is_unknown_and_disables_new_work",
+        "output_budget_drains_both_streams_and_process_tree_is_reaped",
+        "output_rejects_symlinks_nonregular_files_and_offsets_outside_retained_bytes",
+        "restart_kills_owned_tree_and_returns_unknown_without_replay",
+        "retention_is_bounded_and_corrupt_receipts_fail_closed",
+        "shutdown_fences_concurrent_admission_before_releasing_ownership"
+      ]
+    },
+    "logs_sha256": {
+      "hudson-bootstrap-mac-final.log": "65d09b242529e73f0c9a46bbbfa254ba4b4e73a8309ad16fbfdf543b2f8aec6a",
+      "hudson-bootstrap-linux-final.log": "1548647c90583e7a40ba08be2653960a19b6507478857f44ecf14c77f1f73741",
+      "hudson-bootstrap-guardian-final.log": "b6366aaed5b375330ace98e62a169f26a7fdea72b6fc27d3bab9acc58829a33e",
+      "hudson-bootstrap-linux-clippy-final.log": "ad7dba846cbac7c5a34be3dfd3bdc24c9fcf4d094fa8bc6dac9fb8a64854bc30"
+    }
+  },
+  "remaining": [
+    "real supervisor RPC and controller lifecycle integration",
+    "public execute, files and output storage",
+    "production Debian image and certificate rotation",
+    "network policy and host-wide admission",
+    "x86_64 and adversarial security release gates"
+  ]
+}

@@ -9,3 +9,5 @@ pub mod guest;
 #[cfg(target_os = "linux")]
 pub mod guardian;
 pub mod lease;
+
+pub mod identity;

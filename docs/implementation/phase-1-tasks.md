@@ -58,6 +58,7 @@ The separate [allocation guardian](../allocation-guardian.md) implements verifie
 
 ## Guest
 
+- [x] Allocation-scoped credentials, read-only bootstrap device, guest init and durable boot binding; [component evidence](../guest-bootstrap.md).
 - [ ] Guest image: Debian slim, our init, our guest agent, `system` and `workload` cgroups, agent in its own PID namespace.
 - [ ] Guest kernel build: modules off, lockdown on, pinned and digest-published.
 - [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). File transfer and lifecycle supervisor integration remain open.

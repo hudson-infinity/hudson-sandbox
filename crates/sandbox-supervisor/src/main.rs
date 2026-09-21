@@ -34,6 +34,7 @@ fn run() -> anyhow::Result<()> {
         Prepare,
         Run,
         Inspect,
+        BindGuest,
         Renew {
             #[arg(long)]
             revision: u64,
@@ -49,6 +50,9 @@ fn run() -> anyhow::Result<()> {
         Command::Prepare => serde_json::to_value(manifest.prepare()?)?,
         Command::Run => serde_json::to_value(guardian::launch(manifest)?)?,
         Command::Reconcile => serde_json::to_value(manifest.reconcile("guardian_recovery_fence")?)?,
+        Command::BindGuest => {
+            serde_json::to_value(guardian::control(&manifest, Action::BindGuest)?)?
+        }
         Command::Inspect => serde_json::to_value(guardian::control(&manifest, Action::Inspect)?)?,
         Command::Stop => serde_json::to_value(guardian::control(&manifest, Action::Stop)?)?,
         Command::Renew {

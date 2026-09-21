@@ -1,6 +1,6 @@
 # Linux allocation guardian
 
-Status: implemented component, with controlled aarch64 Linux/KVM evidence. The root-only `sandbox-supervisor` CLI stages and owns a real Firecracker allocation. It is not yet the real gRPC lifecycle driver: controller dispatch, guest certificate bootstrap, guest readiness, public execute, files, and network policy remain separate work. The supported x86_64 release gates remain open.
+Status: implemented component, with controlled aarch64 Linux/KVM evidence. The root-only `sandbox-supervisor` CLI stages and owns a real Firecracker allocation. It is not yet the real gRPC lifecycle driver: controller dispatch, public execute, files, and network policy remain separate work. [Guest bootstrap and durable boot binding](guest-bootstrap.md) now connect the guest channel to this owner. The supported x86_64 release gates remain open.
 
 The implementation is in [guardian](../crates/sandbox-supervisor/src/guardian/mod.rs), [process ownership and control](../crates/sandbox-supervisor/src/guardian/process.rs), and [the irrevocable deadline](../crates/sandbox-supervisor/src/lease.rs). The existing [supervisor RPC](supervisor-protocol.md) still uses the development fake. The authenticated [guest protocol](guest-protocol.md) is a separate component to integrate with this owner.
 
@@ -39,7 +39,7 @@ The state root and allocation directory must be private and root-owned. Operator
 
 The fixed launch supports 1–4 vCPU, 128–8192 MiB guest memory and a 64–65536 MiB rootfs backing file. The host cgroup enforces a CPU quota, memory equal to guest memory plus 128 MiB of VMM allowance, and 64 host tasks. The backing file is allocated to the configured disk size before launch. This bound covers the writable rootfs, not total installation storage or copied kernel/VMM artifacts. Guest filesystem growth within that file and host-wide disk admission remain image/controller responsibilities.
 
-Firecracker runs through the verified jailer with an unprivileged host UID/GID, its own PID namespace, and no NIC. The guardian and watchdog stay outside the VM cgroup. The vsock endpoint is staged for later guest integration. No NIC in this component is not evidence for the planned resolver, egress allowlist, network namespace or bandwidth enforcement. Guest userspace remains writable; the product's [guest-root contract](decisions/0003-guest-root-with-our-kernel.md) is unchanged.
+Firecracker runs through the verified jailer with an unprivileged host UID/GID, its own PID namespace, and no NIC. The guardian and watchdog stay outside the VM cgroup. A separate fixed-size read-only bootstrap drive provisions the [guest channel](guest-bootstrap.md); the writable rootfs remains a separate artifact. No NIC in this component is not evidence for the planned resolver, egress allowlist, network namespace or bandwidth enforcement. Guest userspace remains writable; the product's [guest-root contract](decisions/0003-guest-root-with-our-kernel.md) is unchanged.
 
 ## Local control and use
 
@@ -50,6 +50,7 @@ Build on Linux with `cargo build -p sandbox-supervisor`. Commands take a root-ow
 | `prepare` | Verify/stage once, or return the retained receipt |
 | `run` | Start an eligible guardian and wait for it; an active exact retry inspects the same owner |
 | `inspect` | Query the live guardian |
+| `bind-guest` | Authenticate the guest and durably bind its boot identity |
 | `renew --revision N --expires-unix-ms T` | Submit a fenced lease renewal |
 | `stop` | Fence the live owner and request teardown |
 | `reconcile` | Fence and clean a dead owner; refuses while its lifecycle lock is held |
@@ -68,7 +69,7 @@ The [controlled VM tests](../crates/sandbox-supervisor/tests/guardian.rs) requir
 sudo env HUDSON_GUARDIAN_TEST_VM=1 cargo test -p sandbox-supervisor --test guardian -- --ignored --nocapture --test-threads=1
 ```
 
-The fixture builds its own minimal writable ext4 image and busy-loop init. It is not the production Debian/guest-agent image. Failed cleanup retains fixture files instead of deleting potentially live state. Ordinary CI leaves these privileged tests ignored and exercises portable models plus Linux control framing.
+The fixture builds its own minimal writable ext4 image, using either a busy-loop init or the real guest bootstrap init for channel tests. It is not the production Debian/guest-agent image. Failed cleanup retains fixture files instead of deleting potentially live state. Ordinary CI leaves these privileged tests ignored and exercises portable models plus Linux control framing.
 
 The VM tests cover real cgroup limits/backing-file size, active exact retry without another incarnation, rejection of conflicting/stale renewals and wrong ownership, renewal beyond the original deadline, normal stop, supervisor loss followed by independent expiry, guardian SIGKILL without a surviving supervisor, stop/renew concurrency, stalled clients during expiry, staging digest failure, and recovery fencing before delayed launch. Death/expiry tests inspect cgroup emptiness before explicit recovery, so cleanup is not mistaken for proof that the watchdog or PID namespace worked.
 
