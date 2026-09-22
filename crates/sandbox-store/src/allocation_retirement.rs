@@ -1,5 +1,5 @@
-//! Database freeze and renewable claims only. No host deletion is authorized by
-//! this module; the host must independently fence, verify and acknowledge cleanup.
+//! Freeze retirement scope, renew claims and retain exact physical metadata
+//! completion. Host forgetting and capacity recovery remain separate handoffs.
 use crate::Store;
 use sandbox_protocol::{
     AllocationId, HostId, Id, OperationId, ProjectId, SandboxId,
@@ -11,7 +11,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row, postgres::PgRow};
 use time::OffsetDateTime;
+mod completion;
 mod evidence;
+pub use completion::Completion;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -19,6 +21,8 @@ pub enum Error {
     Ineligible,
     #[error("invalid allocation retirement evidence")]
     Evidence,
+    #[error("allocation retirement claim was lost")]
+    LostClaim,
     #[error("invalid allocation retirement policy")]
     Policy,
     #[error("allocation retirement storage failed: {0}")]
@@ -60,27 +64,19 @@ impl Store {
             .ok_or(Error::Ineligible)?;
         let p = sqlx::query("SELECT p.* FROM allocation_permits p JOIN hosts h ON h.id=p.host_id WHERE p.allocation_id=$1 AND p.host_id=$2 AND h.supervisor_epoch=$3 AND h.launch_authority_required AND h.registered_allocation_serial>=p.serial")
             .bind(allocation.uuid()).bind(host.uuid()).bind(epoch).fetch_optional(&mut *tx).await?.ok_or(Error::Ineligible)?;
-        let permit = Permit {
-            host,
-            allocation,
-            project: ProjectId::from_uuid(p.try_get("project_id")?),
-            sandbox: SandboxId::from_uuid(p.try_get("sandbox_id")?),
-            create_operation: OperationId::from_uuid(p.try_get("create_operation_id")?),
-            generation: p.try_get("generation")?,
-            original_epoch: p.try_get("original_epoch")?,
-            serial: u64::try_from(p.try_get::<i64, _>("serial")?).map_err(|_| Error::Evidence)?,
-        };
-        if a.try_get::<uuid::Uuid, _>("host_id")? != host.uuid()
-            || a.try_get::<uuid::Uuid, _>("project_id")? != permit.project.uuid()
-            || a.try_get::<uuid::Uuid, _>("sandbox_id")? != permit.sandbox.uuid()
-            || a.try_get::<i64, _>("generation")? != permit.generation
-            || a.try_get::<i64, _>("supervisor_epoch")? != permit.original_epoch
-            || permit.original_epoch > epoch
-        {
+        let permit = permit(&p)?;
+        allocation_matches(&a, &permit)?;
+        if permit.original_epoch > epoch {
             return Err(Error::Evidence);
         }
         let old = sqlx::query("SELECT *,lease_expires_at>clock_timestamp() AS busy FROM allocation_retirements WHERE allocation_id=$1")
             .bind(allocation.uuid()).fetch_optional(&mut *tx).await?;
+        if let Some(old) = &old
+            && completion::retained(old, &permit, &a)?.is_some()
+        {
+            tx.rollback().await?;
+            return Ok(None);
+        }
         if old
             .as_ref()
             .is_some_and(|r| r.get::<Option<bool>, _>("busy") == Some(true))
@@ -96,25 +92,7 @@ impl Store {
             })
             .transpose()?
             .unwrap_or_else(OperationId::generate);
-        let (release, simulated) =
-            evidence::release(&mut tx, &a, &permit, allow_simulated, epoch).await?;
-        evidence::consumers(&mut tx, &permit).await?;
-        let (commands, commands_simulated) =
-            evidence::domain(&mut tx, &a, Domain::Commands, allow_simulated).await?;
-        let (files, files_simulated) =
-            evidence::domain(&mut tx, &a, Domain::Files, allow_simulated).await?;
-        let intent = Intent {
-            version: 1,
-            retirement,
-            permit,
-            commands,
-            files,
-            simulated: allow_simulated || simulated || commands_simulated || files_simulated,
-            release_evidence_sha256: hex::encode(Sha256::digest(
-                serde_json::to_vec(&release).map_err(|_| Error::Evidence)?,
-            )),
-        };
-        intent.validate().map_err(|_| Error::Evidence)?;
+        let intent = frozen_scope(&mut tx, &a, permit, retirement, allow_simulated, epoch).await?;
         if let Some(old) = &old {
             let retained: Intent =
                 serde_json::from_value(old.try_get("intent")?).map_err(|_| Error::Evidence)?;
@@ -138,4 +116,56 @@ impl Store {
         tx.commit().await?;
         Ok(Some(request))
     }
+}
+
+fn permit(p: &PgRow) -> Result<Permit, Error> {
+    Ok(Permit {
+        host: HostId::from_uuid(p.try_get("host_id")?),
+        allocation: AllocationId::from_uuid(p.try_get("allocation_id")?),
+        project: ProjectId::from_uuid(p.try_get("project_id")?),
+        sandbox: SandboxId::from_uuid(p.try_get("sandbox_id")?),
+        create_operation: OperationId::from_uuid(p.try_get("create_operation_id")?),
+        generation: p.try_get("generation")?,
+        original_epoch: p.try_get("original_epoch")?,
+        serial: u64::try_from(p.try_get::<i64, _>("serial")?).map_err(|_| Error::Evidence)?,
+    })
+}
+fn allocation_matches(a: &PgRow, p: &Permit) -> Result<(), Error> {
+    if a.try_get::<uuid::Uuid, _>("id")? != p.allocation.uuid()
+        || a.try_get::<uuid::Uuid, _>("host_id")? != p.host.uuid()
+        || a.try_get::<uuid::Uuid, _>("project_id")? != p.project.uuid()
+        || a.try_get::<uuid::Uuid, _>("sandbox_id")? != p.sandbox.uuid()
+        || a.try_get::<i64, _>("generation")? != p.generation
+        || a.try_get::<i64, _>("supervisor_epoch")? != p.original_epoch
+    {
+        return Err(Error::Evidence);
+    }
+    Ok(())
+}
+async fn frozen_scope(
+    db: &mut PgConnection,
+    a: &PgRow,
+    permit: Permit,
+    retirement: OperationId,
+    allow_simulated: bool,
+    epoch: i64,
+) -> Result<Intent, Error> {
+    let (release, simulated) = evidence::release(db, a, &permit, allow_simulated, epoch).await?;
+    evidence::consumers(db, &permit).await?;
+    let (commands, commands_simulated) =
+        evidence::domain(db, a, Domain::Commands, allow_simulated).await?;
+    let (files, files_simulated) = evidence::domain(db, a, Domain::Files, allow_simulated).await?;
+    let intent = Intent {
+        version: 1,
+        retirement,
+        permit,
+        commands,
+        files,
+        simulated: allow_simulated || simulated || commands_simulated || files_simulated,
+        release_evidence_sha256: hex::encode(Sha256::digest(
+            serde_json::to_vec(&release).map_err(|_| Error::Evidence)?,
+        )),
+    };
+    intent.validate().map_err(|_| Error::Evidence)?;
+    Ok(intent)
 }
