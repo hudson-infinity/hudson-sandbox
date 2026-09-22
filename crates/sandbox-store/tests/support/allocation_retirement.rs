@@ -282,3 +282,6 @@ async fn simulation_policy_is_frozen_and_cannot_be_upgraded(pool: PgPool) {
         .unwrap();
     assert_eq!(retry.intent, p.intent);
 }
+
+#[path = "allocation_retirement_completion.rs"]
+mod completion;
