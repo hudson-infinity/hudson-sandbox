@@ -49,7 +49,7 @@ api-setup: ## Install pinned OpenAPI validation tools in an isolated environment
 	python3 -m venv .venv-openapi
 	.venv-openapi/bin/python -m pip install -r scripts/api-requirements.txt
 
-api-generate: ## Regenerate shared Rust HTTP wire models
+api-generate: ## Regenerate Rust HTTP models and client requests
 	python3 scripts/generate_api.py
 
 api: ## Validate OpenAPI, generation drift and contract checker regressions

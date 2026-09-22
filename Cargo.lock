@@ -1958,6 +1958,8 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -2205,6 +2207,47 @@ dependencies = [
 [[package]]
 name = "sandbox-cli"
 version = "0.0.0"
+dependencies = [
+ "axum",
+ "clap",
+ "hex",
+ "rcgen",
+ "sandbox-api",
+ "sandbox-artifacts",
+ "sandbox-client",
+ "sandbox-protocol",
+ "sandbox-store",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "time",
+ "tokio",
+]
+
+[[package]]
+name = "sandbox-client"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "hex",
+ "rcgen",
+ "reqwest",
+ "rustix",
+ "sandbox-api",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "url",
+ "uuid",
+]
 
 [[package]]
 name = "sandbox-controller"

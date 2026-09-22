@@ -2,7 +2,7 @@
 """Render this repository's finite OpenAPI model profile into shared Rust DTOs.
 
 This is deliberately not a general OpenAPI client generator. It emits serde wire
-shapes; the API's existing validation still owns numeric/semantic authorization.
+shapes and typed requests; admission owns numeric/semantic authorization.
 Unsupported type constructs fail rather than silently generating Value.
 """
 import argparse
@@ -13,6 +13,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / 'api/openapi.json'
+CLIENT = ROOT / "crates/sandbox-client/src"
 OUTPUT = ROOT / 'crates/sandbox-protocol/src/api.rs'
 
 
@@ -138,17 +139,129 @@ def render(doc):
     return rendered.stdout
 
 
+def snake(name):
+    return re.sub(r'(?<=[a-z0-9])(?=[A-Z])', '_', name).replace('-', '_').lower()
+
+
+def render_requests(doc):
+    """Finite request profile. Unsupported media/parameters fail closed."""
+    def resolve(value):
+        if '$ref' in value:
+            result = doc
+            for part in value['$ref'].removeprefix('#/').split('/'):
+                result = result[part]
+            return result
+        return value
+
+    lines = ['//! Generated from api/openapi.json. Do not edit.',
+             'use crate::{Client, Error, RangeChunk, EventStream, models::*};',
+             "pub(crate) fn known_problem_code(code: &str) -> Option<&'static str> { match code {"]
+    codes = doc['components']['schemas']['ProblemBody']['properties']['code']['enum']
+    for code in codes:
+        lines.append(f'{json.dumps(code)} => Some({json.dumps(code)}),')
+    lines += ['_ => None,', '}}']
+    for path, methods in doc['paths'].items():
+        for method, op in methods.items():
+            if method not in ('get', 'post', 'put', 'delete'):
+                raise ValueError('Unsupported request method')
+            name = op['operationId'][0].upper() + op['operationId'][1:]
+            if not re.fullmatch(r'[A-Z][A-Za-z0-9]*', name):
+                raise ValueError('Invalid operation name')
+            params = [resolve(p) for p in op.get('parameters', [])]
+            fields, setup = [], []
+            for p in params:
+                field = snake(p['name'])
+                if not re.fullmatch(r'[a-z][a-z0-9_]*', field):
+                    raise ValueError('Invalid parameter name')
+                ty = resolve(p['schema']).get('type')
+                ty = {'string': "&'a str", 'integer': 'u64'}[ty]
+                required = p.get('required', False)
+                fields.append(f"pub {field}: {ty if required else f'Option<{ty}>'},")
+                val = f'args.{field}' if required else 'value'
+                if p['in'] == 'header':
+                    header_val = val if ty == "&'a str" else f'&{val}.to_string()'
+                    action = f'request = self.header(request, {json.dumps(p["name"])}, {header_val})?;'
+                elif p['in'] == 'query':
+                    query_val = val if ty == "&'a str" else f'&{val}.to_string()'
+                    action = f'request = self.query(request, {json.dumps(p["name"])}, {query_val})?;'
+                elif p['in'] == 'path':
+                    action = ''
+                else:
+                    raise ValueError('Unsupported parameter location')
+                if action:
+                    setup.append(action if required else f'if let Some(value) = args.{field} {{ {action} }}')
+            body = op.get('requestBody', {}).get('content', {})
+            if body:
+                if len(body) != 1:
+                    raise ValueError('Ambiguous request media')
+                media, definition = next(iter(body.items()))
+                if media == 'application/json':
+                    ty = rust_type(definition['schema'], doc['components']['schemas'])
+                    fields.append(f"pub body: &'a {ty},")
+                    setup.append('request = self.json_body(request, args.body)?;')
+                elif media == 'application/octet-stream':
+                    fields.append("pub body: &'a [u8],")
+                    setup.append('request = self.binary_body(request, args.body)?;')
+                else:
+                    raise ValueError('Unsupported request media')
+            successes = [(code, resolve(r)) for code, r in op['responses'].items() if code.startswith('2')]
+            if len(successes) != 1:
+                raise ValueError('Exactly one success status is required')
+            code, response = successes[0]
+            content = response.get('content', {})
+            if not content:
+                ret, call = '()', 'empty'
+            elif len(content) != 1:
+                raise ValueError('Ambiguous response media')
+            elif 'application/json' in content:
+                ret = rust_type(content['application/json']['schema'], doc['components']['schemas'])
+                call = 'json'
+            elif 'application/octet-stream' in content:
+                ret, call = 'RangeChunk', 'binary'
+            elif 'text/event-stream' in content:
+                ret, call = 'EventStream', 'events'
+            else:
+                raise ValueError('Unsupported response media')
+            segments = []
+            for part in path.lstrip('/').split('/'):
+                segments.append('args.' + part[1:-1] if part.startswith('{') else json.dumps(part))
+            lines += [f"pub struct {name}<'a> {{", *fields, '}',
+                      f"impl std::fmt::Debug for {name}<'_> {{",
+                      "fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {",
+                      f'f.debug_struct("{name}").finish_non_exhaustive()', '}', '}',
+                      'impl Client {',
+                      f"pub async fn {snake(op['operationId'])}(&self, args: {name}<'_>) -> Result<{ret}, Error> {{",
+                      f'let mut request = self.request(reqwest::Method::{method.upper()}, &[{", ".join(segments)}])?;',
+                      *setup]
+            # GET with no query/header/body still uses the same transport without an unused mut.
+            if not setup:
+                lines[-1] = lines[-1].replace('let mut request', 'let request')
+            if call == 'binary':
+                prefix = 'output' if 'X-Output-Offset' in response['headers'] else 'file'
+                lines.append(f'self.binary(request, {code}, "{prefix}", args.offset.unwrap_or(0), args.limit.unwrap_or(32768)).await')
+            else:
+                lines.append(f'self.{call}(request, {code}).await')
+            lines += ['}', '}']
+    return subprocess.run(['rustfmt', '--edition', '2024', '--emit', 'stdout'],
+                          input='\n'.join(lines), text=True, capture_output=True, check=True).stdout
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    rendered = render(json.loads(SPEC.read_text()))
+    doc = json.loads(SPEC.read_text())
+    rendered = render(doc)
+    outputs = {OUTPUT: rendered, CLIENT / 'models.rs': rendered,
+               CLIENT / 'requests.rs': render_requests(doc)}
+    for output, rendered in outputs.items():
+        if args.check:
+            if not output.exists() or output.read_text() != rendered:
+                raise SystemExit('Generated API code is stale: run python3 scripts/generate_api.py')
+        else:
+            output.write_text(rendered)
     if args.check:
-        if not OUTPUT.exists() or OUTPUT.read_text() != rendered:
-            raise SystemExit('Generated API models are stale: run python3 scripts/generate_api.py')
-        print('Generated API models match OpenAPI.')
-    else:
-        OUTPUT.write_text(rendered)
+        print('Generated API models and requests match OpenAPI.')
 
 
 if __name__ == '__main__':

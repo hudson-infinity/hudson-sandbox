@@ -6,7 +6,7 @@ The service runs customer code in Firecracker microVMs, which needs Linux with K
 
 ## Stage 0 — everything except a real VM, on macOS
 
-The Rust libraries and local dependencies run natively today. The [HTTPS API binary and offline project provisioning](../api-server.md) now run locally; the public client CLI remains incomplete; the [create/destroy controller](../controller.md) now runs against one operator-provisioned host. [The authenticated fake supervisor](../supervisor-protocol.md) now runs on loopback with operator-supplied certificates. Install `protoc` before building (`brew install protobuf` on macOS).
+The Rust libraries and local dependencies run natively today. The [HTTPS API binary and offline project provisioning](../api-server.md) now run locally; the [Rust client and project CLI](../client-cli.md) cover implemented Project operations; the [create/destroy controller](../controller.md) now runs against one operator-provisioned host. [The authenticated fake supervisor](../supervisor-protocol.md) now runs on loopback with operator-supplied certificates. Install `protoc` before building (`brew install protobuf` on macOS).
 
 ```text
 macOS
@@ -27,7 +27,7 @@ make down    # stop, keeping data
 
 The stack binds PostgreSQL on 55432 and MinIO on 59000, not their defaults. If you already run PostgreSQL natively, the container binds `::` while `127.0.0.1` stays with your own server, and every connection from the host quietly reaches the wrong database — which surfaces as a missing role rather than a port conflict. Non-default ports remove the ambiguity. `make reset-db` drops the development schema when a migration changes underneath you.
 
-Authentication, admission, claims, reservations, and read handlers have executable tests. The fake provides the shared gRPC create/inspect/stop service over mTLS and always reports simulated evidence. It starts no VM or process. Create, execute and destroy are integrated through the controller, with real execution evidence from the [Linux supervisor](../real-supervisor.md). Retained output is archived and retrievable through the authenticated API. Public cancellation, files and live streaming are integrated. The client CLI remains unfinished; [OpenAPI and shared wire models](../openapi.md) now provide its contract foundation.
+Authentication, admission, claims, reservations, and read handlers have executable tests. The fake provides the shared gRPC create/inspect/stop service over mTLS and always reports simulated evidence. It starts no VM or process. Create, execute and destroy are integrated through the controller, with real execution evidence from the [Linux supervisor](../real-supervisor.md). Retained output is archived and retrievable through the authenticated API. Public cancellation, files and live streaming are integrated. The [Rust client and project CLI](../client-cli.md) use generated [OpenAPI models and requests](../openapi.md). Python/TypeScript SDKs and distribution remain unfinished.
 
 The fake models bounded resource accounting, stale ownership, lease expiry, duplicate requests, and lost acknowledgements for control-plane tests. Those models do not test host resource enforcement or hardware isolation; those require stage 1 and supported hardware.
 
@@ -51,7 +51,7 @@ You will be on aarch64 locally and x86_64 in production for a long time. Paramet
 
 | Component | macOS | Lima VM | Rented host |
 | --- | --- | --- | --- |
-| `sandbox-protocol`, `sandbox-store` | yes | yes | yes |
+| `sandbox-protocol`, `sandbox-store`, `sandbox-client` | yes | yes | yes |
 | `sandbox-api`, `sandbox-controller`, `sandbox-cli` | yes | yes | yes |
 | `sandbox-fake-host` | yes | yes | yes |
 | `sandbox-supervisor` | no — Linux only | yes | yes |
