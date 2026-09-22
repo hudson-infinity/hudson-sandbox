@@ -483,3 +483,6 @@ async fn legacy_undersized_sandboxes_do_not_reserve_capacity(pool: PgPool) {
         Ok(Reservation::Reserved(_))
     ));
 }
+
+#[path = "support/allocation_serials.rs"]
+mod allocation_serials;

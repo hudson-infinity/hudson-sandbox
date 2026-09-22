@@ -495,6 +495,22 @@ async fn upgrade_preserves_admitted_sources_and_does_not_invent_retirement(pool:
     .unwrap();
     let f = Fixture::new(&pool).await;
     let (_, s) = f.admit().await;
+    // Seed a pre-0017 reservation explicitly. Current placement now requires
+    // serial issuance; running it against schema 0013 is not a legacy fixture.
+    let legacy = sandbox_protocol::AllocationId::generate();
+    sqlx::query("INSERT INTO allocations(id,project_id,sandbox_id,host_id,generation,supervisor_epoch,vcpu,memory_mib,disk_mib,status) SELECT $1,project_id,id,$3,1,$4,(resources->>'vcpu')::integer,(resources->>'memory_mib')::bigint,(resources->>'disk_mib')::bigint,'reserved' FROM sandboxes WHERE id=$2")
+        .bind(legacy.uuid()).bind(s.uuid()).bind(f.config.host.uuid()).bind(f.config.epoch).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE sandboxes SET current_allocation_id=$1,generation=1 WHERE id=$2")
+        .bind(legacy.uuid())
+        .bind(s.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE operations SET phase='reserved' WHERE sandbox_id=$1 AND kind='create'")
+        .bind(s.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
     f.controller().await.tick().await.unwrap();
     let (project, allocation, host, generation, epoch): (
         uuid::Uuid,

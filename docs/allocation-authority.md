@@ -1,6 +1,6 @@
 # Bounded allocation authority model
 
-Status: implemented state model, not connected to runtime admission or deletion. [The protocol module](../crates/sandbox-protocol/src/allocation_authority.rs) and [its tests](../crates/sandbox-protocol/src/allocation_authority_tests.rs) explore the replacement authority required for whole-allocation reclamation in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Existing host/guardian tombstones remain mandatory.
+Status: implemented state model and database serial issuance; host registration, guardian enforcement and deletion are not integrated. [The protocol module](../crates/sandbox-protocol/src/allocation_authority.rs) and [its tests](../crates/sandbox-protocol/src/allocation_authority_tests.rs) explore the replacement authority required for whole-allocation reclamation in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Existing host/guardian tombstones remain mandatory.
 
 ## Serial registration and retained owners
 
@@ -25,13 +25,25 @@ A retirement ID stays fixed across retries. Another ID cannot replace it, comple
 
 `Closed` means denied by serial ordering. It does not establish that the supplied owner ever existed, that a VM stopped, or that an object was deleted. After forgetting, even a different owner presented at the same serial receives denial; the original owner is deliberately no longer available as evidence. Callers must use their retained database results and cannot translate this response into `Released` or `FencedAbsent`.
 
+## Transactional database issuance
+
+[Migration 0017](../migrations/0017_allocation_serials.sql) adds a host-local counter and retained `allocation_permits` rows. [Create reservation](../crates/sandbox-store/src/placement.rs) increments the counter under its existing host row lock and inserts the exact allocation/create identity in the same transaction as capacity reservation, sandbox binding and the final operation-claim check. A failed statement, expired claim or rollback consumes neither the reservation nor the serial. Exhaustion fails placement without wrapping. An existing reservation is reconciled without assigning another serial, even after the host epoch changes.
+
+The table retains one permit per allocation and per create operation, and unique host/serial and sandbox/generation bindings. Original permit rows outlive host metadata reclamation; there is no update or deletion worker. No PostgreSQL sequence or issuance trigger is used. Older writers that omit permits must not participate in authority activation.
+
+The [batch reader](../crates/sandbox-store/src/allocation_permits.rs) takes a shared host lock, reads at most 32 consecutive serials and verifies each retained owner against its allocation and create operation. Missing rows, changed scope and a requested frontier above the issued counter fail. Batches include the issued frontier and an explicit `has_unissued_allocations` flag. The reader does not authenticate a host or acknowledge registration; its `after` value must ultimately be derived from verified host evidence.
+
+Migration preserves legacy allocations unchanged and assigns them no synthetic permit. An existing legacy reservation stays unissued on retry. Before new authority activation, every such owner must undergo a separate exact-owner migration; `has_unissued_allocations` must block activation. This remains unfinished. A reader returning an empty batch does not prove that all original owners are registered.
+
+[Database tests](../crates/sandbox-store/tests/support/allocation_serials.rs) exercise concurrent reservations, original-epoch retries, failure after issuance, counter exhaustion, malformed/gapped ownership, bounded batches, host separation and migration of an existing unissued allocation. These establish issuance behavior; they do not register permits with a real supervisor.
+
 ## Persistence boundary and integration still required
 
 The model is deliberately in memory. Transitions must be written durably before acknowledgement or effects; mutating the value does not write a journal, hold a guardian lock or verify cleanup. Serialization validates version, host, serial bounds/order, unique retained identities, UUID variants, state shape and a 1 MiB input limit. Unknown fields and duplicate fields fail closed. A caller supplies an independently retained minimum high-water mark when loading. That check can detect a lower frontier, but cannot detect every self-consistent rollback or prove that a serialized completion is true.
 
 Runtime adoption still requires all of the following:
 
-- Transactional host-local serial issuance under a database lock, with no unrepresented gaps after rollback or cancellation. A PostgreSQL sequence alone is insufficient because it can leave gaps. Every issued serial must reach registered/fenced authority before later registration can pass it.
+- Migration of all legacy owners and orchestration of issued serials through registered/fenced authority, including cancelled creates. Issuance now rolls back with reservation, but every committed serial must still be registered or fenced before later registration can pass it.
 - Ordered, authenticated registration and exact acknowledgement recovery before dispatching Create. An interrupted batch cannot silently discard an admitted operation; registration state must reconcile against original database identities.
 - A durable host authority and persistent cross-process lock shared by admission, guardian prepare, launch and namespace initialization. A check followed by launch outside that serialization is unsafe.
 - Versioned manifests and host journal integration, fail-closed downgrade, rollback protection, missing-authority handling and a migration that retains every legacy owner until its replacement authority is committed.
