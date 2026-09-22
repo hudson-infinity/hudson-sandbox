@@ -50,7 +50,7 @@ pub struct Permit {
     pub serial: u64,
 }
 impl Permit {
-    fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         for id in [
             self.host.uuid(),
             self.project.uuid(),
