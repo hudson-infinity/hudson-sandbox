@@ -1,6 +1,19 @@
 #![allow(clippy::unwrap_used)]
 use super::*;
 
+fn intent(p: &Permit, retirement: OperationId) -> crate::allocation_retirement::Intent {
+    use crate::allocation_retirement::{DomainClosure, Intent};
+    Intent {
+        version: 1,
+        retirement,
+        permit: p.clone(),
+        commands: DomainClosure::Empty {},
+        files: DomainClosure::Empty {},
+        release_evidence_sha256: "a".repeat(64),
+        simulated: false,
+    }
+}
+
 fn permit(host: HostId, serial: u64) -> Permit {
     Permit {
         host,
@@ -21,9 +34,9 @@ fn retire(a: &mut Authority, p: &Permit) {
     a.fence(p, retirement).unwrap();
     *a = reload(a);
     assert_eq!(a.authorize(p), Err(Error::Conflict));
-    a.complete(p, retirement).unwrap();
+    a.complete(&intent(p, retirement)).unwrap();
     *a = reload(a);
-    a.forget(p, retirement).unwrap();
+    a.forget(&intent(p, retirement)).unwrap();
     *a = reload(a);
     assert_eq!(a.authorize(p), Err(Error::Closed));
 }
@@ -72,12 +85,12 @@ fn full_capacity_reclaims_a_slot_without_moving_or_reopening_the_frontier() {
     let retired = &all[500];
     let retirement = OperationId::generate();
     a.fence(retired, retirement).unwrap();
-    a.complete(retired, retirement).unwrap();
+    a.complete(&intent(retired, retirement)).unwrap();
     assert_eq!(
         a.register(std::slice::from_ref(&newer)),
         Err(Error::Capacity)
     );
-    a.forget(retired, retirement).unwrap();
+    a.forget(&intent(retired, retirement)).unwrap();
     a.register(std::slice::from_ref(&newer)).unwrap();
     assert_eq!(a.retained(), MAX_ENTRIES);
     a.authorize(&all[0]).unwrap();
@@ -163,25 +176,31 @@ fn retirement_retries_bind_exact_intent_and_cannot_skip_a_durable_stage() {
     let other = OperationId::generate();
     let mut a = Authority::new(host).unwrap();
     a.register(std::slice::from_ref(&p)).unwrap();
-    assert_eq!(a.complete(&p, retirement), Err(Error::Conflict));
-    assert_eq!(a.forget(&p, retirement), Err(Error::Conflict));
+    assert_eq!(a.complete(&intent(&p, retirement)), Err(Error::Conflict));
+    assert_eq!(a.forget(&intent(&p, retirement)), Err(Error::Conflict));
     a.fence(&p, retirement).unwrap();
     a = reload(&a);
     a.fence(&p, retirement).unwrap();
     assert_eq!(a.fence(&p, other), Err(Error::Conflict));
-    assert_eq!(a.complete(&p, other), Err(Error::Conflict));
-    assert_eq!(a.forget(&p, retirement), Err(Error::Conflict));
-    a.complete(&p, retirement).unwrap();
+    assert_eq!(a.complete(&intent(&p, other)), Err(Error::Conflict));
+    assert_eq!(a.forget(&intent(&p, retirement)), Err(Error::Conflict));
+    a.complete(&intent(&p, retirement)).unwrap();
     a = reload(&a);
     // A lost completion response can be replayed without losing the receipt.
     a.fence(&p, retirement).unwrap();
-    a.complete(&p, retirement).unwrap();
-    assert_eq!(a.state(&p).unwrap(), &State::Complete { retirement });
-    assert_eq!(a.forget(&p, other), Err(Error::Conflict));
-    a.forget(&p, retirement).unwrap();
+    a.complete(&intent(&p, retirement)).unwrap();
+    assert_eq!(
+        a.state(&p).unwrap(),
+        &State::Complete {
+            retirement,
+            intent_sha256: intent(&p, retirement).digest().unwrap()
+        }
+    );
+    assert_eq!(a.forget(&intent(&p, other)), Err(Error::Conflict));
+    a.forget(&intent(&p, retirement)).unwrap();
     a = reload(&a);
-    assert_eq!(a.complete(&p, retirement), Err(Error::Closed));
-    assert_eq!(a.forget(&p, retirement), Err(Error::Closed));
+    assert_eq!(a.complete(&intent(&p, retirement)), Err(Error::Closed));
+    assert_eq!(a.forget(&intent(&p, retirement)), Err(Error::Closed));
     assert_eq!(a.register(&[p]), Err(Error::Closed));
 }
 
@@ -298,14 +317,101 @@ fn new_receipts_require_a_retained_active_allocation() {
         authority.active_allocation(p.allocation),
         Err(Error::Conflict)
     );
-    authority.complete(&p, retirement).unwrap();
+    authority.complete(&intent(&p, retirement)).unwrap();
     assert_eq!(
         authority.active_allocation(p.allocation),
         Err(Error::Conflict)
     );
-    authority.forget(&p, retirement).unwrap();
+    authority.forget(&intent(&p, retirement)).unwrap();
     assert_eq!(
         reload(&authority).active_allocation(p.allocation),
         Err(Error::Ownership)
     );
+}
+
+#[test]
+fn retained_completion_binds_full_scope_after_reload_and_rejects_simulation() {
+    use crate::allocation_retirement::DomainClosure;
+    let host = HostId::generate();
+    let p = permit(host, 1);
+    let scope = intent(&p, OperationId::generate());
+    let mut a = Authority::new(host).unwrap();
+    a.register(std::slice::from_ref(&p)).unwrap();
+    a.fence(&p, scope.retirement).unwrap();
+    let mut simulated = scope.clone();
+    simulated.simulated = true;
+    assert_eq!(a.complete(&simulated), Err(Error::Invalid));
+    a.complete(&scope).unwrap();
+    a = reload(&a);
+    a.completed(&scope).unwrap();
+    let before = a.encode().unwrap();
+    for mode in 0..14 {
+        let mut changed = scope.clone();
+        match mode {
+            0 => {
+                changed.commands = DomainClosure::Retired {
+                    through: OperationId::generate(),
+                }
+            }
+            1 => {
+                changed.files = DomainClosure::Retired {
+                    through: OperationId::generate(),
+                }
+            }
+            2 => changed.release_evidence_sha256 = "b".repeat(64),
+            3 => changed.retirement = OperationId::generate(),
+            4 => changed.simulated = true,
+            5 => changed.permit.host = HostId::generate(),
+            6 => changed.permit.project = ProjectId::generate(),
+            7 => changed.permit.sandbox = SandboxId::generate(),
+            8 => changed.permit.allocation = AllocationId::generate(),
+            9 => changed.permit.create_operation = OperationId::generate(),
+            10 => changed.permit.generation += 1,
+            11 => changed.permit.original_epoch += 1,
+            12 => changed.permit.serial += 1,
+            _ => changed.version += 1,
+        }
+        assert!(a.completed(&changed).is_err(), "read mode {mode}");
+        assert!(a.complete(&changed).is_err(), "complete mode {mode}");
+        assert!(a.forget(&changed).is_err(), "forget mode {mode}");
+        assert_eq!(a.encode().unwrap(), before);
+    }
+    a.complete(&scope).unwrap();
+    assert_eq!(a.encode().unwrap(), before);
+    a.forget(&scope).unwrap();
+    assert_eq!(a.completed(&scope), Err(Error::Closed));
+}
+
+#[test]
+fn completion_without_a_scope_digest_is_not_adopted_or_invented() {
+    let host = HostId::generate();
+    let p = permit(host, 1);
+    let scope = intent(&p, OperationId::generate());
+    let mut a = Authority::new(host).unwrap();
+    a.register(std::slice::from_ref(&p)).unwrap();
+    a.fence(&p, scope.retirement).unwrap();
+    // Existing Active/Fenced v1 ledgers remain readable; only Complete gains a
+    // required field. No production host currently writes this transition.
+    a = reload(&a);
+    a.complete(&scope).unwrap();
+    let good: serde_json::Value = serde_json::from_slice(&a.encode().unwrap()).unwrap();
+    for mode in 0..5 {
+        let mut bad = good.clone();
+        let state = &mut bad["entries"][0]["state"];
+        match mode {
+            0 => {
+                state.as_object_mut().unwrap().remove("intent_sha256");
+            }
+            1 => state["intent_sha256"] = serde_json::json!([]),
+            2 => state["intent_sha256"] = serde_json::json!(vec![0; 33]),
+            3 => state["intent_sha256"] = serde_json::json!(vec![256; 32]),
+            _ => state["intent_sha256"] = serde_json::Value::Null,
+        }
+        assert!(Authority::decode(&serde_json::to_vec(&bad).unwrap(), host, 1).is_err());
+    }
+    // A shape-valid but different digest cannot authorize the original scope.
+    let mut changed = good;
+    changed["entries"][0]["state"]["intent_sha256"] = serde_json::json!(vec![0; 32]);
+    let changed = Authority::decode(&serde_json::to_vec(&changed).unwrap(), host, 1).unwrap();
+    assert_eq!(changed.completed(&scope), Err(Error::Conflict));
 }

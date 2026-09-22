@@ -2,6 +2,19 @@
 use super::*;
 use sandbox_protocol::{AllocationId, Id, ProjectId, SandboxId};
 use std::os::unix::fs::{PermissionsExt, symlink};
+fn intent(p: &Permit, retirement: OperationId) -> sandbox_protocol::allocation_retirement::Intent {
+    use sandbox_protocol::allocation_retirement::{DomainClosure, Intent};
+    Intent {
+        version: 1,
+        retirement,
+        permit: p.clone(),
+        commands: DomainClosure::Empty {},
+        files: DomainClosure::Empty {},
+        release_evidence_sha256: "a".repeat(64),
+        simulated: false,
+    }
+}
+
 fn setup() -> (tempfile::TempDir, AuthorityFile, Permit) {
     assert_eq!(std::env::var("HUDSON_GUARDIAN_TEST_VM").as_deref(), Ok("1"));
     assert!(rustix::process::geteuid().is_root());
@@ -43,8 +56,8 @@ fn epochs_and_retirement_survive_reopen_without_reauthorizing_old_permits() {
     let reopened = AuthorityFile::open(store.root.clone(), p.host, 2, 2).unwrap();
     let retirement = OperationId::generate();
     reopened.fence(2, &p, retirement).unwrap();
-    reopened.complete(2, &p, retirement).unwrap();
-    reopened.forget(2, &p, retirement).unwrap();
+    reopened.complete(2, &intent(&p, retirement)).unwrap();
+    reopened.forget(2, &intent(&p, retirement)).unwrap();
     assert!(authorize(&store.root, Some(&p)).is_err());
     drop(authorize(&store.root, Some(&next)).unwrap());
     assert!(reopened.register(2, &[p]).is_err());
@@ -67,8 +80,8 @@ fn cross_process_gate_survives_allocation_directory_deletion_and_detects_replace
     let retirement = OperationId::generate();
     store.fence(1, &p, retirement).unwrap();
     fs::remove_dir(&allocation).unwrap(); // controlled empty metadata fixture
-    store.complete(1, &p, retirement).unwrap();
-    store.forget(1, &p, retirement).unwrap();
+    store.complete(1, &intent(&p, retirement)).unwrap();
+    store.forget(1, &intent(&p, retirement)).unwrap();
     assert!(authorize(&store.root, Some(&p)).is_err());
     assert!(authorize(&store.root, None).is_err());
     let original = File::open(store.root.join(LOCK)).unwrap();
@@ -203,8 +216,8 @@ fn registration_ack_reconciles_without_regranting_forgotten_or_fenced_owners() {
         expected
     );
     assert!(authorize(&store.root, Some(&first)).is_err());
-    store.complete(1, &first, retirement).unwrap();
-    store.forget(1, &first, retirement).unwrap();
+    store.complete(1, &intent(&first, retirement)).unwrap();
+    store.forget(1, &intent(&first, retirement)).unwrap();
     let reopened = AuthorityFile::open(store.root.clone(), first.host, 1, 1).unwrap();
     assert_eq!(reopened.checkpoint(1).unwrap(), expected);
     assert!(reopened.register(1, std::slice::from_ref(&first)).is_err());
@@ -275,4 +288,60 @@ fn retirement_authorization_binds_original_owner_frontier_and_stable_fence() {
     drop(authorize_retirement(&store.root, p.host, 2, 1, &intent).unwrap());
     intent.retirement = OperationId::generate();
     assert!(authorize_retirement(&store.root, p.host, 2, 1, &intent).is_err());
+}
+
+#[test]
+#[ignore = "requires root in the dedicated HUDSON_GUARDIAN_TEST_VM"]
+fn completion_scope_survives_restart_and_is_pinned_until_journal_removal() {
+    let (_dir, store, p) = setup();
+    let scope = intent(&p, OperationId::generate());
+    store.fence(1, &p, scope.retirement).unwrap();
+    assert!(store.completed(1, &scope).is_err());
+    let fenced = fs::read(store.root.join(STATE)).unwrap();
+    fs::create_dir(store.root.join(NEXT)).unwrap();
+    assert!(store.complete(1, &scope).is_err());
+    assert_eq!(fs::read(store.root.join(STATE)).unwrap(), fenced);
+    assert!(store.completed(1, &scope).is_err());
+    fs::remove_dir(store.root.join(NEXT)).unwrap();
+    store.complete(1, &scope).unwrap();
+    let complete = fs::read(store.root.join(STATE)).unwrap();
+    let reopened = AuthorityFile::open(store.root.clone(), p.host, 1, 1).unwrap();
+    for mode in 0..4 {
+        let mut changed = scope.clone();
+        match mode {
+            0 => changed.release_evidence_sha256 = "b".repeat(64),
+            1 => {
+                changed.commands = sandbox_protocol::allocation_retirement::DomainClosure::Retired {
+                    through: OperationId::generate(),
+                }
+            }
+            2 => {
+                changed.files = sandbox_protocol::allocation_retirement::DomainClosure::Retired {
+                    through: OperationId::generate(),
+                }
+            }
+            _ => changed.simulated = true,
+        }
+        assert!(reopened.completed(1, &changed).is_err());
+        assert!(reopened.complete(1, &changed).is_err());
+        assert!(reopened.forget(1, &changed).is_err());
+        assert_eq!(fs::read(store.root.join(STATE)).unwrap(), complete);
+    }
+    let guard = reopened.completed(1, &scope).unwrap();
+    assert!(reopened.forget(1, &scope).is_err());
+    assert!(reopened.advance_epoch(1, 2).is_err());
+    assert!(authorize(&store.root, Some(&p)).is_err());
+    assert!(authorize_cleanup(&store.root, Some(&p)).is_err());
+    drop(guard);
+    reopened.advance_epoch(1, 2).unwrap();
+    assert!(reopened.completed(1, &scope).is_err());
+    assert!(reopened.forget(1, &scope).is_err());
+    drop(reopened.completed(2, &scope).unwrap());
+    reopened.complete(2, &scope).unwrap();
+    reopened.forget(2, &scope).unwrap();
+    assert!(reopened.completed(2, &scope).is_err());
+    assert!(reopened.complete(2, &scope).is_err());
+    assert!(authorize(&store.root, Some(&p)).is_err());
+    assert_eq!(reopened.checkpoint(2).unwrap().registered_through, 1);
+    assert_eq!(fs::read_dir(&store.root).unwrap().count(), 3);
 }

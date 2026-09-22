@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result, ensure};
 use sandbox_protocol::{
     HostId, OperationId,
     allocation_authority::{Authority, Permit},
+    allocation_retirement::Intent,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -320,16 +321,28 @@ impl AuthorityFile {
         })
     }
     /// Caller must have verified exact-owner physical cleanup and synced deletion.
-    pub fn complete(&self, epoch: i64, permit: &Permit, retirement: OperationId) -> Result<()> {
+    pub fn complete(&self, epoch: i64, intent: &Intent) -> Result<()> {
         self.update(epoch, |ledger| {
-            ledger.complete(permit, retirement)?;
+            ledger.complete(intent)?;
             Ok(())
         })
     }
+    /// Exact-scope reconciliation, not fresh cleanup evidence. Keep the guard
+    /// through any dependent journal removal so another writer cannot forget the
+    /// proof in between. The caller independently validates metadata absence.
+    pub fn completed(&self, epoch: i64, intent: &Intent) -> Result<LaunchGuard> {
+        let lock = gate(&self.root, false)?;
+        let (current, ledger) = self.load()?;
+        ensure!(current == epoch, "stale completion reader");
+        ledger.completed(intent)?;
+        // Reassert persistence after a rename whose directory sync lost its ACK.
+        File::open(&self.root)?.sync_all()?;
+        Ok(LaunchGuard { _lock: lock })
+    }
     /// Caller must have verified durable database completion; this deletes no files.
-    pub fn forget(&self, epoch: i64, permit: &Permit, retirement: OperationId) -> Result<()> {
+    pub fn forget(&self, epoch: i64, intent: &Intent) -> Result<()> {
         self.update(epoch, |ledger| {
-            ledger.forget(permit, retirement)?;
+            ledger.forget(intent)?;
             Ok(())
         })
     }
