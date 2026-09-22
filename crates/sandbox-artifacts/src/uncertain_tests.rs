@@ -5,13 +5,14 @@ use object_store::{
     CopyOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, PutMultipartOptions,
     PutPayload, PutResult,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Debug)]
 struct LostAck {
     inner: object_store::memory::InMemory,
     commit: bool,
-    unreadable: bool,
+    read_failures: usize,
+    stream_failure: AtomicBool,
     puts: AtomicUsize,
     gets: AtomicUsize,
 }
@@ -42,8 +43,15 @@ impl ObjectStore for LostAck {
         Err(lost())
     }
     async fn get_opts(&self, path: &Path, opts: GetOptions) -> object_store::Result<GetResult> {
-        self.gets.fetch_add(1, Ordering::SeqCst);
-        if self.unreadable {
+        let attempt = self.gets.fetch_add(1, Ordering::SeqCst);
+        if attempt < self.read_failures {
+            if self.stream_failure.load(Ordering::SeqCst) {
+                let mut response = self.inner.get_opts(path, opts).await?;
+                response.payload = object_store::GetResultPayload::Stream(Box::pin(
+                    futures_util::stream::iter(vec![Ok(b"pay".to_vec().into()), Err(lost())]),
+                ));
+                return Ok(response);
+            }
             Err(lost())
         } else {
             self.inner.get_opts(path, opts).await
@@ -77,11 +85,12 @@ impl ObjectStore for LostAck {
         self.inner.copy_opts(from, to, opts).await
     }
 }
-fn fixture(commit: bool, unreadable: bool) -> (ArtifactStore, Arc<LostAck>) {
+fn fixture(commit: bool, read_failures: usize) -> (ArtifactStore, Arc<LostAck>) {
     let fault = Arc::new(LostAck {
         inner: object_store::memory::InMemory::new(),
         commit,
-        unreadable,
+        read_failures,
+        stream_failure: AtomicBool::new(false),
         puts: AtomicUsize::new(0),
         gets: AtomicUsize::new(0),
     });
@@ -93,15 +102,38 @@ fn fixture(commit: bool, unreadable: bool) -> (ArtifactStore, Arc<LostAck>) {
     )
 }
 #[tokio::test]
-async fn uncertain_put_reads_once_without_replaying_and_requires_complete_evidence() {
+async fn interrupted_confirmation_body_is_discarded_before_full_verification() {
     let _test = crate::tests::TESTS.lock().await;
-    for (commit, unreadable, conflict) in [
-        (true, false, false),
-        (false, false, false),
-        (true, true, false),
-        (true, false, true),
+    let (store, fault) = fixture(true, 1);
+    fault.stream_failure.store(true, Ordering::SeqCst);
+    let bytes = b"payload";
+    let plan = crate::tests::plan(bytes);
+    let reference = store.upload(&plan, &plan.owner, 1000, bytes).await.unwrap();
+    assert_eq!(reference.plan, plan);
+    assert_eq!(fault.puts.load(Ordering::SeqCst), 1);
+    assert_eq!(fault.gets.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        store
+            .read(&reference, &plan.owner, 1000, 0, 7)
+            .await
+            .unwrap()
+            .bytes,
+        bytes
+    );
+}
+#[tokio::test]
+async fn uncertain_put_bounds_read_recovery_without_replaying_and_requires_complete_evidence() {
+    let _test = crate::tests::TESTS.lock().await;
+    for (commit, read_failures, conflict) in [
+        (true, 0, false),
+        (true, 1, false),
+        (false, 0, false),
+        (false, 1, false),
+        (true, usize::MAX, false),
+        (true, 0, true),
+        (true, 1, true),
     ] {
-        let (store, fault) = fixture(commit, unreadable);
+        let (store, fault) = fixture(commit, read_failures);
         let bytes = b"payload";
         let p = crate::tests::plan(bytes);
         if conflict {
@@ -118,13 +150,16 @@ async fn uncertain_put_reads_once_without_replaying_and_requires_complete_eviden
         let result = store.upload(&p, &p.owner, 1000, bytes).await;
         if conflict {
             assert_eq!(result, Err(Error::Conflict));
-        } else if commit && !unreadable {
+        } else if commit && read_failures < 2 {
             assert!(result.is_ok(), "{result:?}");
         } else {
             assert_eq!(result, Err(Error::Unavailable));
         }
         assert_eq!(fault.puts.load(Ordering::SeqCst), 1);
-        assert_eq!(fault.gets.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fault.gets.load(Ordering::SeqCst),
+            if read_failures == 0 { 1 } else { 2 }
+        );
     }
 }
 
@@ -137,13 +172,16 @@ async fn uncertain_source_put_preserves_unknown_absence_and_verifies_existing_by
         files::Upload,
     };
     let _test = crate::tests::TESTS.lock().await;
-    for (commit, unreadable, conflict) in [
-        (true, false, false),
-        (false, false, false),
-        (true, true, false),
-        (true, false, true),
+    for (commit, read_failures, conflict) in [
+        (true, 0, false),
+        (true, 1, false),
+        (false, 0, false),
+        (false, 1, false),
+        (true, usize::MAX, false),
+        (true, 0, true),
+        (true, 1, true),
     ] {
-        let (store, fault) = fixture(commit, unreadable);
+        let (store, fault) = fixture(commit, read_failures);
         let store = crate::sources::SourceStore { store };
         let bytes = b"payload";
         let o = crate::tests::owner();
@@ -189,12 +227,15 @@ async fn uncertain_source_put_preserves_unknown_absence_and_verifies_existing_by
         let result = store.upload(&p, &p.owner, 1000, bytes).await;
         if conflict {
             assert_eq!(result, Err(Error::Conflict));
-        } else if commit && !unreadable {
+        } else if commit && read_failures < 2 {
             assert!(result.is_ok(), "{result:?}");
         } else {
             assert_eq!(result, Err(Error::Unavailable));
         }
         assert_eq!(fault.puts.load(Ordering::SeqCst), 1);
-        assert_eq!(fault.gets.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fault.gets.load(Ordering::SeqCst),
+            if read_failures == 0 { 1 } else { 2 }
+        );
     }
 }
