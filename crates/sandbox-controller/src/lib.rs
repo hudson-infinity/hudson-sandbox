@@ -3,6 +3,7 @@
 mod allocation_authority;
 pub mod archive;
 pub mod history;
+pub mod retirement;
 mod recovery;
 mod uploads;
 

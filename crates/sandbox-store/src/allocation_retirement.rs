@@ -13,6 +13,8 @@ use sqlx::{PgConnection, Row, postgres::PgRow};
 use time::OffsetDateTime;
 mod completion;
 mod evidence;
+mod scheduling;
+pub use scheduling::Candidate;
 pub use completion::Completion;
 
 #[derive(Debug, thiserror::Error)]

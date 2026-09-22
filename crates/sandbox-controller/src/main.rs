@@ -35,6 +35,9 @@ struct Args {
     /// Reclaim acknowledged history after external consumers retire.
     #[arg(long)]
     retire_history: bool,
+    /// Reclaim released physical allocation records after history retirement.
+    #[arg(long, requires = "retire_history", conflicts_with = "allow_simulated")]
+    retire_allocations: bool,
     /// Private read-only source store for file writes.
     #[arg(long)]
     file_source_config: Option<std::path::PathBuf>,
@@ -89,8 +92,27 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("{:?}", worker.tick().await?);
             }
         }
+        if args.retire_allocations {
+            eprintln!("{:?}", controller.allocation_retirer().tick().await?);
+        }
         return Ok(());
     }
+    let allocations = if args.retire_allocations {
+        let mut worker = controller.allocation_retirer();
+        Some(tokio::spawn(async move {
+            loop {
+                match worker.tick().await {
+                    Ok(sandbox_controller::retirement::RetirementTick::Idle)
+                    | Ok(sandbox_controller::retirement::RetirementTick::Deferred) => {}
+                    Ok(tick) => eprintln!("sandbox allocation retirement: {tick:?}"),
+                    Err(error) => eprintln!("sandbox allocation retirement: {error}"),
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }))
+    } else {
+        None
+    };
     let retirement = if args.retire_history {
         let mut worker = controller.history_retirer();
         Some(tokio::spawn(async move {
@@ -136,6 +158,9 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! { _ = tokio::signal::ctrl_c() => break, _ = tokio::time::sleep(Duration::from_millis(500)) => {} }
     }
     if let Some(task) = retirement {
+        task.abort();
+    }
+    if let Some(task) = allocations {
         task.abort();
     }
     if let Some(task) = archival {
