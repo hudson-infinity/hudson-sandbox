@@ -511,7 +511,37 @@ async fn upgrade_preserves_admitted_sources_and_does_not_invent_retirement(pool:
         .execute(&pool)
         .await
         .unwrap();
-    f.controller().await.tick().await.unwrap();
+    // Exercise the schema-0013 dispatch primitives directly. Current controller
+    // health/registration requires schema 0018 and cannot run before upgrade.
+    f.store
+        .observe_configured_host(f.config.host, f.config.epoch)
+        .await
+        .unwrap();
+    let create_claim = f
+        .store
+        .claim_next(OperationKind::Create, 30)
+        .await
+        .unwrap()
+        .unwrap();
+    let sandbox_store::dispatch::CreateAction::Start(request) = f
+        .store
+        .prepare_create_dispatch(&create_claim, &f.config.allowed_images)
+        .await
+        .unwrap()
+    else {
+        panic!("legacy fixture did not dispatch");
+    };
+    let observation = sandbox_protocol::supervisor::supervisor_server::Supervisor::create(
+        &f.fake,
+        tonic::Request::new(request),
+    )
+    .await
+    .unwrap()
+    .into_inner();
+    f.store
+        .record_create_observation(&create_claim, &observation, true)
+        .await
+        .unwrap();
     let (project, allocation, host, generation, epoch): (
         uuid::Uuid,
         uuid::Uuid,

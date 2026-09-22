@@ -42,6 +42,14 @@ struct Saved {
 pub struct LaunchGuard {
     _lock: File,
 }
+/// Durable registration progress, not an exact-owner grant or release proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    pub host: HostId,
+    pub epoch: i64,
+    pub registered_through: u64,
+}
 #[derive(Debug, Clone)]
 pub struct AuthorityFile {
     root: PathBuf,
@@ -251,14 +259,49 @@ impl AuthorityFile {
         change(&mut ledger)?;
         self.save(epoch, &ledger)
     }
-    pub fn register(&self, reporting_epoch: i64, permits: &[Permit]) -> Result<()> {
-        self.update(reporting_epoch, |ledger| {
-            ensure!(
-                permits.iter().all(|p| p.original_epoch <= reporting_epoch),
-                "future permit epoch"
-            );
-            ledger.register(permits)?;
-            Ok(())
+    /// Inspect persisted state subject to the independently supplied lower bounds.
+    /// Startup uses this to reconcile an interrupted epoch advance.
+    pub fn retained_checkpoint(&self) -> Result<Checkpoint> {
+        let _lock = gate(&self.root, false)?;
+        let (epoch, ledger) = self.load()?;
+        File::open(&self.root)?.sync_all()?;
+        Ok(Checkpoint {
+            host: self.host,
+            epoch,
+            registered_through: ledger.through(),
+        })
+    }
+    /// Read-only reconciliation after a lost registration acknowledgement.
+    /// A frontier can cover fenced or forgotten owners; it never grants launch.
+    pub fn checkpoint(&self, reporting_epoch: i64) -> Result<Checkpoint> {
+        let _lock = gate(&self.root, false)?;
+        let (epoch, ledger) = self.load()?;
+        ensure!(epoch == reporting_epoch, "stale launch authority reader");
+        // A previous writer may have renamed its synced file but failed the
+        // directory sync. Reassert that persistence before acknowledging the
+        // visible frontier; never promote an uncommitted staging file.
+        File::open(&self.root)?.sync_all()?;
+        Ok(Checkpoint {
+            host: self.host,
+            epoch,
+            registered_through: ledger.through(),
+        })
+    }
+    /// Acknowledge only after the batch is durable, while holding the same gate.
+    pub fn register(&self, reporting_epoch: i64, permits: &[Permit]) -> Result<Checkpoint> {
+        let _lock = gate(&self.root, true)?;
+        let (epoch, mut ledger) = self.load()?;
+        ensure!(epoch == reporting_epoch, "stale launch authority writer");
+        ensure!(
+            permits.iter().all(|p| p.original_epoch <= reporting_epoch),
+            "future permit epoch"
+        );
+        ledger.register(permits)?;
+        self.save(epoch, &ledger)?;
+        Ok(Checkpoint {
+            host: self.host,
+            epoch,
+            registered_through: ledger.through(),
         })
     }
     pub fn advance_epoch(&self, previous_epoch: i64, next_epoch: i64) -> Result<()> {

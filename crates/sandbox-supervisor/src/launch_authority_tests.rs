@@ -181,3 +181,50 @@ fn orphan_staging_is_not_a_legacy_root() {
     assert!(authorize(&store.root, None).is_err());
     assert!(!store.root.join(LOCK).exists());
 }
+
+#[test]
+#[ignore = "requires root in the dedicated HUDSON_GUARDIAN_TEST_VM"]
+fn registration_ack_reconciles_without_regranting_forgotten_or_fenced_owners() {
+    let (_dir, store, first) = setup();
+    let expected = Checkpoint {
+        host: first.host,
+        epoch: 1,
+        registered_through: 1,
+    };
+    assert_eq!(store.checkpoint(1).unwrap(), expected);
+    assert_eq!(
+        store.register(1, std::slice::from_ref(&first)).unwrap(),
+        expected
+    );
+    let retirement = OperationId::generate();
+    store.fence(1, &first, retirement).unwrap();
+    assert_eq!(
+        store.register(1, std::slice::from_ref(&first)).unwrap(),
+        expected
+    );
+    assert!(authorize(&store.root, Some(&first)).is_err());
+    store.complete(1, &first, retirement).unwrap();
+    store.forget(1, &first, retirement).unwrap();
+    let reopened = AuthorityFile::open(store.root.clone(), first.host, 1, 1).unwrap();
+    assert_eq!(reopened.checkpoint(1).unwrap(), expected);
+    assert!(reopened.register(1, std::slice::from_ref(&first)).is_err());
+    assert!(authorize(&store.root, Some(&first)).is_err());
+    let mut second = first.clone();
+    second.serial = 2;
+    second.allocation = AllocationId::generate();
+    second.sandbox = SandboxId::generate();
+    second.create_operation = OperationId::generate();
+    fs::create_dir(store.root.join(NEXT)).unwrap();
+    assert!(reopened.register(1, std::slice::from_ref(&second)).is_err());
+    assert_eq!(reopened.checkpoint(1).unwrap(), expected);
+    assert!(authorize(&store.root, Some(&second)).is_err());
+    fs::remove_dir(store.root.join(NEXT)).unwrap();
+    let ack = reopened.register(1, std::slice::from_ref(&second)).unwrap();
+    assert_eq!(ack.registered_through, 2);
+    assert_eq!(reopened.checkpoint(1).unwrap(), ack);
+    reopened.advance_epoch(1, 2).unwrap();
+    assert!(reopened.checkpoint(1).is_err());
+    assert_eq!(reopened.checkpoint(2).unwrap().registered_through, 2);
+    fs::remove_file(store.root.join(STATE)).unwrap();
+    assert!(reopened.checkpoint(2).is_err());
+}

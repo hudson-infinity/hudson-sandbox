@@ -46,6 +46,9 @@ impl Fixture {
         Self::configured(agent, false).await
     }
     async fn configured(agent: bool, output: bool) -> Self {
+        Self::configured_permits(agent, output, false).await
+    }
+    async fn configured_permits(agent: bool, output: bool, permits: bool) -> Self {
         let vm = vm::Fixture::build(60000, agent);
         let c = &vm.manifest.config;
         let config = Config {
@@ -53,6 +56,7 @@ impl Fixture {
             epoch: 1,
             state_root: vm.temp.path().join("h"),
             cgroup_parent: c.cgroup_parent.clone(),
+            launch_permits_required: permits,
             guardian_binary: PathBuf::from(env!("CARGO_BIN_EXE_sandbox-supervisor")),
             firecracker: c.firecracker.clone(),
             jailer: c.jailer.clone(),
@@ -180,6 +184,7 @@ impl Fixture {
     fn request(&self) -> CreateRequest {
         let owner = &self.vm.manifest.start.owner;
         CreateRequest {
+            launch_permit_json: Vec::new(),
             ownership: Some(Ownership {
                 host_id: self.config.host.to_string(),
                 project_id: owner.project.to_string(),
@@ -672,7 +677,7 @@ async fn real_output_minio_archives_binary_bytes_and_reconciles_after_epoch_rest
 async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     use sandbox_protocol::{ProjectId, ProjectToken};
     use serde_json::{Value, json};
-    let mut f = Fixture::configured(true, output).await;
+    let mut f = Fixture::configured_permits(true, output, true).await;
     let project = ProjectId::generate();
     let token = ProjectToken::generate().unwrap();
     sqlx::query("INSERT INTO projects(id,name,status,limits,api_tokens) VALUES($1,'real-vm-test','active','{}',$2)")
@@ -1953,3 +1958,125 @@ mod previous_epoch;
 
 #[path = "support/history.rs"]
 mod history;
+
+#[tokio::test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and controlled KVM artifacts"]
+async fn real_host_registers_permits_and_rejects_replay_and_downgrade() {
+    use sandbox_protocol::{allocation_authority::Permit, supervisor::AllocationAuthorityRequest};
+    let mut f = Fixture::configured_permits(true, false, true).await;
+    let mut c = f.client().await;
+    assert!(
+        c.health(HealthRequest {})
+            .await
+            .unwrap()
+            .get_ref()
+            .launch_permits_required
+    );
+    let mut request = f.request();
+    let owner = request.ownership.as_ref().unwrap().clone();
+    assert!(c.create(request.clone()).await.is_err());
+    let permit = Permit {
+        host: owner.host_id.parse().unwrap(),
+        project: owner.project_id.parse().unwrap(),
+        sandbox: owner.sandbox_id.parse().unwrap(),
+        allocation: owner.allocation_id.parse().unwrap(),
+        create_operation: owner.operation_id.parse().unwrap(),
+        generation: owner.generation,
+        original_epoch: owner.supervisor_epoch,
+        serial: 1,
+    };
+    request.launch_permit_json = serde_json::to_vec(&permit).unwrap();
+    assert!(c.create(request.clone()).await.is_err());
+    let mut registration = AllocationAuthorityRequest {
+        host_id: f.config.host.to_string(),
+        reporting_epoch: 1,
+        permits_json: serde_json::to_vec(&[permit]).unwrap(),
+    };
+    c.allocation_authority(registration.clone()).await.unwrap(); // discard acknowledgement
+    registration.permits_json.clear();
+    assert_eq!(
+        c.allocation_authority(registration.clone())
+            .await
+            .unwrap()
+            .get_ref()
+            .registered_through,
+        1
+    );
+    let mut changed = request.clone();
+    changed.ownership.as_mut().unwrap().project_id =
+        sandbox_protocol::ProjectId::generate().to_string();
+    assert!(c.create(changed).await.is_err());
+    if let Err(error) = c.create(request.clone()).await {
+        assert!(
+            matches!(error.code(), Code::Cancelled | Code::DeadlineExceeded),
+            "{error}"
+        );
+    }
+    // A timed-out Create remains unknown until exact-owner inspection proves it.
+    assert_eq!(f.ready(&mut c, &owner).await.start_count, 1);
+    assert!(f.manifest(&owner).launch_permit.is_some());
+    c.create(request.clone()).await.unwrap();
+    let mut stop = owner.clone();
+    stop.operation_id = OperationId::generate().to_string();
+    if let Err(error) = c
+        .stop(StopRequest {
+            ownership: Some(stop.clone()),
+        })
+        .await
+    {
+        assert!(
+            matches!(
+                error.code(),
+                Code::Unavailable | Code::Cancelled | Code::DeadlineExceeded
+            ),
+            "{error}"
+        );
+    }
+    f.released(&mut c, &stop).await;
+    f.restart().await;
+    let mut c = f.client().await;
+    assert!(c.allocation_authority(registration.clone()).await.is_err());
+    registration.reporting_epoch = 2;
+    assert_eq!(
+        c.allocation_authority(registration)
+            .await
+            .unwrap()
+            .get_ref()
+            .registered_through,
+        1
+    );
+    assert!(c.create(request).await.is_err());
+    let mut reader = transport::connect(
+        &f.url,
+        f.config.host,
+        f.tls.ca.pem().as_bytes(),
+        f.reader.cert.pem().as_bytes(),
+        f.reader.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reader
+            .allocation_authority(AllocationAuthorityRequest {
+                host_id: f.config.host.to_string(),
+                reporting_epoch: 2,
+                permits_json: Vec::new()
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let authority_path = f.config.state_root.join("a/launch.json");
+    let saved_path = f.config.state_root.join("a/fixture-saved.json");
+    fs::rename(&authority_path, &saved_path).unwrap();
+    assert!(c.health(HealthRequest {}).await.is_err());
+    fs::rename(&saved_path, &authority_path).unwrap();
+    c.health(HealthRequest {}).await.unwrap();
+    f.child.kill().unwrap();
+    f.child.wait().unwrap();
+    let mut config = f.config.clone();
+    config.epoch += 1;
+    config.launch_permits_required = false;
+    assert!(sandbox_supervisor::host::Host::open(config).is_err());
+}
