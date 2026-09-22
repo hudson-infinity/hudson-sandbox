@@ -32,7 +32,7 @@ enum Metadata {
     Absent {},
     Stopped {
         directory: Identity,
-        receipt: Receipt,
+        receipt: Box<Receipt>,
         files: BTreeMap<String, Entry>,
     },
 }
@@ -57,7 +57,14 @@ impl Plan {
         );
         match (&self.metadata, manifest) {
             (Metadata::Absent {}, None) => {}
-            (Metadata::Stopped { receipt, files, .. }, Some(manifest)) => {
+            (
+                Metadata::Stopped {
+                    directory,
+                    receipt,
+                    files,
+                },
+                Some(manifest),
+            ) => {
                 manifest.validate_receipt(receipt)?;
                 ensure!(
                     receipt.state == State::Stopped && receipt.cleanup_confirmed,
@@ -67,9 +74,24 @@ impl Plan {
                     files.len() == NAMES.len() && NAMES.iter().all(|n| files.contains_key(*n)),
                     "invalid deletion inventory"
                 );
+                ensure!(directory.inode > 0, "invalid deletion directory identity");
+                let receipt_bytes = serde_json::to_vec(receipt)?;
+                let manifest_bytes = serde_json::to_vec(manifest)?;
+                for (name, bytes) in [
+                    ("receipt.json", receipt_bytes),
+                    ("manifest.json", manifest_bytes),
+                    ("lifecycle.lock", Vec::new()),
+                ] {
+                    ensure!(
+                        files[name].len == bytes.len() as u64
+                            && files[name].sha256 == hex::encode(Sha256::digest(bytes)),
+                        "retained deletion evidence differs from original file digest"
+                    );
+                }
                 for (name, file) in files {
                     ensure!(
-                        file.len <= 65536
+                        file.identity.inode > 0
+                            && file.len <= 65536
                             && file.sha256.len() == 64
                             && file
                                 .sha256
@@ -275,7 +297,7 @@ impl Session {
                             .context("missing directory")?
                             .metadata()?,
                     ),
-                    receipt,
+                    receipt: Box::new(receipt),
                     files: actual,
                 }
             } else {

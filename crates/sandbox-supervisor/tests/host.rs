@@ -272,8 +272,12 @@ impl Fixture {
         }
     }
     async fn restart(&mut self) {
+        self.restart_with(|_| {}).await;
+    }
+    async fn restart_with(&mut self, edit: impl FnOnce(&Self)) {
         self.child.kill().unwrap();
         self.child.wait().unwrap();
+        edit(self);
         assert!(
             sandbox_supervisor::host::Host::open(self.config.clone()).is_err(),
             "same epoch cannot restart"
@@ -2235,3 +2239,6 @@ async fn real_host_receipts_require_active_registered_owner() {
 
 #[path = "support/allocation_retirement.rs"]
 mod allocation_retirement;
+
+#[path = "support/metadata_retirement.rs"]
+mod metadata_retirement;

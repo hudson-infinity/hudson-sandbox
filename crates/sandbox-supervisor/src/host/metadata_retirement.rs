@@ -85,30 +85,28 @@ impl Host {
         })?;
         let request = RetirementRequest::decode(&wire.request_json).map_err(uncertain)?;
         let id = request.intent.permit.allocation.to_string();
-        let (mut record, checkpoint) = {
-            let j = self.journal()?;
-            (
-                j.records
-                    .get(&id)
-                    .cloned()
-                    .ok_or_else(|| uncertain("retirement record missing"))?,
-                j.launch_authority
-                    .clone()
-                    .ok_or_else(|| uncertain("authority checkpoint missing"))?,
-            )
-        };
-        let gate = record.gate.clone();
+        let gate = self
+            .journal()?
+            .records
+            .get(&id)
+            .ok_or_else(|| uncertain("retirement record missing"))?
+            .gate
+            .clone();
         let _gate = gate
             .try_lock()
             .map_err(|_| Status::unavailable("allocation deletion busy"))?;
         // Re-read after taking the allocation gate: a newer claim can win
         // between the initial fence and this deletion attempt.
-        record = self
-            .journal()?
+        let journal = self.journal()?;
+        let mut record = journal
             .records
             .get(&id)
             .cloned()
             .ok_or_else(|| uncertain("retirement record missing"))?;
+        let checkpoint = journal
+            .launch_authority
+            .as_ref()
+            .ok_or_else(|| uncertain("authority checkpoint missing"))?;
         if record.retirement.as_ref() != Some(&request) {
             return Err(Status::failed_precondition("retirement claim superseded"));
         }
@@ -135,6 +133,9 @@ impl Host {
             record.metadata_retirement.as_ref().map(|s| &s.plan),
         )
         .map_err(uncertain)?;
+        // The latest independent frontier stays locked until the exclusive
+        // root gate is held, so concurrent registration cannot stale this check.
+        drop(journal);
         if let Some(saved) = &record.metadata_retirement {
             if saved.removed && !session.is_removed() {
                 return Err(uncertain("completed deletion reappeared"));

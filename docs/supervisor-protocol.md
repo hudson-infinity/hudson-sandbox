@@ -144,3 +144,9 @@ The controller persists an independent database checkpoint and supplies the regi
 ### Host reader closure during allocation fencing
 
 Live-output and file-download calls pin the allocation while holding the journal lock that validates admission. File worker admission uses that same lock. Whole-allocation fencing persists its intent and installs launch denial before attempting exclusive reader access; it returns unavailable while a reader or pending/unreleased capture ticket remains. An identical retry can succeed after those consumers finish or expire. A failed capture retains its ticket until monotonic expiry, because a failed response cannot establish that capture did not happen. Host reader closure does not prove guest cleanup or authorize metadata deletion.
+
+### Recoverable allocation metadata retirement
+
+`RetireAllocationMetadata` accepts the same retirement JSON envelope as `FenceAllocation` and returns the exact request with an observation time only after verifying physical cleanup and removing owned guardian metadata. It first reconciles launch fencing and reader closure. The host saves original cleanup evidence and a bounded file inventory before unlinking, then saves completion after directory sync. Retrying an identical scope under a renewed valid claim reconciles interrupted removal and lost replies. Legacy and fake hosts reject this RPC.
+
+Original host records and root fencing entries remain retained. The observation cannot be substituted for the existing ordinary release response, and no controller/database acknowledgement or capacity recovery is wired yet. See [whole-allocation retirement](allocation-retirement.md#host-metadata-deletion-component) for ownership, restart and filesystem requirements.

@@ -5,7 +5,7 @@ use sandbox_protocol::{
     supervisor::{AllocationAuthorityRequest, AllocationFenceRequest},
 };
 
-fn permit(request: &CreateRequest) -> Permit {
+pub(super) fn permit(request: &CreateRequest) -> Permit {
     let o = request.ownership.as_ref().unwrap();
     Permit {
         host: o.host_id.parse().unwrap(),
@@ -18,7 +18,7 @@ fn permit(request: &CreateRequest) -> Permit {
         serial: 1,
     }
 }
-fn retirement(p: Permit) -> RetirementRequest {
+pub(super) fn retirement(p: Permit) -> RetirementRequest {
     RetirementRequest {
         intent: Intent {
             version: 1,
@@ -39,7 +39,7 @@ fn wire(r: &RetirementRequest) -> AllocationFenceRequest {
         request_json: r.encode().unwrap(),
     }
 }
-async fn register(c: &mut SupervisorClient<Channel>, p: &Permit) {
+pub(super) async fn register(c: &mut SupervisorClient<Channel>, p: &Permit) {
     c.allocation_authority(AllocationAuthorityRequest {
         host_id: p.host.to_string(),
         reporting_epoch: 1,

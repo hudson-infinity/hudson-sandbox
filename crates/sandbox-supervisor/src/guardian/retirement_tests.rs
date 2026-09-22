@@ -135,6 +135,11 @@ fn deletion_rejects_live_locks_unowned_entries_missing_evidence_and_scope_change
     authority
         .fence(1, &intent.permit, intent.retirement)
         .unwrap();
+    fs::create_dir_all(&m.config.cgroup_parent).unwrap();
+    fs::create_dir(m.group()).unwrap();
+    assert!(open(&m, &intent, None).is_err());
+    assert!(m.group().exists());
+    fs::remove_dir(m.group()).unwrap();
     let lock = m.lifecycle_lock(false).unwrap();
     assert!(open(&m, &intent, None).is_err());
     drop(lock);
@@ -145,6 +150,11 @@ fn deletion_rejects_live_locks_unowned_entries_missing_evidence_and_scope_change
     let session = open(&m, &intent, None).unwrap();
     let plan = session.plan.clone();
     drop(session);
+    let mut corrupt = plan.clone();
+    if let Metadata::Stopped { receipt, .. } = &mut corrupt.metadata {
+        receipt.reason = Some("changed_after_removal".into());
+    }
+    assert!(open(&m, &intent, Some(&corrupt)).is_err());
     let mut changed = intent.clone();
     changed.release_evidence_sha256 = "ef".repeat(32);
     assert!(open(&m, &changed, Some(&plan)).is_err());
