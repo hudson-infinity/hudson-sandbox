@@ -1,6 +1,6 @@
 # Acknowledged history reclamation
 
-Status: live-allocation database coordination, authenticated host/guest retirement and public capacity refunds are implemented behind the controller's `--retire-history` opt-in. Retirement after allocation destruction or host epoch change, whole-allocation journal retirement, and storage-marker lifecycle remain unfinished under [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). This document owns the retirement barrier and its platform prerequisites.
+Status: live-allocation database coordination, authenticated host/guest retirement and public capacity refunds are implemented behind the controller's `--retire-history` opt-in. Authenticated host retirement after verified allocation destruction is implemented; its database coordination/refunds, whole-allocation journal retirement, and storage-marker lifecycle remain unfinished under [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). This document owns the retirement barrier and its platform prerequisites.
 
 ## Why deletion needs an admission barrier
 
@@ -55,6 +55,18 @@ The table records the coordination contract. The live original-epoch path is imp
 | Later lifecycle | Snapshot/restore, previous-epoch recovery and whole-allocation journal retirement must preserve the admission barriers or establish a stronger independent fence. Never restore an old guest/context as authority for new work. |
 
 Object-store markers have a different problem: an already issued conditional PUT may complete after a local timeout. Guest barriers do not fence that storage request. The [output](output-storage.md#storage-retirement) and [file-source](file-transfer.md#source-cleanup-worker) markers remain retained until a separate namespace/authority protocol proves old writers cannot recreate payloads. No marker deletion is added here.
+
+## Retirement after verified allocation destruction
+
+`RetireReleasedHistory` is a separate controller-only RPC for known history on a stopped allocation. Its request binds the original allocation ownership and epoch, the current reporting epoch, a domain, an inclusive operation prefix and an independent claim revision/deadline. Its acknowledgement echoes that request and returns the completed prefix, verified `Released` or `FencedAbsent` state, provenance and observation time. It does not manufacture a guest context for an allocation that never booted. The simulator refuses durable proof.
+
+Under the existing allocation gate, the host requires retained exact ownership and a durable stopped fence, then rechecks original guardian, cgroup and filesystem cleanup, including on retries. Missing metadata, lease expiry or a stopped flag alone cannot authorize retirement. Covered commands still require known terminal outcomes and confirmed command cleanup; uploads must be committed, aborted or durably not started. Unknown commands, staging, commit intent and unknown file outcomes block the prefix even after VM destruction. Executed records must match the original manifest boot. The trusted controller must independently preserve outcomes and finish consumer retirement before calling this RPC.
+
+One synced journal replacement removes covered records and retains a versioned per-domain completion plus the whole allocation tombstone. A save failure poisons the host; restart reloads the last durable state, and retries revalidate destruction before completion. Lower prefixes cannot regress the floor, changed requests cannot reuse a revision, and a newer reporting epoch requires a newer claim. Delayed command/file/archive/read requests remain fenced. The new journal fields make older binaries reject upgraded state. The allocation tombstone, guardian metadata, database outcomes and permanent storage markers are not deleted.
+
+This host path has no automatic database caller yet. The live worker still requires an original live allocation. A separate database proof variant and coordinator must validate the destruction acknowledgement, preserve contiguous eligibility and consumer prerequisites, and only then refund reservations. A host test passing does not establish these unfinished accounting properties.
+
+The [destruction-retirement evidence](evidence/2026-09-22-released-host-history.json) records matching source hashes, binary hashes, validation and remaining integration limits. The Linux state tests cover domain separation, prefix/revision ordering, retained tombstones, malformed completion, unknown commands and unfinished uploads. Controlled authenticated host tests cover actual VM destruction, new retirement after a host epoch change, lost replies, reader denial, mismatched/expired ownership, fenced absence without a boot, unowned filesystem state, failed persistence/restart and delayed Create rejection. These remain development-environment evidence, not supported-platform isolation certification.
 
 ## Database claims, accounting and operation ordering
 

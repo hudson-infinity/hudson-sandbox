@@ -456,6 +456,15 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn retire_released_history(
+        &self,
+        _r: Request<sandbox_protocol::supervisor::ReleasedHistoryRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::ReleasedHistoryObservation>, Status> {
+        Err(Status::unimplemented(
+            "simulator does not provide durable destruction retirement",
+        ))
+    }
+
     async fn history_binding(
         &self,
         _r: Request<LeaseInspection>,

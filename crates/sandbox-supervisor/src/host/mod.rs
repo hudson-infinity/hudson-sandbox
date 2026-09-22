@@ -7,6 +7,7 @@ mod history;
 mod journal;
 mod live_output;
 mod previous;
+mod released_history;
 use crate::guardian::{self, Action, Artifact, Manifest, Receipt, State as GuardianState};
 use journal::{Journal, Record};
 use sandbox_protocol::{
@@ -249,6 +250,8 @@ impl Host {
                 files: BTreeMap::new(),
                 archives: BTreeMap::new(),
                 command_history: None,
+                released_commands: None,
+                released_files: None,
                 file_history: None,
                 lease_revision: 0,
                 lease_request: None,
@@ -709,6 +712,15 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn retire_released_history(
+        &self,
+        r: Request<sandbox_protocol::supervisor::ReleasedHistoryRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::ReleasedHistoryObservation>, Status> {
+        self.work(move |h| h.retire_released_history_sync(r.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn history_binding(
         &self,
         r: Request<LeaseInspection>,

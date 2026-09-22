@@ -26,6 +26,7 @@ fn slot_mut(record: &mut Record, domain: Domain) -> &mut Option<Retirement> {
     }
 }
 pub(super) fn check(record: &Record, domain: Domain, id: OperationId) -> Result<(), Status> {
+    super::released_history::check(record, domain, id)?;
     if slot(record, domain)
         .as_ref()
         .is_some_and(|v| v.barrier.covers(id))

@@ -4,6 +4,7 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc RetireReleasedHistory(ReleasedHistoryRequest) returns (ReleasedHistoryObservation);
   rpc HistoryBinding(LeaseInspection) returns (HistoryBindingObservation);
   rpc RetireHistory(HistoryRequest) returns (HistoryObservation);
   rpc BeginFile(FileRequest) returns (FileObservation);
@@ -220,4 +221,20 @@ message HistoryBindingObservation {
   hudson.guest.v1.Context context = 2;
   bool simulated = 3;
   int64 observed_unix_ms = 4;
+}
+
+// Allocation destruction is a separate proof from a guest history acknowledgement.
+// Original ownership is retained; reporting_epoch identifies the serving host.
+message ReleasedHistoryRequest {
+  LeaseOwnership ownership = 1;
+  int64 reporting_epoch = 2;
+  hudson.guest.v1.HistoryDomain domain = 3;
+  string through = 4;
+}
+message ReleasedHistoryObservation {
+  ReleasedHistoryRequest request = 1;
+  string completed_through = 2;
+  AllocationState release_state = 3;
+  bool simulated = 4;
+  int64 observed_unix_ms = 5;
 }

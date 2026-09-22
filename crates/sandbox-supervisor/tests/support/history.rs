@@ -571,3 +571,209 @@ pub(super) async fn public_capacity_retirement(
         json!({"full_32_command_budget":true,"unexpired_consumers_blocked":true,"real_host_guest_ack":true,"new_command_executed":true,"old_key_not_replayed":true,"original_33_rows_retained":true,"simulated":false})
     );
 }
+
+#[tokio::test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and aarch64 KVM artifacts"]
+async fn real_released_history_requires_cleanup_and_reconciles_across_epochs() {
+    use sandbox_protocol::supervisor::ReleasedHistoryRequest;
+    let mut f = Fixture::new().await;
+    let mut c = f.client().await;
+    let create = f.request();
+    let owner = create.ownership.clone().unwrap();
+    let _ = c.create(create.clone()).await;
+    f.ready(&mut c, &owner).await;
+    let (old, receipt) = execute(&mut c, &owner).await;
+    let upload = super::supervisor_files::upload(&owner, "retired-after-stop", b"x");
+    c.begin_file(upload.clone()).await.unwrap();
+    c.abort_file(upload.clone()).await.unwrap();
+    let request = ReleasedHistoryRequest {
+        ownership: Some(lease(&owner, 1)),
+        reporting_epoch: f.config.epoch,
+        domain: 1,
+        through: receipt.operation_id.to_string(),
+    };
+    assert_eq!(
+        c.retire_released_history(request.clone())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    let mut reader = transport::connect(
+        &f.url,
+        f.config.host,
+        f.tls.ca.pem().as_bytes(),
+        f.reader.cert.pem().as_bytes(),
+        f.reader.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reader
+            .retire_released_history(request.clone())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let _ = c
+        .stop(StopRequest {
+            ownership: Some(owner.clone()),
+        })
+        .await;
+    f.released(&mut c, &owner).await;
+    let observation = c
+        .retire_released_history(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(observation.request, Some(request.clone()));
+    assert_eq!(
+        observation.completed_through,
+        receipt.operation_id.to_string()
+    );
+    assert_eq!(observation.release_state, AllocationState::Released as i32);
+    assert!(!observation.simulated);
+    // Lost reply: repeat the same request; no guest or reexecution is needed.
+    assert_eq!(
+        c.retire_released_history(request.clone())
+            .await
+            .unwrap()
+            .get_ref()
+            .completed_through,
+        observation.completed_through
+    );
+    assert_eq!(
+        c.execute_command(old).await.unwrap_err().code(),
+        Code::FailedPrecondition
+    );
+    let before: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.config.state_root.join("host.json")).unwrap()).unwrap();
+    assert!(
+        before["records"][&owner.allocation_id]["commands"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(before["records"][&owner.allocation_id]["stopped"], true);
+    f.restart().await;
+    c = f.client().await;
+    assert!(c.retire_released_history(request.clone()).await.is_err());
+    let mut recovered = request.clone();
+    recovered.reporting_epoch = f.config.epoch;
+    recovered.ownership = Some(lease(&owner, 2));
+    assert_eq!(
+        c.retire_released_history(recovered.clone())
+            .await
+            .unwrap()
+            .get_ref()
+            .completed_through,
+        request.through
+    );
+    let file_request = ReleasedHistoryRequest {
+        ownership: Some(lease(&owner, 1)),
+        reporting_epoch: f.config.epoch,
+        domain: 2,
+        through: upload.upload.as_ref().unwrap().operation_id.clone(),
+    };
+    assert_eq!(
+        c.retire_released_history(file_request.clone())
+            .await
+            .unwrap()
+            .get_ref()
+            .completed_through,
+        file_request.through
+    );
+    let retained: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.config.state_root.join("host.json")).unwrap()).unwrap();
+    assert!(
+        retained["records"][&owner.allocation_id]
+            .get("files")
+            .is_none()
+    );
+    let mut foreign = recovered.clone();
+    foreign.ownership.as_mut().unwrap().generation += 1;
+    assert!(c.retire_released_history(foreign).await.is_err());
+    let mut expired = recovered;
+    expired.ownership.as_mut().unwrap().claim_expires_unix_ms = guardian::wall_ms() - 1;
+    assert!(c.retire_released_history(expired).await.is_err());
+    assert!(c.create(create).await.is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and aarch64 KVM artifacts"]
+async fn real_released_history_fenced_absence_requires_retained_owner_and_clean_paths() {
+    use sandbox_protocol::supervisor::ReleasedHistoryRequest;
+    let mut f = Fixture::new().await;
+    let mut c = f.client().await;
+    let create = f.request();
+    let owner = create.ownership.clone().unwrap();
+    let request = ReleasedHistoryRequest {
+        ownership: Some(lease(&owner, 1)),
+        reporting_epoch: f.config.epoch,
+        domain: 2,
+        through: OperationId::generate().to_string(),
+    };
+    assert!(c.retire_released_history(request.clone()).await.is_err());
+    let stopped = c
+        .stop(StopRequest {
+            ownership: Some(owner.clone()),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(stopped.state, AllocationState::FencedAbsent as i32);
+    let unowned = f.config.state_root.join("a").join(&owner.allocation_id);
+    fs::create_dir_all(&unowned).unwrap();
+    assert_eq!(
+        c.retire_released_history(request.clone())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unavailable
+    );
+    fs::remove_dir(&unowned).unwrap();
+    let path = f.config.state_root.join("host.json");
+    let backup = f.config.state_root.join("before-released-history.json");
+    let before = fs::read(&path).unwrap();
+    fs::rename(&path, &backup).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert_eq!(
+        c.retire_released_history(request.clone())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unavailable
+    );
+    assert_eq!(fs::read(&backup).unwrap(), before);
+    assert_eq!(
+        c.retire_released_history(request.clone())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unavailable
+    );
+    fs::remove_dir(&path).unwrap();
+    fs::rename(&backup, &path).unwrap();
+    f.restart().await;
+    c = f.client().await;
+    let mut request = request;
+    request.reporting_epoch = f.config.epoch;
+    request.ownership = Some(lease(&owner, 2));
+    let observed = c
+        .retire_released_history(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(observed.release_state, AllocationState::FencedAbsent as i32);
+    assert_eq!(observed.request, Some(request.clone()));
+    let journal: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.config.state_root.join("host.json")).unwrap()).unwrap();
+    assert!(journal["records"][&owner.allocation_id]["manifest"].is_null());
+    assert_eq!(journal["records"][&owner.allocation_id]["stopped"], true);
+    // Delayed Create must remain fenced by the retained allocation tombstone.
+    assert_eq!(
+        c.create(create).await.unwrap_err().code(),
+        Code::FailedPrecondition
+    );
+}
