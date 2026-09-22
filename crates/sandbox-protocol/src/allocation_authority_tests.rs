@@ -280,3 +280,32 @@ fn duplicate_generations_and_operation_bindings_are_rejected_as_one_batch() {
         assert_eq!(a.encode().unwrap(), before);
     }
 }
+
+#[test]
+fn new_receipts_require_a_retained_active_allocation() {
+    let host = HostId::generate();
+    let p = permit(host, 1);
+    let mut authority = Authority::new(host).unwrap();
+    assert_eq!(
+        authority.active_allocation(p.allocation),
+        Err(Error::Ownership)
+    );
+    authority.register(std::slice::from_ref(&p)).unwrap();
+    assert_eq!(authority.active_allocation(p.allocation), Ok(&p));
+    let retirement = OperationId::generate();
+    authority.fence(&p, retirement).unwrap();
+    assert_eq!(
+        authority.active_allocation(p.allocation),
+        Err(Error::Conflict)
+    );
+    authority.complete(&p, retirement).unwrap();
+    assert_eq!(
+        authority.active_allocation(p.allocation),
+        Err(Error::Conflict)
+    );
+    authority.forget(&p, retirement).unwrap();
+    assert_eq!(
+        reload(&authority).active_allocation(p.allocation),
+        Err(Error::Ownership)
+    );
+}

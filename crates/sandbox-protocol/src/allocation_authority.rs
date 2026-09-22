@@ -240,6 +240,21 @@ impl Authority {
     pub fn state(&self, permit: &Permit) -> Result<&State, Error> {
         Ok(&self.entry(permit)?.state)
     }
+    /// Resolve a retained active owner before creating a new host receipt.
+    /// Failure is not evidence that an allocation never existed or was released.
+    pub fn active_allocation(&self, allocation: AllocationId) -> Result<&Permit, Error> {
+        valid_uuid(allocation.uuid())?;
+        let entry = self
+            .0
+            .entries
+            .iter()
+            .find(|entry| entry.permit.allocation == allocation)
+            .ok_or(Error::Ownership)?;
+        if entry.state != (State::Active {}) {
+            return Err(Error::Conflict);
+        }
+        Ok(&entry.permit)
+    }
     /// All launch/admission entry points must check this under the same durable
     /// authority lock as fencing. A successful check alone is not a launch grant.
     pub fn authorize(&self, permit: &Permit) -> Result<(), Error> {

@@ -91,7 +91,20 @@ async fn running_cancel_retries_once_preserves_output_and_allows_next_command(po
         cancel(&f, target, &key, json!({})).await.1["operation_id"],
         id.to_string()
     );
+    // An idempotent cancel retry can return before SQLx finishes rolling back
+    // its read-only transaction. Output workers intentionally skip locked rows.
+    // Acquire the target explicitly (waiting for that rollback), demonstrate
+    // the skip, then release it before asserting that publication is available.
+    let mut reader = f.store.pool().begin().await.unwrap();
+    sqlx::query("SELECT id FROM operations WHERE id=$1 FOR UPDATE")
+        .bind(target.uuid())
+        .fetch_one(&mut *reader)
+        .await
+        .unwrap();
+    assert!(f.store.claim_output(30).await.unwrap().is_none());
+    reader.rollback().await.unwrap();
     let publication = f.store.claim_output(30).await.unwrap().unwrap();
+    assert_eq!(publication.operation_id, target);
     let work = f
         .store
         .prepare_output(&publication, 60, 1, true)

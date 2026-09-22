@@ -243,6 +243,34 @@ impl Host {
         if j.records.len() >= journal::MAX_RECORDS {
             return Err(Status::resource_exhausted("host receipt capacity full"));
         }
+        // A missing journal row must not recreate an unregistered or forgotten
+        // allocation, even through Inspect/Stop rather than Create.
+        let _authority = if self.inner.authority.is_some() {
+            let checkpoint = j
+                .launch_authority
+                .as_ref()
+                .ok_or_else(|| uncertain("missing authority checkpoint"))?;
+            let allocation = o.allocation_id.parse().map_err(uncertain)?;
+            let (permit, guard) = crate::launch_authority::authorize_registered_allocation(
+                &self.inner.config.state_root.join("a"),
+                self.inner.config.host,
+                self.inner.config.epoch,
+                checkpoint.registered_through,
+                allocation,
+            )
+            .map_err(|_| Status::failed_precondition("registered active allocation required"))?;
+            if permit.project.to_string() != o.project_id
+                || permit.sandbox.to_string() != o.sandbox_id
+                || permit.generation != o.generation
+            {
+                return Err(Status::failed_precondition(
+                    "registered allocation ownership mismatch",
+                ));
+            }
+            Some(guard)
+        } else {
+            None
+        };
         let gate = Arc::new(Mutex::new(()));
         j.records.insert(
             o.allocation_id.clone(),
