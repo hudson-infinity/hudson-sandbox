@@ -2170,8 +2170,18 @@ async fn real_host_receipts_require_active_registered_owner() {
             .await
             .is_err()
     );
-    authority.complete(1, &p, retirement).unwrap();
-    authority.forget(1, &p, retirement).unwrap();
+    let scope = sandbox_protocol::allocation_retirement::Intent {
+        version: 1,
+        retirement,
+        permit: p.clone(),
+        commands: sandbox_protocol::allocation_retirement::DomainClosure::Empty {},
+        files: sandbox_protocol::allocation_retirement::DomainClosure::Empty {},
+        // Synthetic database binding in this component test, not a DB receipt.
+        release_evidence_sha256: "a".repeat(64),
+        simulated: false,
+    };
+    authority.complete(1, &scope).unwrap();
+    authority.forget(1, &scope).unwrap();
     assert!(
         client
             .inspect(InspectRequest {

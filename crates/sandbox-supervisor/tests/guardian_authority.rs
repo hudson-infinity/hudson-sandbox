@@ -86,8 +86,18 @@ fn real_guardian_fences_launch_renewal_and_replay_after_metadata_removal() {
         .unwrap()
         .sync_all()
         .unwrap();
-    store.complete(1, &p, retirement).unwrap();
-    store.forget(1, &p, retirement).unwrap();
+    let scope = sandbox_protocol::allocation_retirement::Intent {
+        version: 1,
+        retirement,
+        permit: p.clone(),
+        commands: sandbox_protocol::allocation_retirement::DomainClosure::Empty {},
+        files: sandbox_protocol::allocation_retirement::DomainClosure::Empty {},
+        // Synthetic database binding in this component test, not a DB receipt.
+        release_evidence_sha256: "a".repeat(64),
+        simulated: false,
+    };
+    store.complete(1, &scope).unwrap();
+    store.forget(1, &scope).unwrap();
     assert!(f.manifest.prepare().is_err());
     assert!(!f.manifest.directory().exists());
     let mut legacy = f.manifest.clone();
