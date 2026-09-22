@@ -235,6 +235,7 @@ crates/
   sandbox-supervisor/   # Host resources, jailer, Firecracker, snapshots, leases
   sandbox-guest/        # Commands, files, and bounded guest reporting
   sandbox-store/        # SQLx queries, PostgreSQL transactions, and object storage
+  sandbox-client/       # Generated Project requests/models and bounded HTTPS client
   sandbox-cli/          # HTTP API client for humans, scripts, and agent shell tools
 images/                 # Guest image and kernel build definitions
 deploy/                 # Kubernetes services and dedicated Linux host setup

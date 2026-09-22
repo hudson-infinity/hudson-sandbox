@@ -10,3 +10,28 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "hudson-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+sandbox-client.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+rcgen.workspace = true
+sandbox-api = { path = "../sandbox-api" }
+sandbox-protocol.workspace = true
+sandbox-store.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["process"] }
+sandbox-artifacts.workspace = true
+sha2.workspace = true
+hex.workspace = true
+time.workspace = true

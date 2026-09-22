@@ -10,14 +10,14 @@ Admin sandbox mutations explicitly select a target project and call the same adm
 
 ## SDK and CLI behavior
 
-[Architecture](architecture.md#client-interfaces-and-agent-integration) defines the interface boundaries. SDKs and the CLI call the HTTP API; they do not contact PostgreSQL, host control sockets, or Firecracker. Their source packages, installation commands, and exact public signatures are not implemented yet.
+[Architecture](architecture.md#client-interfaces-and-agent-integration) defines the interface boundaries. SDKs and the CLI call the HTTP API; they do not contact PostgreSQL, host control sockets, or Firecracker. The [Rust client and project CLI](client-cli.md) implement the existing Project routes. Python/TypeScript packages, publication and installers remain unfinished.
 
 The first release ships the CLI and three SDKs — Python, TypeScript, and Rust. Models and the request layer are generated from the same OpenAPI document for all three; only the retry, wait, and stream-reconnect behavior below is written by hand. The Rust SDK is the client crate the CLI already depends on, published rather than written twice. One conformance suite, defined as data, runs against all three in CI so they stay genuinely equivalent rather than nominally equivalent, and all three carry the same version as the API they target.
 
 - **Configuration and auth:** resolve a configured API URL and the appropriate project/admin credential. Use trusted credential configuration outside model tool arguments and avoid raw tokens in command-line flags, prompts, logs, or output. Ordinary agent sandbox work uses Project access. Browser session behavior remains separate and is defined in [auth design](auth-design.md).
 - **Requests and retries:** preserve the same idempotency key and payload for retries of one logical mutation. Expose a way for a caller to retain/reuse that key across separate CLI invocations or process restarts; a fresh invocation must not silently retry uncertain work with a new key. The server's [admission rules](#retries-and-admission) remain authoritative.
 - **Long operations:** return the admitted operation ID promptly. Provide explicit status/wait and cancellation actions; an optional wait follows the same operation without resubmission. Distinguish request acceptance from execution success. A client wait timeout or disconnection does not cancel the server operation.
-- **Results:** provide readable CLI output for people and a structured JSON mode for scripts/agents. Keep diagnostics separate from structured stdout. Preserve API error categories and distinguish command exit, pending work, cancellation, and unknown outcomes; exact CLI exit codes are still to be specified.
+- **Results:** provide readable CLI output for people and a structured JSON mode for scripts/agents. Keep diagnostics separate from structured stdout. Preserve API error categories and distinguish command exit, pending work, cancellation, and unknown outcomes; the implemented [CLI exit codes](client-cli.md#results-bounds-and-exit-status) distinguish these outcomes.
 - **Output and files:** return bounded output with truncation/cursor information and let callers request additional retained output. Retained output is capped at 10 MiB per operation; beyond that, callers get truncation markers and the operation's stored artifacts. Streaming reconnects use the existing operation. Explicit file transfers use the API's ownership/path/size checks; a local file path is not automatically available in the remote guest.
 
 For example, this is a proposed mapping, not a working command:
@@ -30,7 +30,7 @@ hudson-sandbox pause <sandbox-id>
     ← 202 Accepted with operation ID and status URL
 ```
 
-The CLI displays the operation handle or waits when explicitly requested. It reports the sandbox paused only when the server confirms snapshot publication and compute release. It does not take snapshots itself. SDK pause methods use the same contract; initial SDK languages and exact method signatures remain open.
+The CLI displays the operation handle or waits when explicitly requested. It reports the sandbox paused only when the server confirms snapshot publication and compute release. It does not take snapshots itself. SDK pause methods use the same contract; pause/resume methods remain future work.
 
 ## Operation contracts
 

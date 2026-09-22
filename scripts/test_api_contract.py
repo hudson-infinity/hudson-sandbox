@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import unittest
 from jsonschema import ValidationError
-from generate_api import render, rust_type
+from generate_api import render, rust_type, render_requests
 from check_api import check_schema, check_profile, check_exchange, check_registered_routes
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +12,18 @@ SPEC = json.loads((ROOT/'api/openapi.json').read_text())
 
 
 class ContractTests(unittest.TestCase):
+    def test_generated_requests_follow_the_contract_and_fail_on_unknown_media(self):
+        spec = copy.deepcopy(SPEC)
+        route = spec['paths'].pop('/v1/sandboxes/{sandbox_id}/execute')
+        spec['paths']['/v1/sandboxes/{sandbox_id}/future-execute'] = route
+        output = render_requests(spec)
+        self.assertIn('"future-execute"', output)
+        self.assertIn('pub async fn execute_command', output)
+        self.assertNotIn('&args.idempotency_key.to_string()', output)
+        route['post']['requestBody']['content'] = {'text/plain': {'schema': {'type':'string'}}}
+        with self.assertRaises(ValueError):
+            render_requests(spec)
+
     def test_request_bounds_and_closed_command_shape(self):
         schema={'$ref':'#/components/schemas/CommandInput'}
         valid={'argv':['/bin/true'],'deadline_unix_ms':1}
