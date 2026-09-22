@@ -1,6 +1,6 @@
 # OpenAPI and wire models
 
-Status: the implemented Project API has a checked [OpenAPI 3.1 document](../api/openapi.json) and [generated Rust wire models](../crates/sandbox-protocol/src/api.rs). The API uses those models for JSON requests/responses and SSE payloads. The [Rust client and project CLI](client-cli.md) now use generated client models and requests for those operations. Python/TypeScript packages and publication remain unfinished. This is interface evidence, not sandbox isolation evidence.
+Status: the implemented Project API has a checked [OpenAPI 3.1 document](../api/openapi.json) and [generated Rust wire models](../crates/sandbox-protocol/src/api.rs). The API uses those models for JSON requests/responses and SSE payloads. The [Rust client and project CLI](client-cli.md) now use generated client models and requests for those operations. [Python/TypeScript clients](language-clients.md) use generated models and requests for the same operations; publication remains unfinished. This is interface evidence, not sandbox isolation evidence.
 
 The specification owns exact wire shapes for 14 operations: create, execute, destroy, cancel, sandbox/operation reads and lists, retained-output reads, SSE, binary uploads, and capture/read/release downloads. It contains no planned Admin, browser-session, pause/resume or snapshot endpoints. It is a repository artifact; the service does not expose a new discovery endpoint. Replace its reserved example HTTPS origin with your installation's trusted API URL.
 
@@ -8,16 +8,17 @@ The specification owns exact wire shapes for 14 operations: create, execute, des
 
 ## Change and check the contract
 
-Use Python 3.10 or newer and the pinned Rust toolchain:
+Use Python 3.11 or newer, Node 24.9.0 or newer, and the pinned Rust toolchain for all checks:
 
 ```sh
 make api-setup       # isolated .venv-openapi, pinned validation dependencies
+make sdk-setup       # isolated Python environment and locked Node tools
 make api-generate    # after editing api/openapi.json
 make api            # standards validation, generation drift, checker regressions
 make check          # additionally runs Rust checks and PostgreSQL/router conformance
 ```
 
-`make up` supplies PostgreSQL on port 55432. Direct `cargo test` runs the conformance test too; install the validator environment first. `HUDSON_OPENAPI_PYTHON` may point to another Python environment with the pinned [validation dependencies](../scripts/api-requirements.txt). Nothing installs into system Python. The Rust CI job performs this setup and all checks before merge.
+`make up` supplies PostgreSQL on port 55432. Direct `cargo test` runs the conformance test too; install both validator and SDK environments first. `HUDSON_OPENAPI_PYTHON` may point to another Python environment with the pinned [validation dependencies](../scripts/api-requirements.txt). Nothing installs into system Python. The Rust CI job performs this setup and all checks before merge.
 
 Edit the specification, regenerate, change the handler/admission implementation as needed, and update the owning semantic document in the same PR. Generated output is committed for ordinary Cargo builds; Python is needed for regeneration and contract tests, not by the runtime. CI rejects stale output. The standalone client has no runtime dependency on internal protocol or protobuf crates.
 
@@ -25,7 +26,7 @@ Edit the specification, regenerate, change the handler/admission implementation 
 
 [The generator](../scripts/generate_api.py) supports this repository's finite model and request profile: named objects, scalar strings/booleans/integers, arrays, string-keyed maps, local references and explicit nullable unions. It is not a general OpenAPI client generator. Unsupported type composition fails. Request generation emits operation methods and argument structs from each route, parameter, body media type and success response; unsupported methods, parameter locations or media and ambiguous success shapes fail. Generated requests use a manually bounded transport. `x-rust-model` selects a named wire object; the other `x-rust-*` extensions preserve integer widths, omitted/null/default behavior, existing JSON result storage, and redacted command debugging. These extensions do not change the public JSON schema.
 
-Generation emits serde shapes, not authorization or complete input validation. Existing admission code still enforces numeric and aggregate byte limits, resource compatibility, workspace path rules, deadlines, quotas and lifecycle state. For example, JSON Schema's `maxLength` counts characters; `x-max-utf8-bytes` records the additional byte limit. Operation result/error objects retain documented, extensible metadata; they are not evidence that an unresolved operation succeeded. Clients must tolerate additive response fields and status/code values.
+Generation emits wire models, not authorization or complete input validation. Existing admission code still enforces numeric and aggregate byte limits, resource compatibility, workspace path rules, deadlines, quotas and lifecycle state. For example, JSON Schema's `maxLength` counts characters; `x-max-utf8-bytes` records the additional byte limit. Operation result/error objects retain documented, extensible metadata; they are not evidence that an unresolved operation succeeded. Clients must tolerate additive response fields and status/code values.
 
 Command argument/environment order and defaults affect durable digests. [Golden normalization tests](../crates/sandbox-protocol/tests/api_wire.rs) preserve command serialization order, sorted environment keys, defaults, create/destroy null fields, strict command/destroy/cancel inputs and redacted Debug. List `next_cursor` remains present and nullable; absent optional status fields remain omitted. No digest-version change or database migration is involved.
 
@@ -37,4 +38,4 @@ SSE is described as `text/event-stream` with `x-sse-events` referring to generat
 
 The validator is [openapi-spec-validator](https://github.com/python-openapi/openapi-spec-validator), pinned with its transitive Python dependencies. JSON Schema 2020-12 validates actual JSON exchanges. The repository permits local references only; validation does not fetch schema URLs supplied by a contract.
 
-The Rust client generates its [models](../crates/sandbox-client/src/models.rs) and [request layer](../crates/sandbox-client/src/requests.rs) from this specification. `make api` checks all generated outputs. The [client guide](client-cli.md) documents transport, retry/wait/stream and digest behavior with executable TLS/CLI tests. Python/TypeScript generators and shared cross-language conformance cases remain unfinished. No package or installer is published by this change.
+The Rust client generates its [models](../crates/sandbox-client/src/models.rs) and [request layer](../crates/sandbox-client/src/requests.rs) from this specification. `make api` checks all generated outputs. The [client guide](client-cli.md) documents transport, retry/wait/stream and digest behavior with executable TLS/CLI tests. The [language generator](../scripts/generate_clients.py) emits Python/TypeScript dataclasses/interfaces, finite decoding metadata and request methods. [Shared HTTPS cases](../api/conformance/clients.json) exercise all three clients, and [API integration](../crates/sandbox-cli/tests/sdks.rs) covers both new languages against the real API/PostgreSQL. See [language client behavior and numeric limits](language-clients.md#integer-streaming-and-file-behavior). No package or installer is published by this change.

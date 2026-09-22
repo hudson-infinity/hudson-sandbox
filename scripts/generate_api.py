@@ -254,6 +254,8 @@ def main():
     rendered = render(doc)
     outputs = {OUTPUT: rendered, CLIENT / 'models.rs': rendered,
                CLIENT / 'requests.rs': render_requests(doc)}
+    from generate_clients import outputs as client_outputs
+    outputs.update(client_outputs(doc))
     for output, rendered in outputs.items():
         if args.check:
             if not output.exists() or output.read_text() != rendered:

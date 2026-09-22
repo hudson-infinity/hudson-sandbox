@@ -2,7 +2,7 @@
 # which needs Linux with KVM — see docs/implementation/dev-env.md.
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs fmt lint test check docs api api-setup api-generate reset-db clean
+.PHONY: help up down logs fmt lint test check docs api api-setup api-generate sdk-setup sdk-check reset-db clean
 
 # The compose stack binds non-default ports so a natively installed PostgreSQL
 # cannot be reached by mistake. See compose.yaml.
@@ -36,7 +36,7 @@ reset-db: ## Drop and recreate the development schema
 	docker compose exec -T postgres psql -U sandbox -d sandbox -q \
 		-c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
-check: api lint test docs ## Everything CI checks
+check: api sdk-check lint test docs ## Everything CI checks
 
 docs: ## Documentation link and fence checks
 	python3 scripts/check_docs.py
@@ -49,10 +49,26 @@ api-setup: ## Install pinned OpenAPI validation tools in an isolated environment
 	python3 -m venv .venv-openapi
 	.venv-openapi/bin/python -m pip install -r scripts/api-requirements.txt
 
-api-generate: ## Regenerate Rust HTTP models and client requests
+api-generate: ## Regenerate Rust, Python and TypeScript HTTP models and requests
 	python3 scripts/generate_api.py
 
 api: ## Validate OpenAPI, generation drift and contract checker regressions
 	$(HUDSON_OPENAPI_PYTHON) scripts/check_api.py
 	python3 scripts/generate_api.py --check
 	$(HUDSON_OPENAPI_PYTHON) -m unittest discover -s scripts -p test_api_contract.py
+
+
+sdk-setup: ## Install pinned Python and Node SDK development dependencies
+	python3 -m venv .venv-sdk
+	.venv-sdk/bin/python -m pip install -r scripts/sdk-requirements.txt
+	npm ci --prefix sdk/typescript --ignore-scripts
+
+SDK_PYTHON_SOURCES = sdk/python/src sdk/python/tests sdk/tests/python_runner.py scripts/generate_clients.py scripts/check_sdk_packages.py
+SDK_GENERATED_EXCLUDES = --exclude models.py --exclude _requests.py --exclude _schema.py
+
+sdk-check: ## Check SDK parsing, types and unpublished package installation
+	.venv-sdk/bin/ruff check $(SDK_GENERATED_EXCLUDES) $(SDK_PYTHON_SOURCES)
+	.venv-sdk/bin/ruff format --check $(SDK_GENERATED_EXCLUDES) $(SDK_PYTHON_SOURCES)
+	PYTHONPATH=sdk/python/src .venv-sdk/bin/python -m unittest discover -s sdk/python/tests
+	npm test --prefix sdk/typescript
+	.venv-sdk/bin/python scripts/check_sdk_packages.py

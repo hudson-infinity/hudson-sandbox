@@ -69,6 +69,17 @@ jobs:
       - name: Validate OpenAPI and generated models
         run: make api
 
+      - name: Set up Node for client conformance
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.9.0'
+
+      - name: Set up Python and TypeScript clients
+        run: make sdk-setup
+
+      - name: Validate client packages
+        run: make sdk-check
+
       - name: Format
         run: cargo fmt --all -- --check
 
