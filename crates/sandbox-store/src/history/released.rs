@@ -142,7 +142,7 @@ async fn lock(db: &mut PgConnection, c: &ReleasedClaim) -> Result<(PgRow, PgRow)
         .bind(c.claim.allocation_id.uuid())
         .fetch_one(&mut *db)
         .await?;
-    let h=sqlx::query("SELECT * FROM released_allocation_history h WHERE allocation_id=$1 AND domain=$2 AND claim_revision=$3 AND reporting_epoch=$4 AND lease_expires_at=$5 AND lease_expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations a JOIN hosts host ON host.id=a.host_id WHERE a.id=h.allocation_id AND a.status='released' AND a.released_at IS NOT NULL AND a.supervisor_epoch<=h.reporting_epoch AND host.supervisor_epoch=h.reporting_epoch)")
+    let h=sqlx::query("SELECT * FROM released_allocation_history h WHERE allocation_id=$1 AND domain=$2 AND claim_revision=$3 AND reporting_epoch=$4 AND lease_expires_at=$5 AND lease_expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations a JOIN hosts host ON host.id=a.host_id WHERE a.id=h.allocation_id AND a.status='released' AND a.released_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM allocation_retirements r WHERE r.allocation_id=a.id) AND a.supervisor_epoch<=h.reporting_epoch AND host.supervisor_epoch=h.reporting_epoch)")
         .bind(c.claim.allocation_id.uuid()).bind(name(c.claim.domain)).bind(c.claim.revision).bind(c.reporting_epoch).bind(c.claim.expires_at)
         .fetch_optional(&mut *db).await?.ok_or(Error::LostClaim)?;
     Ok((a, h))
@@ -202,7 +202,7 @@ async fn candidate(
     };
     prefix(db, a, &h, domain, allow_simulated).await?;
     let r = request(a, &h, &c)?;
-    let n=sqlx::query("UPDATE released_allocation_history h SET request=$4 WHERE allocation_id=$1 AND domain=$2 AND claim_revision=$3 AND lease_expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations a JOIN hosts host ON host.id=a.host_id WHERE a.id=h.allocation_id AND a.status='released' AND a.released_at IS NOT NULL AND a.supervisor_epoch<=h.reporting_epoch AND host.supervisor_epoch=h.reporting_epoch)")
+    let n=sqlx::query("UPDATE released_allocation_history h SET request=$4 WHERE allocation_id=$1 AND domain=$2 AND claim_revision=$3 AND lease_expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations a JOIN hosts host ON host.id=a.host_id WHERE a.id=h.allocation_id AND a.status='released' AND a.released_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM allocation_retirements r WHERE r.allocation_id=a.id) AND a.supervisor_epoch<=h.reporting_epoch AND host.supervisor_epoch=h.reporting_epoch)")
         .bind(id).bind(name(domain)).bind(c.claim.revision).bind(serde_json::to_value(&r).map_err(|_|Error::Evidence)?).execute(db).await?.rows_affected();
     if n != 1 {
         return Err(Error::LostClaim);
@@ -228,7 +228,7 @@ impl Store {
         sqlx::query("SET LOCAL statement_timeout='5s'")
             .execute(&mut *tx)
             .await?;
-        let candidates=sqlx::query("SELECT a.* FROM allocations a JOIN hosts host ON host.id=a.host_id LEFT JOIN released_allocation_history h ON h.allocation_id=a.id AND h.domain=$3 WHERE a.host_id=$1 AND a.supervisor_epoch<=$2 AND host.supervisor_epoch=$2 AND a.status='released' AND a.released_at IS NOT NULL AND (h.lease_expires_at IS NULL OR h.lease_expires_at<=clock_timestamp()) AND (h.next_retry_at IS NULL OR h.next_retry_at<=clock_timestamp()) ORDER BY CASE WHEN $3='commands' THEN a.history_commands_scan_at ELSE a.history_files_scan_at END NULLS FIRST,a.id LIMIT 32 FOR UPDATE OF a SKIP LOCKED")
+        let candidates=sqlx::query("SELECT a.* FROM allocations a JOIN hosts host ON host.id=a.host_id LEFT JOIN released_allocation_history h ON h.allocation_id=a.id AND h.domain=$3 WHERE a.host_id=$1 AND a.supervisor_epoch<=$2 AND host.supervisor_epoch=$2 AND a.status='released' AND a.released_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM allocation_retirements r WHERE r.allocation_id=a.id) AND (h.lease_expires_at IS NULL OR h.lease_expires_at<=clock_timestamp()) AND (h.next_retry_at IS NULL OR h.next_retry_at<=clock_timestamp()) ORDER BY CASE WHEN $3='commands' THEN a.history_commands_scan_at ELSE a.history_files_scan_at END NULLS FIRST,a.id LIMIT 32 FOR UPDATE OF a SKIP LOCKED")
             .bind(host.uuid()).bind(epoch).bind(name(domain)).fetch_all(&mut *tx).await?;
         for a in candidates {
             let id: uuid::Uuid = a.try_get("id")?;
@@ -290,7 +290,7 @@ impl Store {
             .fetch_one(&mut *tx)
             .await?;
         coordinator::fresh(observed.observed_unix_ms, &c.claim, now)?;
-        let n=sqlx::query("UPDATE released_allocation_history h SET completed_through=reserved_through,completion=$5,completed_at=clock_timestamp(),lease_expires_at=NULL,next_retry_at=NULL WHERE allocation_id=$1 AND domain=$2 AND claim_revision=$3 AND reporting_epoch=$4 AND lease_expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations a JOIN hosts host ON host.id=a.host_id WHERE a.id=h.allocation_id AND a.status='released' AND a.released_at IS NOT NULL AND a.supervisor_epoch<=h.reporting_epoch AND host.supervisor_epoch=h.reporting_epoch)")
+        let n=sqlx::query("UPDATE released_allocation_history h SET completed_through=reserved_through,completion=$5,completed_at=clock_timestamp(),lease_expires_at=NULL,next_retry_at=NULL WHERE allocation_id=$1 AND domain=$2 AND claim_revision=$3 AND reporting_epoch=$4 AND lease_expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations a JOIN hosts host ON host.id=a.host_id WHERE a.id=h.allocation_id AND a.status='released' AND a.released_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM allocation_retirements r WHERE r.allocation_id=a.id) AND a.supervisor_epoch<=h.reporting_epoch AND host.supervisor_epoch=h.reporting_epoch)")
             .bind(c.claim.allocation_id.uuid()).bind(name(c.claim.domain)).bind(c.claim.revision).bind(c.reporting_epoch).bind(serde_json::to_value(observed).map_err(|_|Error::Evidence)?)
             .execute(&mut *tx).await?.rows_affected();
         if n != 1 {
@@ -305,7 +305,7 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         lock(&mut tx, c).await?;
-        let n=sqlx::query("UPDATE released_allocation_history h SET lease_expires_at=NULL,next_retry_at=clock_timestamp()+interval '5 seconds' WHERE allocation_id=$1 AND domain=$2 AND claim_revision=$3 AND reporting_epoch=$4 AND lease_expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations a JOIN hosts host ON host.id=a.host_id WHERE a.id=h.allocation_id AND a.status='released' AND a.released_at IS NOT NULL AND a.supervisor_epoch<=h.reporting_epoch AND host.supervisor_epoch=h.reporting_epoch)")
+        let n=sqlx::query("UPDATE released_allocation_history h SET lease_expires_at=NULL,next_retry_at=clock_timestamp()+interval '5 seconds' WHERE allocation_id=$1 AND domain=$2 AND claim_revision=$3 AND reporting_epoch=$4 AND lease_expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM allocations a JOIN hosts host ON host.id=a.host_id WHERE a.id=h.allocation_id AND a.status='released' AND a.released_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM allocation_retirements r WHERE r.allocation_id=a.id) AND a.supervisor_epoch<=h.reporting_epoch AND host.supervisor_epoch=h.reporting_epoch)")
             .bind(c.claim.allocation_id.uuid()).bind(name(c.claim.domain)).bind(c.claim.revision).bind(c.reporting_epoch).execute(&mut *tx).await?.rows_affected();
         if n != 1 {
             return Err(Error::LostClaim);

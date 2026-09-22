@@ -7,7 +7,7 @@ use sandbox_protocol::{
 };
 use sandbox_store::history::{Claim, Error, Preparation};
 
-async fn finish(f: &Fixture, id: OperationId) {
+pub(super) async fn finish(f: &Fixture, id: OperationId) {
     sqlx::query("UPDATE operations SET status='failed',phase='rejected_before_dispatch',completed_at=clock_timestamp(),error='{}',lease_expires_at=NULL,next_retry_at=NULL WHERE id=$1")
         .bind(id.uuid()).execute(f.store.pool()).await.unwrap();
 }

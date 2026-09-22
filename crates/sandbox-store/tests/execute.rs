@@ -17,6 +17,8 @@ use time::OffsetDateTime;
 #[path = "support/legacy_execute.rs"]
 mod legacy_execute;
 
+#[path = "support/allocation_retirement.rs"]
+mod allocation_retirement;
 #[path = "support/cancel.rs"]
 mod cancellation;
 #[path = "support/execution_capacity.rs"]

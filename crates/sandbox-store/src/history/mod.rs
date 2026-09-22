@@ -13,7 +13,7 @@ use sandbox_protocol::{
 use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 mod coordinator;
-mod evidence;
+pub(crate) mod evidence;
 mod released;
 pub use coordinator::Preparation;
 pub use released::{ReleasedClaim, ReleasedPreparation};
@@ -60,6 +60,15 @@ pub(crate) async fn next_operation(
             .bind(allocation)
             .fetch_one(&mut *db)
             .await?;
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM allocation_retirements WHERE allocation_id=$1)",
+    )
+    .bind(allocation)
+    .fetch_one(&mut *db)
+    .await?
+    {
+        return Err(DispatchError::Conflict);
+    }
     let mut floor = row.try_get::<Option<uuid::Uuid>, _>("last_admitted_operation_id")?;
     for value in sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT reserved_through FROM allocation_history WHERE allocation_id=$1 UNION ALL SELECT reserved_through FROM released_allocation_history WHERE allocation_id=$1",
