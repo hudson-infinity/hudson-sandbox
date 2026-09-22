@@ -1,5 +1,5 @@
-//! Real host filesystem/RPC tests with synthetic controller metadata bindings.
-//! The database tests independently verify issuance; these are not a worker loop.
+//! Real host filesystem/RPC tests with synthetic bindings and separate full
+//! database/controller lifecycle cases, including periodic CLI retirement.
 use super::allocation_retirement::{permit, register, retirement};
 use super::*;
 use sandbox_protocol::{
@@ -568,43 +568,91 @@ pub(super) async fn automatic_handoff(
     f: &mut Fixture,
     image: &str,
 ) {
-    use sandbox_controller::{
-        Controller, ControllerConfig,
-        retirement::{RetirementError, RetirementTick},
-    };
+    use sandbox_controller::{Controller, ControllerConfig, retirement::RetirementTick};
     let before: Vec<serde_json::Value> =
         sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o ORDER BY id")
             .fetch_all(pool)
             .await
             .unwrap();
-    let controller = Controller::connect(
-        store.clone(),
-        ControllerConfig {
-            endpoint: f.url.clone(),
-            host: f.config.host,
-            epoch: f.config.epoch,
-            allowed_images: std::collections::BTreeSet::from([image.to_owned()]),
-            allow_simulated: false,
-        },
-        f.tls.ca.pem().as_bytes(),
-        f.tls.host.cert.pem().as_bytes(),
-        f.tls.host.key.serialize_pem().as_bytes(),
-    )
-    .await
-    .unwrap();
-    let mut worker = controller.allocation_retirer();
+    use sqlx::ConnectOptions;
+    use std::os::unix::fs::PermissionsExt;
+    let cert = f.vm.temp.path().join("controller.pem");
+    let key = f.vm.temp.path().join("controller.key");
+    fs::write(&cert, f.tls.host.cert.pem()).unwrap();
+    fs::write(&key, f.tls.host.key.serialize_pem()).unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    let log = f.vm.temp.path().join("controller.log");
+    // Build with `cargo build -p sandbox-controller --bin sandbox-controller`
+    // before this controlled integration test. The sibling executable must be
+    // the current source build; no installed controller is substituted.
+    let binary =
+        PathBuf::from(env!("CARGO_BIN_EXE_sandbox-host")).with_file_name("sandbox-controller");
+    assert!(
+        binary.is_file(),
+        "build the controller binary before this test"
+    );
+    let mut controller = ControllerProcess(
+        Command::new(binary)
+            .env(
+                "DATABASE_URL",
+                pool.connect_options().to_url_lossy().as_str(),
+            )
+            .arg("--endpoint")
+            .arg(&f.url)
+            .arg("--host-id")
+            .arg(f.config.host.to_string())
+            .arg("--host-epoch")
+            .arg(f.config.epoch.to_string())
+            .arg("--ca-cert")
+            .arg(f.vm.temp.path().join("ca.pem"))
+            .arg("--client-cert")
+            .arg(&cert)
+            .arg("--client-key")
+            .arg(&key)
+            .arg("--image-digest")
+            .arg(image)
+            .arg("--retire-history")
+            .arg("--retire-allocations")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
     let until = Instant::now() + Duration::from_secs(300);
     loop {
         assert!(
-            Instant::now() < until,
-            "automatic retirement did not converge"
+            controller.0.try_wait().unwrap().is_none(),
+            "controller exited: {}",
+            fs::read_to_string(&log).unwrap()
         );
-        match worker.tick().await {
-            Ok(RetirementTick::Completed) => break,
-            Ok(RetirementTick::Idle | RetirementTick::Deferred) | Err(RetirementError::Rpc) => {}
-            Err(error) => panic!("automatic retirement failed: {error}"),
+        assert!(
+            Instant::now() < until,
+            "automatic retirement did not converge: {}",
+            fs::read_to_string(&log).unwrap()
+        );
+        let complete: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM allocation_retirements WHERE forget_completion IS NOT NULL)")
+            .fetch_one(pool).await.unwrap();
+        if complete {
+            break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Exercise normal shutdown of the actual periodic loop, including its
+    // independently spawned workers. The guard also reaps the child on panic.
+    rustix::process::kill_process(
+        rustix::process::Pid::from_raw(controller.0.id() as i32).unwrap(),
+        rustix::process::Signal::INT,
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = controller.0.try_wait().unwrap() {
+            assert!(status.success(), "controller shutdown failed");
+            break;
+        }
+        assert!(Instant::now() < until, "controller did not stop");
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let intent: serde_json::Value = sqlx::query_scalar("SELECT intent FROM allocation_retirements")
         .fetch_one(pool)
@@ -638,7 +686,6 @@ pub(super) async fn automatic_handoff(
             .join(intent.permit.allocation.uuid().to_string())
             .exists()
     );
-    assert_eq!(worker.tick().await.unwrap(), RetirementTick::Idle);
     f.restart().await;
     sqlx::query("UPDATE hosts SET supervisor_epoch=$2 WHERE id=$1")
         .bind(f.config.host.uuid())
@@ -692,9 +739,17 @@ pub(super) async fn automatic_handoff(
     eprintln!(
         "real_automatic_retirement_observation {}",
         serde_json::json!({
-            "database_candidate_discovered":true,"controller_completed_metadata_and_forgetting":true,
+            "periodic_controller_binary":true,"controller_sigint_shutdown":true,"database_candidate_discovered":true,"controller_completed_metadata_and_forgetting":true,
             "host_record_and_resources_removed":true,"restart_did_not_redispatch":true,
             "original_operation_results_unchanged":true,"reporting_epoch":f.config.epoch,
         })
     );
+}
+
+struct ControllerProcess(Child);
+impl Drop for ControllerProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
