@@ -117,13 +117,19 @@ impl Client {
         let response = request.send().await.map_err(|_| Error::Transport)?;
         if response.status().as_u16() != status {
             let status = response.status().as_u16();
-            let code = bounded(response, 65536)
+            let problem = bounded(response, 65536)
                 .await
                 .ok()
                 .and_then(|b| serde_json::from_slice::<ProblemBody>(&b).ok())
-                .filter(|p| p.status == status)
-                .map(|p| p.code);
-            return Err(Error::Http { status, code });
+                .filter(|p| p.status == status);
+            let (code, operation_id) = problem
+                .map(|p| (Some(p.code), p.operation_id))
+                .unwrap_or_default();
+            return Err(Error::Http {
+                status,
+                code,
+                operation_id,
+            });
         }
         if one(response.headers(), "cache-control")? != "no-store" {
             return Err(Error::Protocol);

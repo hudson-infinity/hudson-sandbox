@@ -482,3 +482,29 @@ async fn multi_chunk_download_verifies_one_capture_and_reports_failed_release() 
         result.sha256
     );
 }
+
+#[tokio::test]
+async fn expired_response_retains_original_handle_but_never_reflects_arbitrary_ids() {
+    const ID: &str = "op_019a9fad-3000-7000-8000-000000000001";
+    let s=Server::start(Router::new().route("/v1/operations/{id}",get(|axum::extract::Path(id): axum::extract::Path<String>| async move {
+        (StatusCode::GONE,axum::Json(json!({"title":"private-backend-text","status":410,"code":"response_expired","operation_id":if id=="original" { ID } else { "private-backend-text" }})))
+    }))).await;
+    let error = s
+        .client()
+        .get_operation(GetOperation {
+            operation_id: "original",
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.operation_id(), Some(ID));
+    assert_eq!(error.problem_code(), Some("response_expired"));
+    let error = s
+        .client()
+        .get_operation(GetOperation {
+            operation_id: "invalid",
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.operation_id(), None);
+    assert!(!format!("{error:?} {error}").contains("private-backend-text"));
+}

@@ -173,14 +173,17 @@ async fn main() -> std::process::ExitCode {
                 };
                 eprintln!(
                     "{}",
-                    serde_json::json!({"error": error.kind(), "http_status": status, "code":error.problem_code(), "message": error.to_string()})
+                    serde_json::json!({"error": error.kind(), "http_status": status, "code":error.problem_code(), "operation_id":error.operation_id(), "message": error.to_string()})
                 );
             } else {
                 eprintln!(
-                    "{error}{}",
+                    "{error}{}{}",
                     error
                         .problem_code()
-                        .map_or(String::new(), |c| format!(" ({c})"))
+                        .map_or(String::new(), |c| format!(" ({c})")),
+                    error
+                        .operation_id()
+                        .map_or(String::new(), |id| format!(" operation={id}"))
                 );
             }
             std::process::ExitCode::from(match error {

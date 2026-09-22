@@ -92,7 +92,7 @@ Unknown or unsupported commands, including pause/resume, are not exposed. Shell 
 
 ## Results, bounds and exit status
 
-Human output distinguishes admission, desired/observed state and command outcome. `--json` writes one JSON object to stdout; diagnostics are JSON on stderr. Human strings from the server are escaped to prevent terminal control sequences. Problem diagnostics include only HTTP status and known static API codes, never backend titles, unknown code text, request bodies, credentials or URLs. SDK callers can inspect the bounded raw code explicitly, including additive codes.
+Human output distinguishes admission, desired/observed state and command outcome. `--json` writes one JSON object to stdout; diagnostics are JSON on stderr. Human strings from the server are escaped to prevent terminal control sequences. Problem diagnostics include only HTTP status and known static API codes, never backend titles, unknown code text, request bodies, credentials or URLs. An authorized canonical `operation_id` from an expired/conflicting response is retained in diagnostics so lost-response recovery can identify the original work. SDK callers can inspect the bounded raw code explicitly, including additive codes.
 
 | Exit code | Meaning |
 | --- | --- |

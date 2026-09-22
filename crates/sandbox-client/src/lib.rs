@@ -23,7 +23,11 @@ pub enum Error {
     #[error("transport failed; mutation outcome may be unknown; retain the same key and payload")]
     Transport,
     #[error("HTTP request failed with status {status}")]
-    Http { status: u16, code: Option<String> },
+    Http {
+        status: u16,
+        code: Option<String>,
+        operation_id: Option<String>,
+    },
     #[error("invalid, oversized or inconsistent server response")]
     Protocol,
     #[error("wait deadline reached; the operation continues; poll the same operation")]
@@ -39,6 +43,22 @@ impl fmt::Debug for Error {
     }
 }
 impl Error {
+    /// Preserve an authorized original handle on expired/conflicting responses.
+    /// Only canonical public operation IDs are safe to reflect in diagnostics.
+    pub fn operation_id(&self) -> Option<&str> {
+        let Self::Http {
+            operation_id: Some(id),
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let uuid = uuid::Uuid::try_parse(id.strip_prefix("op_")?).ok()?;
+        (uuid.get_version_num() == 7
+            && uuid.get_variant() == uuid::Variant::RFC4122
+            && id == &format!("op_{uuid}"))
+            .then_some(id.as_str())
+    }
     /// Known static API code safe for diagnostic output; unknown additive values remain
     /// available in the HTTP variant but are never reflected into diagnostics.
     pub fn problem_code(&self) -> Option<&'static str> {

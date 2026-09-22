@@ -319,3 +319,33 @@ async fn cli_reconnects_same_stream_only_after_a_complete_flushed_event() {
     assert_eq!(lines[0]["cursor"], "after-complete");
     assert_eq!(lines[1]["event"], "gap");
 }
+
+#[tokio::test]
+async fn expired_retry_reports_original_operation_without_leaking_backend_text() {
+    const ID: &str = "op_019a9fad-3000-7000-8000-000000000001";
+    let s=Server::start(axum::Router::new().route("/v1/sandboxes",axum::routing::post(|| async {
+        (axum::http::StatusCode::GONE,axum::Json(json!({"title":"private-backend-text","status":410,"code":"response_expired","operation_id":ID})))
+    }))).await;
+    let request = s.directory.path().join("create.json");
+    private(&request,&serde_json::to_vec(&json!({"image_digest":"sha256:fixture","resources":{"vcpu":1,"memory_mib":128,"disk_mib":64}})).unwrap());
+    let result = tokio::process::Command::new(env!("CARGO_BIN_EXE_hudson-sandbox"))
+        .args([
+            "--config",
+            path(&s.config),
+            "--json",
+            "create",
+            "--request",
+            path(&request),
+            "--key",
+            "original-create-key",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(result.status.code(), Some(8));
+    assert!(result.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("private-backend-text"));
+    let problem: Value = serde_json::from_slice(&result.stderr).unwrap();
+    assert_eq!(problem["operation_id"], ID);
+    assert_eq!(problem["code"], "response_expired");
+}
