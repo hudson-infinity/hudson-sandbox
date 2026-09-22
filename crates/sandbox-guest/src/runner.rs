@@ -4,7 +4,10 @@ use crate::{
     model::*,
 };
 use anyhow::{Context as _, Result, ensure};
-use sandbox_protocol::{Id, OperationId};
+use sandbox_protocol::{
+    Id, OperationId,
+    history::{Barrier, Binding, Domain},
+};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     collections::BTreeMap,
@@ -34,6 +37,7 @@ pub struct Config {
 }
 #[derive(Debug)]
 struct Registry {
+    barrier: Option<Barrier>,
     receipts: BTreeMap<OperationId, Receipt>,
     active: Option<(OperationId, watch::Sender<bool>)>,
     failed: bool,
@@ -160,11 +164,8 @@ impl Runner {
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
             .context("guest state is already owned")?;
         let context_path = config.state_dir.join("context.json");
-        if context_path.exists() {
-            ensure!(
-                read_json::<Context>(&context_path)? == config.context,
-                "allocation context differs from saved state"
-            );
+        let barrier = if context_path.exists() {
+            read_json::<Binding>(&context_path)?.validate(&config.context, Domain::Commands)?
         } else {
             // A missing context cannot authorize adoption of arbitrary pre-existing records.
             ensure!(
@@ -172,6 +173,10 @@ impl Runner {
                 "state directory has no context"
             );
             write_json(&context_path, &config.context)?;
+            None
+        };
+        if let Some(barrier) = &barrier {
+            prune_history(&config, &history_entries(&config)?, barrier)?;
         }
         let mut receipts = BTreeMap::new();
         let mut reserved = 0u64;
@@ -230,6 +235,7 @@ impl Runner {
         Ok(Self(Arc::new(Inner {
             config,
             registry: Mutex::new(Registry {
+                barrier,
                 receipts,
                 active: None,
                 failed: false,
@@ -238,6 +244,56 @@ impl Runner {
             _lock: lock,
         })))
     }
+    /// Internal prerequisite only. The caller must retain the original outcomes
+    /// and retire output consumers before requesting irreversible reclamation.
+    pub async fn retire_history(&self, requested: Barrier) -> Result<Barrier> {
+        requested.validate(&self.0.config.context, Domain::Commands)?;
+        let mut registry = self.0.registry.lock().await;
+        ensure!(
+            !registry.failed && !registry.closed,
+            "runner requires recovery or is shutting down"
+        );
+        if let Some(current) = &registry.barrier
+            && requested.through <= current.through
+        {
+            return Ok(current.clone());
+        }
+        ensure!(
+            registry
+                .active
+                .as_ref()
+                .is_none_or(|(id, _)| !requested.covers(*id)),
+            "active command cannot be retired"
+        );
+        ensure!(
+            registry
+                .receipts
+                .values()
+                .filter(|r| requested.covers(r.operation_id))
+                .all(|r| r.state.terminal() && r.state != State::Unknown && r.cleanup_confirmed),
+            "unresolved command history cannot be retired"
+        );
+        let entries = history_entries(&self.0.config)?;
+        validate_history_entries(&self.0.config, &entries, &requested)?;
+        if let Err(error) = write_json(
+            &self.0.config.state_dir.join("context.json"),
+            &Binding::Retired(requested.clone()),
+        ) {
+            registry.failed = true;
+            return Err(error);
+        }
+        registry.barrier = Some(requested.clone());
+        if let Err(error) = prune_history(&self.0.config, &entries, &requested) {
+            registry.failed = true;
+            return Err(error);
+        }
+        registry.receipts.retain(|id, _| !requested.covers(*id));
+        Ok(requested)
+    }
+    /// The durable admission floor; not an acknowledgement that deletion finished.
+    pub async fn history_barrier(&self) -> Option<Barrier> {
+        self.0.registry.lock().await.barrier.clone()
+    }
     pub fn context(&self) -> &Context {
         &self.0.config.context
     }
@@ -245,6 +301,13 @@ impl Runner {
         request.validate()?;
         let digest = request.digest()?;
         let mut registry = self.0.registry.lock().await;
+        ensure!(
+            !registry
+                .barrier
+                .as_ref()
+                .is_some_and(|b| b.covers(request.operation_id)),
+            "command history retired"
+        );
         if let Some(existing) = registry.receipts.get(&request.operation_id) {
             ensure!(existing.digest == digest, "operation payload conflict");
             return Ok(existing.clone());
@@ -644,4 +707,62 @@ impl Runner {
         }
         Ok(())
     }
+}
+
+fn history_entries(config: &Config) -> Result<Vec<PathBuf>> {
+    let entries = fs::read_dir(&config.state_dir)?
+        .take(MAX_RECORDS * 5 + 3)
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    ensure!(
+        entries.len() <= MAX_RECORDS * 5 + 2,
+        "too many retained state files"
+    );
+    Ok(entries)
+}
+fn history_id(path: &Path) -> Result<Option<OperationId>> {
+    let name = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .context("invalid state entry")?;
+    if name == "lock" || name == "context.json" {
+        return Ok(None);
+    }
+    let stem = [".json", ".stdout", ".stderr", ".exit", ".tmp"]
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix))
+        .context("unexpected command state entry")?;
+    Ok(Some(stem.parse()?))
+}
+fn validate_history_entries(config: &Config, entries: &[PathBuf], barrier: &Barrier) -> Result<()> {
+    for path in entries {
+        if let Some(id) = history_id(path)?
+            && barrier.covers(id)
+        {
+            ensure!(
+                absent(&group(config, id))?,
+                "retired command cgroup remains"
+            );
+            ensure!(
+                !fs::symlink_metadata(path)?.is_dir(),
+                "unexpected directory in command history"
+            );
+        }
+    }
+    Ok(())
+}
+fn prune_history(config: &Config, entries: &[PathBuf], barrier: &Barrier) -> Result<()> {
+    validate_history_entries(config, entries, barrier)?;
+    for path in entries {
+        if history_id(path)?.is_some_and(|id| barrier.covers(id)) {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    // Covers recovery after a successful unlink whose directory sync failed.
+    File::open(&config.state_dir)?.sync_all()?;
+    Ok(())
 }

@@ -3,7 +3,12 @@
 mod fs;
 use self::fs::{Root, read_json, write_json};
 use anyhow::{Context as _, Result, ensure};
-use sandbox_protocol::{OperationId, files::*, guest_model::Context};
+use sandbox_protocol::{
+    OperationId,
+    files::*,
+    guest_model::Context,
+    history::{Barrier, Binding, Domain},
+};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -15,6 +20,7 @@ use std::{
 pub struct Transfers {
     root: Arc<Root>,
     context: Context,
+    barrier: Option<Barrier>,
     receipts: BTreeMap<OperationId, Receipt>,
     // Any uncertain local metadata write fences this engine until reopening.
     failed: bool,
@@ -29,18 +35,22 @@ impl Transfers {
         );
         let root = Arc::new(Root::open(path)?);
         let names = root.names()?;
-        if names.iter().any(|n| n == "context.json") {
-            ensure!(
-                read_json::<Context>(&root.state, "context.json")? == context,
-                "file workspace context mismatch"
-            );
+        let barrier = if names.iter().any(|n| n == "context.json") {
+            read_json::<Binding>(&root.state, "context.json")?.validate(&context, Domain::Files)?
         } else {
             ensure!(
                 names.iter().all(|n| n == "lock"),
                 "unbound file transfer state"
             );
             write_json(&root.state, "context.json", &context)?;
+            None
+        };
+        // A durable barrier owns recovery even if its acknowledgement or deletion was lost.
+        // Remove only validated operation basenames; never touch published workspace paths.
+        if let Some(barrier) = &barrier {
+            prune(&root, &names, barrier)?;
         }
+        let names = root.names()?;
         let mut receipts = BTreeMap::new();
         let mut reserved = 0u64;
         for name in &names {
@@ -107,9 +117,52 @@ impl Transfers {
         Ok(Self {
             root,
             context,
+            barrier,
             receipts,
             failed: false,
         })
+    }
+    /// Internal prerequisite only: the caller must retain outcomes and retire consumers
+    /// before this irreversible operation. No RPC or automatic cleanup invokes it yet.
+    pub fn retire_history(&mut self, requested: Barrier) -> Result<Barrier> {
+        self.healthy()?;
+        requested.validate(&self.context, Domain::Files)?;
+        if let Some(current) = &self.barrier
+            && requested.through <= current.through
+        {
+            return Ok(current.clone());
+        }
+        ensure!(
+            self.receipts
+                .values()
+                .filter(|r| requested.covers(r.upload.operation_id))
+                .all(|r| matches!(r.state, State::Committed | State::Aborted)),
+            "unresolved file history cannot be retired"
+        );
+        let names = self.root.names()?;
+        // Validate every name before the irreversible fence, including orphan staging.
+        for name in &names {
+            retired_name(name, &requested)?;
+        }
+        if let Err(error) = write_json(
+            &self.root.state,
+            "context.json",
+            &Binding::Retired(requested.clone()),
+        ) {
+            self.failed = true;
+            return Err(error);
+        }
+        self.barrier = Some(requested.clone());
+        if let Err(error) = prune(&self.root, &names, &requested) {
+            self.failed = true;
+            return Err(error);
+        }
+        self.receipts.retain(|id, _| !requested.covers(*id));
+        Ok(requested)
+    }
+    /// The durable admission floor; not an acknowledgement that deletion finished.
+    pub fn history_barrier(&self) -> Option<&Barrier> {
+        self.barrier.as_ref()
     }
     fn healthy(&self) -> Result<()> {
         ensure!(!self.failed, "file engine requires recovery");
@@ -135,6 +188,13 @@ impl Transfers {
     pub fn begin(&mut self, upload: Upload) -> Result<Receipt> {
         self.healthy()?;
         upload.validate()?;
+        ensure!(
+            !self
+                .barrier
+                .as_ref()
+                .is_some_and(|b| b.covers(upload.operation_id)),
+            "file operation history retired"
+        );
         let digest = upload.digest()?;
         if let Some(receipt) = self.receipts.get(&upload.operation_id) {
             ensure!(
@@ -340,4 +400,32 @@ impl std::fmt::Debug for Download {
             .field("size", &self.size())
             .finish_non_exhaustive()
     }
+}
+
+// These names are internal metadata only. Unknown files fail closed rather than
+// authorizing deletion of a workspace path or silently losing recovery evidence.
+fn retired_name(name: &str, barrier: &Barrier) -> Result<bool> {
+    if name == "lock" || name == "context.json" {
+        return Ok(false);
+    }
+    let stem = name
+        .strip_suffix(".json")
+        .or_else(|| name.strip_suffix(".data"))
+        .or_else(|| name.strip_suffix(".tmp"))
+        .context("unexpected transfer state entry")?;
+    Ok(barrier.covers(stem.parse()?))
+}
+fn prune(root: &Root, names: &[String], barrier: &Barrier) -> Result<()> {
+    for name in names {
+        retired_name(name, barrier)?;
+    }
+    for name in names {
+        if retired_name(name, barrier)? {
+            root.remove(name)?;
+        }
+    }
+    // A prior unlink might have succeeded before its fsync failed. Always sync,
+    // including recovery/retry with an already empty prefix.
+    root.state.sync_all()?;
+    Ok(())
 }

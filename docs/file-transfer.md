@@ -30,7 +30,7 @@ An upload descriptor binds an operation ID, relative path, declared size, SHA-25
 
 A failed receipt persistence fences the current engine until it is reopened. Startup validates context, descriptor digests, retained counts and staging lengths. Missing staging for an admitted staging receipt or corrupt history fails closed. Validated orphan staging and temporary metadata can be removed; their names never authorize replay. A workspace lock prevents two engines from owning the same state concurrently.
 
-`abort` applies only to staging: it retains an aborted receipt before removing bytes. It does not undo a committed or unknown mutation. Receipts and declared reservations remain until a future acknowledged reclamation protocol can safely discard them. Deleting history to recover capacity would break retry safety and is unsupported.
+`abort` applies only to staging: it retains an aborted receipt before removing bytes. It does not undo a committed or unknown mutation. Receipts and declared reservations remain in the public runtime. An internal [guest retirement barrier](history-reclamation.md) now supports acknowledged local pruning, but host/database coordination is not enabled. Deleting history without that durable admission fence remains unsupported.
 
 ## Downloads and bounds
 
