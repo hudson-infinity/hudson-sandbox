@@ -401,3 +401,138 @@ async fn registered_fixture_releases_test_images_after_confirmed_forgetting() {
         "confirmed fixture cleanup must release test-only images"
     );
 }
+
+/// Continue the real API/controller lifecycle after genuine release and domain
+/// closure. These bindings come from database issuance, not synthetic fixtures.
+pub(super) async fn public_handoff(
+    pool: &sqlx::PgPool,
+    store: &sandbox_store::Store,
+    f: &mut Fixture,
+) {
+    let allocation: sqlx::types::Uuid = sqlx::query_scalar("SELECT id FROM allocations")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let allocation = AllocationId::from_uuid(allocation);
+    let before: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    let mut client = f.client().await;
+    let until = Instant::now() + Duration::from_secs(90);
+    let mut pending: Option<RetirementRequest> = None;
+    let (request, observed) = loop {
+        assert!(Instant::now() < until, "metadata handoff did not converge");
+        if pending
+            .as_ref()
+            .is_some_and(|r| r.expires_unix_ms <= guardian::wall_ms())
+        {
+            pending = None;
+        }
+        if pending.is_none() {
+            pending = store
+                .prepare_allocation_retirement(allocation, f.config.host, f.config.epoch, 30, false)
+                .await
+                .unwrap();
+        }
+        if let Some(r) = &pending {
+            match client
+                .retire_allocation_metadata(AllocationMetadataRequest {
+                    request_json: r.encode().unwrap(),
+                })
+                .await
+            {
+                Ok(o) => break (r.clone(), o.into_inner()),
+                Err(e) if e.code() == Code::Unavailable => {}
+                Err(e)
+                    if e.code() == Code::FailedPrecondition
+                        && r.expires_unix_ms <= guardian::wall_ms() => {}
+                Err(e) => panic!("metadata handoff failed: {e}"),
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let metadata = store
+        .complete_allocation_retirement(&request, &observed)
+        .await
+        .unwrap();
+    let fresh = store
+        .prepare_allocation_forgetting(allocation, f.config.host, f.config.epoch, 30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fresh.metadata_request, metadata.request);
+    let first = client
+        .forget_allocation(wire(&fresh))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(first.state, AllocationForgetState::Forgotten as i32);
+    // Lose the first host reply before the database consumes it. The host no
+    // longer retains this identity; exact database metadata proof must carry it.
+    let retry = client
+        .forget_allocation(wire(&fresh))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(retry.state, AllocationForgetState::Retired as i32);
+    let completed = store
+        .complete_allocation_forgetting(&fresh, &retry)
+        .await
+        .unwrap();
+    assert_eq!(journal(f)["records"].as_object().unwrap().len(), 0);
+    assert!(
+        !f.config
+            .state_root
+            .join("a")
+            .join(allocation.to_string())
+            .exists()
+    );
+    assert!(
+        !f.config
+            .cgroup_parent
+            .join(allocation.uuid().to_string())
+            .exists()
+    );
+    f.restart().await;
+    sqlx::query("UPDATE hosts SET supervisor_epoch=$2 WHERE id=$1")
+        .bind(f.config.host.uuid())
+        .bind(f.config.epoch)
+        .execute(pool)
+        .await
+        .unwrap();
+    // Lose the database reply too: historical lookup survives host record loss
+    // and another epoch without dispatching a fresh physical operation.
+    assert_eq!(
+        store
+            .allocation_forgetting_completion(&request.intent)
+            .await
+            .unwrap(),
+        Some(completed)
+    );
+    assert_eq!(
+        store
+            .allocation_retirement_completion(&request.intent)
+            .await
+            .unwrap(),
+        Some(metadata)
+    );
+    assert!(
+        store
+            .prepare_allocation_forgetting(allocation, f.config.host, f.config.epoch, 30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let after: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+    eprintln!(
+        "real_allocation_forgetting_observation {}",
+        serde_json::json!({"database_metadata_acknowledged":true,"host_records_removed":true,"retired_denial_consumed_with_retained_database_proof":true,"lost_host_and_database_replies_reconciled":true,"original_operation_results_unchanged":true,"reporting_epoch":f.config.epoch})
+    );
+}

@@ -1156,6 +1156,7 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     assert!(released);
     if !output {
         history::public_released_retirement(&pool, &store, &mut f, &image).await;
+        forgetting::public_handoff(&pool, &store, &mut f).await;
     }
     if let Some(artifacts) = &artifacts {
         f.restart().await;
