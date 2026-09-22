@@ -27,6 +27,7 @@ serde_json.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+async-trait = "0.1"
 tempfile.workspace = true
 
 [lints]
