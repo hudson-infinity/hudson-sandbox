@@ -1,6 +1,6 @@
 # Running the HTTPS API
 
-Status: implemented for create, execute, cancel, destroy, status, collections, outputs, streams, file uploads and captured downloads. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. An installer, SDK, public client CLI and management API/UI remain unfinished. This setup is not a production isolation guarantee.
+Status: implemented for create, execute, cancel, destroy, status, collections, outputs, streams, file uploads and captured downloads. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. The [Rust client and project CLI](client-cli.md) cover these Project routes. An installer, Python/TypeScript SDKs, package publication and management API/UI remain unfinished. This setup is not a production isolation guarantee.
 
 ## Transport contract
 
