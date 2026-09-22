@@ -287,7 +287,7 @@ Cursors are opaque, versioned positions scoped to the authenticated project, col
 
 ## Implemented HTTPS transport
 
-The [API server guide](api-server.md#transport-contract) owns TLS configuration, listener limits, startup/shutdown, and runnable local setup. The existing create/execute/destroy JSON routes normalize malformed JSON to `400 bad_request` and oversized bodies to `413 payload_too_large`, both as uncached problems. These replace Axum's raw JSON extractor errors. Implemented streaming and file wire shapes are included in [OpenAPI](../api/openapi.json).
+The [API server guide](api-server.md#transport-contract) owns TLS configuration, listener limits, startup/shutdown, and runnable local setup. The existing create/execute/destroy JSON routes normalize malformed JSON to `400 bad_request` and oversized bodies to `413 payload_too_large`, both as uncached problems. These replace Axum's raw JSON extractor errors. Malformed UTF-8 path identifiers also return uncached `400 bad_request` problems on status, command, destroy and cancellation routes. Implemented streaming and file wire shapes are included in [OpenAPI](../api/openapi.json).
 
 
 ## Implemented retained-output reads

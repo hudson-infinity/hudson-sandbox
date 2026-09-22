@@ -13,10 +13,11 @@ use sandbox_store::execute::{ExecuteAdmission, ExecuteCommand};
 pub async fn execute(
     State(state): State<AppState>,
     caller: Authenticated,
-    Path(id): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     RequestKey(key): RequestKey,
     request: Result<Json<CommandInput>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Problem> {
+    let Path(id) = path.map_err(|_| Problem::BadRequest("invalid sandbox id"))?;
     let Json(command) = request.map_err(Problem::from_json)?;
     let sandbox: SandboxId = id
         .parse()

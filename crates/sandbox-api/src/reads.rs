@@ -32,8 +32,9 @@ fn stamp(at: OffsetDateTime) -> Result<String, Problem> {
 pub async fn operation(
     State(state): State<AppState>,
     caller: Authenticated,
-    Path(operation_id): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
 ) -> Result<Response, Problem> {
+    let Path(operation_id) = path.map_err(|_| Problem::BadRequest("invalid operation id"))?;
     // A malformed id is a 400: the caller can fix it, and saying so does not
     // reveal whether any such operation exists.
     let operation_id: OperationId = operation_id
@@ -80,8 +81,9 @@ pub(crate) fn body_for(view: OperationView) -> Result<OperationBody, Problem> {
 pub async fn sandbox(
     State(state): State<AppState>,
     caller: Authenticated,
-    Path(sandbox_id): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
 ) -> Result<Response, Problem> {
+    let Path(sandbox_id) = path.map_err(|_| Problem::BadRequest("invalid sandbox id"))?;
     let sandbox_id: SandboxId = sandbox_id
         .parse()
         .map_err(|_| Problem::BadRequest("that is not a valid sandbox id"))?;

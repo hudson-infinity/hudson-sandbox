@@ -138,6 +138,20 @@ async fn all_implemented_operations_match_the_versioned_contract(pool: PgPool) {
     let sb = format!("/v1/sandboxes/{}", f.sandbox);
     let op = format!("/v1/operations/{}", f.operation);
     s.get(&sb, 200).await;
+    s.get("/v1/sandboxes/%FF", 400).await;
+    s.get("/v1/operations/%FF", 400).await;
+    s.get("/v1/operations/%FF/stream", 400).await;
+    s.json(
+        "POST",
+        "/v1/sandboxes/%FF/execute",
+        json!({"argv":["/bin/true"],"deadline_unix_ms":now()+60000}),
+        400,
+    )
+    .await;
+    s.json("POST", "/v1/sandboxes/%FF/destroy", json!({}), 400)
+        .await;
+    s.json("POST", "/v1/operations/%FF/cancel", json!({}), 400)
+        .await;
     s.get(&op, 200).await;
     s.get("/v1/sandboxes?limit=1", 200).await;
     s.get(
