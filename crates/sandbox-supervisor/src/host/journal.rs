@@ -15,6 +15,8 @@ pub(super) struct Record {
     pub owner: Ownership,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<sandbox_protocol::allocation_retirement::Request>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_retirement: Option<super::metadata_retirement::Saved>,
     pub revisions: BTreeMap<String, i64>,
     pub create: Option<CreateRequest>,
     pub manifest: Option<Manifest>,
@@ -164,6 +166,11 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
             "invalid retained launch intent"
         );
         super::retirement::validate_retained(record, config.epoch)?;
+        super::metadata_retirement::validate_retained(
+            config,
+            journal.launch_authority.as_ref(),
+            record,
+        )?;
         if let Some(manifest) = &record.manifest {
             anyhow::ensure!(
                 manifest.start.owner.allocation.to_string() == *key
@@ -182,7 +189,7 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
                 "retained manifest identity mismatch"
             );
             if record.released {
-                let receipt = manifest.receipt()?;
+                let receipt = super::metadata_retirement::receipt(record)?;
                 anyhow::ensure!(
                     receipt.cleanup_confirmed && receipt.state == GuardianState::Stopped,
                     "retained release lacks cleanup evidence"
@@ -265,12 +272,11 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
                         && context.generation == record.owner.generation,
                     "retained file allocation mismatch"
                 );
-                let manifest = record
-                    .manifest
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("file guest manifest missing"))?;
                 anyhow::ensure!(
-                    manifest.receipt()?.guest_boot_id.as_deref() == Some(context.boot_id.as_str()),
+                    super::metadata_retirement::receipt(record)?
+                        .guest_boot_id
+                        .as_deref()
+                        == Some(context.boot_id.as_str()),
                     "retained file boot mismatch"
                 );
             }

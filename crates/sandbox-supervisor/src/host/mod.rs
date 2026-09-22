@@ -7,6 +7,7 @@ mod files;
 mod history;
 mod journal;
 mod live_output;
+mod metadata_retirement;
 mod previous;
 mod readers;
 mod released_history;
@@ -280,6 +281,7 @@ impl Host {
             Record {
                 owner: o.clone(),
                 retirement: None,
+                metadata_retirement: None,
                 revisions: BTreeMap::new(),
                 create: None,
                 manifest: None,
@@ -764,6 +766,15 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn retire_allocation_metadata(
+        &self,
+        request: Request<sandbox_protocol::supervisor::AllocationMetadataRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::AllocationMetadataObservation>, Status> {
+        self.work(move |host| host.retire_allocation_metadata_sync(request.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn fence_allocation(
         &self,
         request: Request<sandbox_protocol::supervisor::AllocationFenceRequest>,

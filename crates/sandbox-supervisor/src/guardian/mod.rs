@@ -1,5 +1,6 @@
 //! Root-owned Linux allocation staging, fencing and cleanup. No customer host commands.
 mod process;
+pub(crate) mod retirement;
 use anyhow::{Context as _, Result, ensure};
 pub use process::{control, launch, namespace_init};
 use sandbox_protocol::{AllocationId, HostId, Id, OperationId, ProjectId, SandboxId};
@@ -230,6 +231,19 @@ impl Manifest {
     }
     pub(crate) fn validate(&self) -> Result<()> {
         root()?;
+        if let Some(p) = &self.launch_permit {
+            let o = &self.start.owner;
+            ensure!(
+                p.host == o.host
+                    && p.project == o.project
+                    && p.sandbox == o.sandbox
+                    && p.allocation == o.allocation
+                    && p.create_operation == o.create_operation
+                    && p.generation == o.generation
+                    && p.original_epoch == o.epoch,
+                "manifest launch permit ownership mismatch"
+            );
+        }
         ensure!(
             self.start.owner.generation > 0 && self.start.owner.epoch > 0,
             "invalid allocation ownership"
@@ -292,13 +306,18 @@ impl Manifest {
         Ok(())
     }
     fn lock(&self) -> Result<File> {
+        self.lifecycle_lock(true)
+    }
+    fn lifecycle_lock(&self, create: bool) -> Result<File> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
+            .create(create)
             .truncate(false)
             .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+            )
             .open(self.directory().join("lifecycle.lock"))?;
         match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {}
@@ -309,6 +328,10 @@ impl Manifest {
     }
     pub fn receipt(&self) -> Result<Receipt> {
         let r: Receipt = read_json(&self.record_path())?;
+        self.validate_receipt(&r)?;
+        Ok(r)
+    }
+    pub(crate) fn validate_receipt(&self, r: &Receipt) -> Result<()> {
         ensure!(
             r.version == 1
                 && r.owner == self.start.owner
@@ -317,7 +340,7 @@ impl Manifest {
                 && r.cleanup_confirmed == (r.state == State::Stopped),
             "guardian receipt ownership or shape mismatch"
         );
-        Ok(r)
+        Ok(())
     }
     /// Stage once under ownership. A returned existing receipt never causes a second launch.
     pub fn prepare(&self) -> Result<Receipt> {
@@ -583,9 +606,15 @@ impl Manifest {
     /// A partial or unknown directory is never treated as confirmed absence.
     pub fn fence_unstarted(&self) -> Result<Receipt> {
         self.validate()?;
-        private_dir(&self.config.state_root)?;
-        private_dir(&self.directory())?;
-        let _lock = self.lock()?;
+        let (_authority, may_create) = crate::launch_authority::authorize_cleanup(
+            &self.config.state_root,
+            self.launch_permit.as_ref(),
+        )?;
+        if may_create {
+            private_dir(&self.config.state_root)?;
+            private_dir(&self.directory())?;
+        }
+        let _lock = self.lifecycle_lock(may_create)?;
         if self.record_path().exists() {
             let mut r = self.receipt()?;
             if r.state != State::Stopped {
@@ -596,6 +625,10 @@ impl Manifest {
             }
             return Ok(r);
         }
+        ensure!(
+            may_create,
+            "fenced cleanup cannot recreate missing metadata"
+        );
         ensure!(
             !self.group().exists(),
             "unowned cgroup prevents absence proof"
@@ -629,7 +662,11 @@ impl Manifest {
     /// Only a free lifecycle lock permits fencing and cleanup. Never signal a saved arbitrary PID.
     pub fn reconcile(&self, reason: &str) -> Result<Receipt> {
         self.validate()?;
-        let _lock = self.lock()?;
+        let (_authority, _) = crate::launch_authority::authorize_cleanup(
+            &self.config.state_root,
+            self.launch_permit.as_ref(),
+        )?;
+        let _lock = self.lifecycle_lock(false)?;
         let mut r = self.receipt()?;
         if r.state == State::Stopped {
             return Ok(r);

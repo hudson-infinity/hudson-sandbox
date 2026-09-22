@@ -87,6 +87,7 @@ fn empty(request: &RetirementRequest) -> Record {
             claim_expires_unix_ms: request.expires_unix_ms,
         },
         retirement: None,
+        metadata_retirement: None,
         revisions: BTreeMap::new(),
         create: None,
         manifest: None,

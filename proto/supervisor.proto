@@ -4,6 +4,7 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc RetireAllocationMetadata(AllocationMetadataRequest) returns (AllocationMetadataObservation);
   rpc FenceAllocation(AllocationFenceRequest) returns (AllocationFenceObservation);
   rpc AllocationAuthority(AllocationAuthorityRequest) returns (AllocationAuthorityObservation);
   rpc RetireReleasedHistory(ReleasedHistoryRequest) returns (ReleasedHistoryObservation);
@@ -259,5 +260,13 @@ message ReleasedHistoryObservation {
 message AllocationFenceRequest { bytes request_json = 1; }
 message AllocationFenceObservation {
   AllocationFenceRequest request = 1;
+  int64 observed_unix_ms = 2;
+}
+
+// Physical cleanup verified and owned guardian metadata removed. Host completion
+// remains retained until a separate database acknowledgement/forgetting protocol.
+message AllocationMetadataRequest { bytes request_json = 1; }
+message AllocationMetadataObservation {
+  AllocationMetadataRequest request = 1;
   int64 observed_unix_ms = 2;
 }

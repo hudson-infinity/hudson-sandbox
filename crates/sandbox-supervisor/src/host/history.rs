@@ -171,12 +171,10 @@ pub(super) fn validate_retained(record: &Record) -> anyhow::Result<()> {
                     && current.barrier.context.generation == record.owner.generation,
                 "invalid retained retirement ownership"
             );
-            let manifest = record
-                .manifest
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("retirement manifest missing"))?;
             anyhow::ensure!(
-                manifest.receipt()?.guest_boot_id.as_deref()
+                super::metadata_retirement::receipt(record)?
+                    .guest_boot_id
+                    .as_deref()
                     == Some(current.barrier.context.boot_id.as_str()),
                 "retirement boot mismatch"
             );
