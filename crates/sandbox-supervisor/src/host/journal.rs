@@ -13,6 +13,8 @@ pub(super) const MAX_RECORDS: usize = 1024;
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
     pub owner: Ownership,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement: Option<sandbox_protocol::allocation_retirement::Request>,
     pub revisions: BTreeMap<String, i64>,
     pub create: Option<CreateRequest>,
     pub manifest: Option<Manifest>,
@@ -159,6 +161,7 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
                 && (!record.dispatched || record.manifest.is_some()),
             "invalid retained launch intent"
         );
+        super::retirement::validate_retained(record, config.epoch)?;
         if let Some(manifest) = &record.manifest {
             anyhow::ensure!(
                 manifest.start.owner.allocation.to_string() == *key

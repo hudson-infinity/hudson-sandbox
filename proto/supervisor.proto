@@ -4,6 +4,7 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc FenceAllocation(AllocationFenceRequest) returns (AllocationFenceObservation);
   rpc AllocationAuthority(AllocationAuthorityRequest) returns (AllocationAuthorityObservation);
   rpc RetireReleasedHistory(ReleasedHistoryRequest) returns (ReleasedHistoryObservation);
   rpc HistoryBinding(LeaseInspection) returns (HistoryBindingObservation);
@@ -252,4 +253,11 @@ message ReleasedHistoryObservation {
   AllocationState release_state = 3;
   bool simulated = 4;
   int64 observed_unix_ms = 5;
+}
+
+// Durable launch denial only: neither message proves physical release/deletion.
+message AllocationFenceRequest { bytes request_json = 1; }
+message AllocationFenceObservation {
+  AllocationFenceRequest request = 1;
+  int64 observed_unix_ms = 2;
 }

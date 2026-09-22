@@ -21,6 +21,7 @@ fn fixture() -> (Record, sandbox_protocol::history::Barrier) {
         claim_expires_unix_ms: 1,
     };
     let record = Record {
+        retirement: None,
         owner,
         revisions: BTreeMap::new(),
         create: None,

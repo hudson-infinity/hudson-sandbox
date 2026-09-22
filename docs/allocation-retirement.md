@@ -44,7 +44,7 @@ Host receipt deletion does not delete project-lifetime operation identities. Sto
 
 ## Frozen request vocabulary
 
-The shared [allocation retirement types](../crates/sandbox-protocol/src/allocation_retirement.rs) define a bounded version-1 intent and a separate renewable request envelope. The database preparation path below now persists this intent. No host retirement RPC or metadata deletion consumes it yet.
+The shared [allocation retirement types](../crates/sandbox-protocol/src/allocation_retirement.rs) define a bounded version-1 intent and a separate renewable request envelope. The database preparation path below now persists this intent. The host fencing RPC also consumes this intent; no metadata deletion consumes it yet.
 
 The immutable intent binds a retry-stable retirement ID to the complete allocation permit, explicit command and file closures, a lowercase SHA-256 digest of retained release evidence, and whether the evidence is simulated. Each domain is explicitly `empty` or `retired` through an operation ID. These are proposed scopes requiring independent verification; an empty scope never substitutes for host acknowledgement. The release digest identifies evidence and does not prove cleanup.
 
@@ -60,9 +60,19 @@ Preparation rejects unfinished lifecycle work, unknown command/file outcomes, ac
 
 A held preparation claim returns no work. After expiry, preparation revalidates the original scope and keeps the same retirement identity while incrementing its claim revision; a changed owner, release receipt or domain cannot replace the stored intent. All leases use database time. Allowing simulation marks the frozen intent simulated even if a particular input receipt is physical, so a later retry cannot silently upgrade a simulation-enabled preparation.
 
-The retained freeze rejects further command/file IDs under the allocation lock and stops new released-history claims. Original project-lifetime operation keys, digests and retained outcomes are untouched. Database rows remain retained; this component neither refunds host receipt capacity nor deletes anything. It does not inspect host-local download pins or physical files: those remain mandatory host-side completion checks. There is no periodic preparation worker, authenticated host retirement RPC, deletion acknowledgement or forgetting integration yet.
+The retained freeze rejects further command/file IDs under the allocation lock and stops new released-history claims. Original project-lifetime operation keys, digests and retained outcomes are untouched. Database rows remain retained; this component neither refunds host receipt capacity nor deletes anything. It does not inspect host-local download pins or physical files: those remain mandatory host-side completion checks. There is no periodic preparation worker, deletion acknowledgement or forgetting integration yet. The host fencing RPC below is callable but has no automatic controller handoff yet.
 
 Database tests use synthetic release/history receipts, not isolation evidence. They exercise concurrent claims, retry stability across epochs, changed evidence, explicit empty scopes, pending outcomes and consumers, malformed completion, simulation policy, and admission rejection after freezing. Existing store migration and history suites remain required alongside these tests.
+
+## Host fencing component
+
+The authenticated `FenceAllocation` supervisor RPC accepts the bounded retirement request and returns its exact request with an observation time only after durable root launch denial. It is unavailable on legacy hosts and the fake host. Simulated intents, wrong owners, stale epochs/frontiers and changed scopes are rejected. A stopped original owner may come from an earlier epoch; a registered unused permit may have no host receipt yet. Admitting that retirement receipt does not claim physical absence.
+
+The host checks its independently retained permit frontier under the persistent shared root lock, verifies the exact permit and closed command/file prefixes, then durably saves the full request under the per-allocation gate. Pending history, remaining command/file/archive records, changed release-evidence digests and changed claims under the same revision cannot pass. Subsequent generic mutation, archive/history and previous-epoch recovery requests receive retirement-in-progress rejection rather than a new release result. Live/file readers already reject stopped allocations; their outstanding pins still require separate draining before deletion.
+
+Only after persisting scope does the host release the shared lock and install the exclusive root fence. A failed fence can leave the earlier root grant active, but retains the host intent and returns no successful acknowledgement. Retrying the identical scope reconciles that window; a newer database claim can renew revision/epoch without changing scope. Restart retains the intent and rejects older binaries through the journal's strict unknown-field decoding.
+
+This RPC neither verifies physical cleanup nor removes metadata, marks authority complete, forgets an owner, or frees host capacity. Guardian receipts and manifests remain available to existing restart validation. The following deletion stage must persist recoverable intent before unlinking and must make restart validation distinguish authorized partial deletion from unexplained missing files. The [host fencing evidence](evidence/2026-09-22-host-retirement-fence.json) records controlled validation separately from the unfinished deletion and release gates.
 
 ## Durable sequence
 

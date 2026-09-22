@@ -456,6 +456,15 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn fence_allocation(
+        &self,
+        _: Request<sandbox_protocol::supervisor::AllocationFenceRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::AllocationFenceObservation>, Status> {
+        Err(Status::unimplemented(
+            "fake host does not provide durable retirement fencing",
+        ))
+    }
+
     async fn allocation_authority(
         &self,
         _: Request<sandbox_protocol::supervisor::AllocationAuthorityRequest>,

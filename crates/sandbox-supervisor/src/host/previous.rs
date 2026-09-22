@@ -48,6 +48,7 @@ impl Host {
             }
             record.clone()
         };
+        super::retirement::check(&record)?;
         // This re-verifies the original guardian/cgroup/filesystem fence even
         // when a prior cleanup receipt already exists. Missing metadata is not
         // upgraded into an absence receipt, and no new journal entry is admitted.

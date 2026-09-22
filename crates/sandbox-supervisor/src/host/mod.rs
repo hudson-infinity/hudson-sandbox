@@ -9,6 +9,7 @@ mod journal;
 mod live_output;
 mod previous;
 mod released_history;
+mod retirement;
 use crate::guardian::{self, Action, Artifact, Manifest, Receipt, State as GuardianState};
 use journal::{Journal, Record};
 use sandbox_protocol::{
@@ -238,6 +239,7 @@ impl Host {
             if !same_allocation(&r.owner, o) {
                 return Err(Status::failed_precondition("allocation identity mismatch"));
             }
+            retirement::check(r)?;
             return Ok(r.gate.clone());
         }
         if j.records.len() >= journal::MAX_RECORDS {
@@ -276,6 +278,7 @@ impl Host {
             o.allocation_id.clone(),
             Record {
                 owner: o.clone(),
+                retirement: None,
                 revisions: BTreeMap::new(),
                 create: None,
                 manifest: None,
@@ -308,6 +311,7 @@ impl Host {
         if !same_allocation(&r.owner, o) {
             return Err(Status::failed_precondition("allocation identity mismatch"));
         }
+        retirement::check(r)?;
         if !r.revisions.contains_key(&o.operation_id) && r.revisions.len() >= 64 {
             return Err(Status::resource_exhausted("operation fence capacity full"));
         }
@@ -758,6 +762,15 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn fence_allocation(
+        &self,
+        request: Request<sandbox_protocol::supervisor::AllocationFenceRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::AllocationFenceObservation>, Status> {
+        self.work(move |host| host.fence_allocation_sync(request.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn allocation_authority(
         &self,
         request: Request<sandbox_protocol::supervisor::AllocationAuthorityRequest>,
