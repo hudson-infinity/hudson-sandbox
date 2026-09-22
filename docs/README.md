@@ -25,6 +25,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [Output storage](output-storage.md) | Private artifact identity, archival, publication, verified reads and cleanup worker | How output is retrieved, streamed and retired with recoverable completion receipts |
 | [Operation retention](operation-retention.md) | Terminal response expiry, payload compaction and stable retries | How expired bodies are removed while preserving recovery evidence |
 | [History reclamation](history-reclamation.md) | Guest/host retirement, database coordination and remaining lifecycle limits | How to reclaim receipts without admitting old work again |
+| [Allocation authority model](allocation-authority.md) | Bounded serial registration and retirement state model | What has been tested in memory and what runtime integration remains |
 | [Command cancellation](command-cancellation.md) | Public interruption requests, ownership, outcomes and recovery | How callers interrupt commands and reconcile their results |
 | [File transfer](file-transfer.md) | Guest workspace paths, staged uploads, receipts and captured downloads | How guest transfers and authenticated public file transport work |
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |

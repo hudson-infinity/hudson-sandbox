@@ -48,3 +48,5 @@ pub mod file_sources;
 pub mod api;
 
 pub mod history;
+
+pub mod allocation_authority;
