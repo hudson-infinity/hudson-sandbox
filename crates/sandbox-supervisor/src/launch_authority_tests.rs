@@ -228,3 +228,22 @@ fn registration_ack_reconciles_without_regranting_forgotten_or_fenced_owners() {
     fs::remove_file(store.root.join(STATE)).unwrap();
     assert!(reopened.checkpoint(2).is_err());
 }
+
+#[test]
+#[ignore = "requires root in the dedicated HUDSON_GUARDIAN_TEST_VM"]
+fn receipt_admission_holds_persistent_gate_and_checks_epoch_and_frontier() {
+    let (_dir, store, p) = setup();
+    let (owner, guard) =
+        authorize_registered_allocation(&store.root, p.host, 1, 1, p.allocation).unwrap();
+    assert_eq!(owner, p);
+    assert!(store.fence(1, &p, OperationId::generate()).is_err());
+    drop(guard);
+    assert!(authorize_registered_allocation(&store.root, p.host, 1, 2, p.allocation).is_err());
+    assert!(
+        authorize_registered_allocation(&store.root, HostId::generate(), 1, 1, p.allocation)
+            .is_err()
+    );
+    store.advance_epoch(1, 2).unwrap();
+    assert!(authorize_registered_allocation(&store.root, p.host, 1, 1, p.allocation).is_err());
+    assert!(authorize_registered_allocation(&store.root, p.host, 2, 1, p.allocation).is_err());
+}

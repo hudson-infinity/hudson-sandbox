@@ -1,0 +1,17 @@
+{
+  "base_source_manifest": "host-permit-registration-source.json",
+  "source_sha256_overrides": {
+    "crates/sandbox-protocol/src/allocation_authority.rs": "a929bd241b536f3162fbd19abef01422c5b7cc5a8f106ada3a0dc268ca2c2201",
+    "crates/sandbox-protocol/src/allocation_authority_tests.rs": "395a61702e2e23e912531f326881649f692172edb21df71a0f648afd39e27896",
+    "crates/sandbox-supervisor/src/host/mod.rs": "5aedf39ea9cd770cc1ae75bc4f73f8a9a53a06f7df915a7a6481e50942fccc0f",
+    "crates/sandbox-supervisor/src/launch_authority.rs": "2ca86f0b8de9dbad571d715b348d828a67caf6ef9d74c69e54be0202d1d76b77",
+    "crates/sandbox-supervisor/src/launch_authority_tests.rs": "f1c380e4b321b6362770e7f90a57899d9c803f645ec74974cd5d83ef3d09f5f7",
+    "crates/sandbox-supervisor/tests/host.rs": "6ff630978b5409e0fe331ee0629d32b168f6b3b31ba08bd304ab78c42da31ee8"
+  },
+  "linux_binary_sha256": {
+    "target/debug/sandbox-host": "2cd8f914a2addbe33740c7cd46acead48bfc3502f837bba8f2150026d49afcb2",
+    "target/debug/sandbox-supervisor": "fe6f891cbe697292f0cf5eee8750a79638552330a551d006bb763763ce15fd1b",
+    "target/debug/deps/host-a55f506adb425ab2": "dafa6674c1fba29459a2acf168b3b68c2f383ffc8a631dc6ab8ff8fde0d2abdb",
+    "target/release/sandbox-guest": "c752bf7e485b641241ef4764d972d1c703e31da48e20ff16fb93f5d6d8030c5a"
+  }
+}

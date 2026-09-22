@@ -69,3 +69,11 @@ Set `launch_permits_required: true` in the root-owned host configuration only wh
 The fake host advertises legacy simulated behavior and does not provide durable permit authority. Ordinary legacy hosts retain their existing allocation tombstones. This integration neither removes those tombstones nor calls completion/forget automatically. Capacity reclamation still requires the full [retirement protocol](allocation-retirement.md).
 
 Controlled execution results and source hashes are recorded in [host permit registration evidence](implementation/host-permit-registration-evidence.md).
+
+## Admission of host receipts
+
+On permit-enabled hosts, creating any new allocation receipt requires a retained active permit, including when the first request is Inspect or Stop. The host compares the registered host, epoch, allocation, project, sandbox and generation, checks its independent registration frontier and holds the persistent authority lock through the journal write. The operation ID may differ from the original Create operation because Stop and inspection have their own operation identities.
+
+Unknown, fenced, completed or forgotten owners cannot recreate a missing receipt or consume another host slot. Denial is not an absence or release observation. Existing exact-owner receipts remain available for inspection and cleanup after fencing; the original stopped-allocation proof is still required. Legacy mode keeps its existing receipt behavior. This rule closes one prerequisite for future metadata deletion and does not implement the deletion protocol itself.
+
+Controlled results for this gate are recorded in [registered receipt evidence](implementation/registered-receipts-evidence.md).

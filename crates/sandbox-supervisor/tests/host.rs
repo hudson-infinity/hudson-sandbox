@@ -2080,3 +2080,155 @@ async fn real_host_registers_permits_and_rejects_replay_and_downgrade() {
     config.launch_permits_required = false;
     assert!(sandbox_supervisor::host::Host::open(config).is_err());
 }
+
+#[tokio::test]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and controlled host artifacts"]
+async fn real_host_receipts_require_active_registered_owner() {
+    use sandbox_protocol::{allocation_authority::Permit, supervisor::AllocationAuthorityRequest};
+    let f = Fixture::configured_permits(true, false, true).await;
+    let mut client = f.client().await;
+    let request = f.request();
+    let owner = request.ownership.unwrap();
+    let records = || {
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(f.config.state_root.join("host.json")).unwrap())
+                .unwrap();
+        saved["records"].as_object().unwrap().len()
+    };
+    for _ in 0..3 {
+        assert_eq!(
+            client
+                .inspect(InspectRequest {
+                    ownership: Some(owner.clone())
+                })
+                .await
+                .unwrap_err()
+                .code(),
+            Code::FailedPrecondition
+        );
+        assert_eq!(
+            client
+                .stop(StopRequest {
+                    ownership: Some(owner.clone())
+                })
+                .await
+                .unwrap_err()
+                .code(),
+            Code::FailedPrecondition
+        );
+    }
+    assert_eq!(records(), 0);
+    let p = Permit {
+        host: owner.host_id.parse().unwrap(),
+        project: owner.project_id.parse().unwrap(),
+        sandbox: owner.sandbox_id.parse().unwrap(),
+        allocation: owner.allocation_id.parse().unwrap(),
+        create_operation: owner.operation_id.parse().unwrap(),
+        generation: owner.generation,
+        original_epoch: owner.supervisor_epoch,
+        serial: 1,
+    };
+    client
+        .allocation_authority(AllocationAuthorityRequest {
+            host_id: f.config.host.to_string(),
+            reporting_epoch: 1,
+            permits_json: serde_json::to_vec(std::slice::from_ref(&p)).unwrap(),
+        })
+        .await
+        .unwrap();
+    let mut wrong = owner.clone();
+    wrong.project_id = sandbox_protocol::ProjectId::generate().to_string();
+    assert!(
+        client
+            .inspect(InspectRequest {
+                ownership: Some(wrong)
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(records(), 0);
+    // Simulate trusted coordinator transitions for an unused permit. This is
+    // admission-denial evidence, not a production deletion/absence protocol.
+    let authority = sandbox_supervisor::launch_authority::AuthorityFile::open(
+        f.config.state_root.join("a"),
+        f.config.host,
+        1,
+        1,
+    )
+    .unwrap();
+    let retirement = OperationId::generate();
+    authority.fence(1, &p, retirement).unwrap();
+    assert!(
+        client
+            .inspect(InspectRequest {
+                ownership: Some(owner.clone())
+            })
+            .await
+            .is_err()
+    );
+    authority.complete(1, &p, retirement).unwrap();
+    authority.forget(1, &p, retirement).unwrap();
+    assert!(
+        client
+            .inspect(InspectRequest {
+                ownership: Some(owner.clone())
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .stop(StopRequest {
+                ownership: Some(owner)
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(records(), 0);
+    let next_request = f.request();
+    let next_owner = next_request.ownership.unwrap();
+    let next = Permit {
+        host: next_owner.host_id.parse().unwrap(),
+        project: next_owner.project_id.parse().unwrap(),
+        sandbox: next_owner.sandbox_id.parse().unwrap(),
+        allocation: next_owner.allocation_id.parse().unwrap(),
+        create_operation: next_owner.operation_id.parse().unwrap(),
+        generation: next_owner.generation,
+        original_epoch: next_owner.supervisor_epoch,
+        serial: 2,
+    };
+    client
+        .allocation_authority(AllocationAuthorityRequest {
+            host_id: f.config.host.to_string(),
+            reporting_epoch: 1,
+            permits_json: serde_json::to_vec(std::slice::from_ref(&next)).unwrap(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .stop(StopRequest {
+                ownership: Some(next_owner.clone())
+            })
+            .await
+            .unwrap()
+            .get_ref()
+            .state,
+        AllocationState::FencedAbsent as i32
+    );
+    assert_eq!(records(), 1);
+    authority.fence(1, &next, OperationId::generate()).unwrap();
+    // Retained metadata still permits original-owner inspection and cleanup.
+    assert_eq!(
+        client
+            .inspect(InspectRequest {
+                ownership: Some(next_owner)
+            })
+            .await
+            .unwrap()
+            .get_ref()
+            .state,
+        AllocationState::FencedAbsent as i32
+    );
+    assert_eq!(records(), 1);
+}

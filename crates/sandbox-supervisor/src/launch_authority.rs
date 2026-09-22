@@ -335,6 +335,33 @@ impl AuthorityFile {
     }
 }
 
+/// Resolve a registered active allocation while holding the persistent gate.
+/// The caller must compare project/sandbox/generation before creating metadata
+/// and keep the guard until its journal write is durable.
+pub fn authorize_registered_allocation(
+    root: &Path,
+    host: HostId,
+    epoch: i64,
+    minimum_through: u64,
+    allocation: sandbox_protocol::AllocationId,
+) -> Result<(Permit, LaunchGuard)> {
+    let lock = gate(root, false)?;
+    let store = AuthorityFile {
+        root: root.into(),
+        host,
+        minimum_epoch: epoch,
+        minimum_through,
+    };
+    let (current, ledger) = store.load()?;
+    ensure!(current == epoch, "allocation epoch rejected");
+    let permit = ledger.active_allocation(allocation)?.clone();
+    ensure!(
+        permit.original_epoch == epoch,
+        "old allocation epoch rejected"
+    );
+    Ok((permit, LaunchGuard { _lock: lock }))
+}
+
 /// Hold through the final launch decision. Stop/inspection may still proceed
 /// after fencing; this guard authorizes neither cleanup nor outcome reporting.
 pub fn authorize(root: &Path, permit: Option<&Permit>) -> Result<LaunchGuard> {
