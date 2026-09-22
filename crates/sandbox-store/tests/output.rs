@@ -15,6 +15,8 @@ use sandbox_store::{
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
+#[path = "support/legacy_execute.rs"]
+mod legacy_execute;
 
 #[path = "support/output_cleanup.rs"]
 mod cleanup_tests;
@@ -34,6 +36,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(pool: &PgPool) -> Self {
+        Self::with_schema(pool, false).await
+    }
+    async fn with_schema(pool: &PgPool, legacy: bool) -> Self {
         let project = ProjectId::generate();
         let sandbox = SandboxId::generate();
         let allocation = AllocationId::generate();
@@ -57,24 +62,47 @@ impl Fixture {
         let request=ExecuteCommand { project_id:project,sandbox_id:sandbox,key_id:token.key_id().clone(),
             idempotency_key: IdempotencyKey::parse(&OperationId::generate().to_string()).unwrap(),
             command: serde_json::from_value(json!({"argv":["private-command"],"deadline_unix_ms":now()+60000,"output_limit":100})).unwrap() };
-        let ExecuteAdmission::Accepted {
-            operation_id: operation,
-            ..
-        } = store.admit_execute(&request).await.unwrap()
-        else {
-            panic!("admit")
+        let operation = if legacy {
+            legacy_execute::seed(pool, &request, allocation).await
+        } else {
+            let ExecuteAdmission::Accepted { operation_id, .. } =
+                store.admit_execute(&request).await.unwrap()
+            else {
+                panic!("admit")
+            };
+            operation_id
         };
         let execution_claim = store
             .claim_next(OperationKind::Execute, 30)
             .await
             .unwrap()
             .unwrap();
-        let ExecuteAction::Dispatch { owner, command } = store
-            .prepare_execute(&execution_claim, host, 1)
-            .await
-            .unwrap()
-        else {
-            panic!("dispatch")
+        let (owner, command) = if legacy {
+            let owner = sandbox_protocol::supervisor::Ownership {
+                host_id: host.to_string(),
+                project_id: project.to_string(),
+                sandbox_id: sandbox.to_string(),
+                allocation_id: allocation.to_string(),
+                operation_id: operation.to_string(),
+                generation: 1,
+                supervisor_epoch: 1,
+                claim_revision: execution_claim.revision,
+                claim_expires_unix_ms: (execution_claim.lease_expires_at.unix_timestamp_nanos()
+                    / 1_000_000) as i64,
+            };
+            let command = request.command.for_operation(operation);
+            let evidence = json!({"phase":"execute_dispatch_intent","host_id":owner.host_id,"project_id":owner.project_id,"sandbox_id":owner.sandbox_id,"operation_id":owner.operation_id,"allocation_id":owner.allocation_id,"generation":1,"supervisor_epoch":1,"claim_revision":owner.claim_revision,"simulated":null,"command_digest":hex::encode(command.digest().unwrap())});
+            sqlx::query("UPDATE operations SET phase='execute_dispatched',attempt_count=1,attempt_receipts=jsonb_build_array($2::jsonb) WHERE id=$1").bind(operation.uuid()).bind(evidence).execute(pool).await.unwrap();
+            (owner, command)
+        } else {
+            let ExecuteAction::Dispatch { owner, command } = store
+                .prepare_execute(&execution_claim, host, 1)
+                .await
+                .unwrap()
+            else {
+                panic!("dispatch")
+            };
+            (owner, command)
         };
         let digest = command.digest().unwrap();
         let receipt = Receipt {
@@ -781,7 +809,7 @@ async fn publication_upgrade_preserves_old_outcomes_and_only_queues_receipt_cand
         ..Migrator::DEFAULT
     };
     old.run(&pool).await.unwrap();
-    let f = Fixture::new(&pool).await;
+    let f = Fixture::with_schema(&pool, true).await;
     let mut history: Value =
         sqlx::query_scalar("SELECT attempt_receipts FROM operations WHERE id=$1")
             .bind(f.operation.uuid())

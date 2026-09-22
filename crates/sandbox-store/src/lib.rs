@@ -12,6 +12,7 @@ pub mod destroy;
 pub mod dispatch;
 pub mod execute;
 pub mod files;
+pub mod history;
 pub mod leases;
 pub mod lists;
 pub mod output;

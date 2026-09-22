@@ -32,6 +32,9 @@ struct Args {
     /// Run an independent output publisher; supervisor needs --output-config.
     #[arg(long)]
     archive_output: bool,
+    /// Reclaim acknowledged history after external consumers retire.
+    #[arg(long)]
+    retire_history: bool,
     /// Private read-only source store for file writes.
     #[arg(long)]
     file_source_config: Option<std::path::PathBuf>,
@@ -79,8 +82,29 @@ async fn main() -> anyhow::Result<()> {
                     .await?
             );
         }
+        if args.retire_history {
+            let mut worker = controller.history_retirer();
+            // Both independent domains receive a turn in diagnostic mode.
+            eprintln!("{:?}", worker.tick().await?);
+            eprintln!("{:?}", worker.tick().await?);
+        }
         return Ok(());
     }
+    let retirement = if args.retire_history {
+        let mut worker = controller.history_retirer();
+        Some(tokio::spawn(async move {
+            loop {
+                match worker.tick().await {
+                    Ok(sandbox_controller::history::HistoryTick::Idle) => {}
+                    Ok(tick) => eprintln!("sandbox history: {tick:?}"),
+                    Err(error) => eprintln!("sandbox history: {error}"),
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }))
+    } else {
+        None
+    };
     let archival = if args.archive_output {
         let mut worker = controller.output_archiver(
             args.output_retention_seconds,
@@ -109,6 +133,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         tokio::select! { _ = tokio::signal::ctrl_c() => break, _ = tokio::time::sleep(Duration::from_millis(500)) => {} }
+    }
+    if let Some(task) = retirement {
+        task.abort();
     }
     if let Some(task) = archival {
         task.abort();

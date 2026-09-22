@@ -1,6 +1,7 @@
 //! One configured host, durable create/destroy dispatch, and reconciliation over mTLS.
 //! The supervisor is trusted only after its certificate, host ID, and epoch match.
 pub mod archive;
+pub mod history;
 mod recovery;
 mod uploads;
 

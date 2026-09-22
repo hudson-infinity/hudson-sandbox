@@ -282,7 +282,7 @@ async fn cleanup_completion_upgrade_preserves_pending_inventory(pool: PgPool) {
         ..sqlx::migrate::Migrator::DEFAULT
     };
     old.run(&pool).await.unwrap();
-    let (f, _) = published(&pool).await;
+    let (f, _) = published_with_schema(&pool, true).await;
     age(&f, false).await;
     f.store.enqueue_expired_output(100).await.unwrap();
     let before: Value =

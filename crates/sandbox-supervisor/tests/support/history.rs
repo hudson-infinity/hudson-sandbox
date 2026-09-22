@@ -75,6 +75,43 @@ async fn real_history_rpc_reclaims_full_command_and_file_slots_and_preserves_fen
     let _ = c.create(create).await;
     f.ready(&mut c, &owner).await;
     let guest = f.manifest(&owner).guest_client().unwrap();
+    let binding = sandbox_protocol::supervisor::LeaseInspection {
+        ownership: Some(lease(&owner, 9)),
+    };
+    let mut reader = transport::connect(
+        &f.url,
+        f.config.host,
+        f.tls.ca.pem().as_bytes(),
+        f.reader.cert.pem().as_bytes(),
+        f.reader.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reader
+            .history_binding(binding.clone())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    let observed = c
+        .history_binding(binding.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(observed.request, Some(binding.clone()));
+    assert_eq!(
+        gm::Context::try_from(observed.context.unwrap()).unwrap(),
+        *guest.context()
+    );
+    assert!(!observed.simulated);
+    let mut expired = binding.clone();
+    expired.ownership.as_mut().unwrap().claim_expires_unix_ms = guardian::wall_ms() - 1;
+    assert!(c.history_binding(expired).await.is_err());
+    let mut foreign = binding;
+    foreign.ownership.as_mut().unwrap().generation += 1;
+    assert!(c.history_binding(foreign).await.is_err());
     let mut commands = Vec::new();
     for _ in 0..32 {
         commands.push(execute(&mut c, &owner).await);
@@ -429,4 +466,108 @@ async fn real_history_refuses_staging_and_failed_host_persistence_never_deletes_
     fs::remove_dir(&path).unwrap();
     fs::rename(backup, &path).unwrap();
     f.restart().await;
+}
+
+pub(super) async fn public_capacity_retirement(
+    pool: &sqlx::PgPool,
+    store: &sandbox_store::Store,
+    app: &axum::Router,
+    bearer: &str,
+    controller: &mut sandbox_controller::Controller,
+    sandbox: &str,
+) {
+    use sandbox_controller::history::HistoryTick;
+    use serde_json::{Value, json};
+    let route = format!("/v1/sandboxes/{sandbox}/execute");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='execute'")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let mut last = None;
+    for _ in count..32 {
+        let key = OperationId::generate().to_string();
+        let body = json!({"argv":["/bin/busybox","true"],"deadline_unix_ms":guardian::wall_ms()+30000,"output_limit":1024});
+        let (status, admitted) = super::http(app, bearer, "POST", &route, &key, body.clone()).await;
+        assert_eq!(status, http::StatusCode::ACCEPTED, "{admitted}");
+        let id = admitted["operation_id"].as_str().unwrap().to_owned();
+        let until = Instant::now() + Duration::from_secs(15);
+        loop {
+            controller.tick().await.unwrap();
+            let (_, state) = super::http(
+                app,
+                bearer,
+                "GET",
+                &format!("/v1/operations/{id}"),
+                &key,
+                Value::Null,
+            )
+            .await;
+            if state["status"] == "succeeded" {
+                break;
+            }
+            assert!(Instant::now() < until, "{state}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        last = Some((key, body, id));
+    }
+    let (key, body, id) = last.unwrap();
+    let next_key = OperationId::generate().to_string();
+    let next_body = json!({"argv":["/bin/busybox","true"],"deadline_unix_ms":guardian::wall_ms()+60000,"output_limit":1024});
+    let (status, busy) =
+        super::http(app, bearer, "POST", &route, &next_key, next_body.clone()).await;
+    assert_eq!(status, http::StatusCode::CONFLICT);
+    assert_eq!(busy["code"], "execution_capacity_exhausted");
+    let mut worker = controller.history_retirer();
+    assert_eq!(
+        worker.tick().await.unwrap(),
+        HistoryTick::Idle,
+        "unexpired output must block retirement"
+    );
+    // Advance only this fixture's response retention. Real compaction validates
+    // terminal guest receipts and fences output authority before retirement.
+    sqlx::query("UPDATE operations SET response_expires_at=clock_timestamp()-interval '1 second' WHERE kind='execute' AND status IN ('succeeded','failed','cancelled')").execute(pool).await.unwrap();
+    for _ in 0..40 {
+        match store.compact_expired_response().await.unwrap() {
+            sandbox_store::compaction::Compaction::Idle => break,
+            sandbox_store::compaction::Compaction::Completed(_) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Idle); // files domain
+    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Completed);
+    let (floor,simulated):(sqlx::types::Uuid,bool)=sqlx::query_as("SELECT completed_through,(completion->>'simulated')::boolean FROM allocation_history WHERE domain='commands'").fetch_one(pool).await.unwrap();
+    assert_eq!(floor, id.parse::<OperationId>().unwrap().uuid());
+    assert!(!simulated);
+    let (status, retry) = super::http(app, bearer, "POST", &route, &key, body).await;
+    assert_eq!(status, http::StatusCode::GONE, "{retry}");
+    let (status, admitted) = super::http(app, bearer, "POST", &route, &next_key, next_body).await;
+    assert_eq!(status, http::StatusCode::ACCEPTED, "{admitted}");
+    let id = admitted["operation_id"].as_str().unwrap();
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        controller.tick().await.unwrap();
+        let (_, state) = super::http(
+            app,
+            bearer,
+            "GET",
+            &format!("/v1/operations/{id}"),
+            &next_key,
+            Value::Null,
+        )
+        .await;
+        if state["status"] == "succeeded" {
+            break;
+        }
+        assert!(Instant::now() < until, "{state}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let retained: i64 = sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='execute'")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(retained, 33);
+    eprintln!(
+        "real_database_history_observation {}",
+        json!({"full_32_command_budget":true,"unexpired_consumers_blocked":true,"real_host_guest_ack":true,"new_command_executed":true,"old_key_not_replayed":true,"original_33_rows_retained":true,"simulated":false})
+    );
 }

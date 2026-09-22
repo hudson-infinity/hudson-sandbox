@@ -300,7 +300,14 @@ async fn capacity_upgrade_preserves_history_and_fences_legacy_queued_dispatch(po
     };
     old.run(&pool).await.unwrap();
     let mut f = Fixture::new(&pool).await;
-    let ids = fill(&mut f, MAX_COMMANDS, 1).await;
+    let mut ids = Vec::new();
+    f.request.command.output_limit = 1;
+    for _ in 0..MAX_COMMANDS {
+        f.request.idempotency_key = key();
+        let id = legacy_execute::seed(&pool, &f.request, f.allocation).await;
+        finish(&f, id).await;
+        ids.push(id);
+    }
     // Seed the 33rd accepted row using the old schema, bypassing new admission.
     let legacy = OperationId::generate();
     sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,initiator_key_id,idempotency_key,

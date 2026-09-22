@@ -206,3 +206,72 @@ mod wire_tests {
         }
     }
 }
+
+/// Generate in opaque UUIDv7 order above durable allocation state. The caller
+/// must persist the returned ID under the same admission lock as its floor.
+pub fn advance_operation_id(
+    candidate: OperationId,
+    floor: Option<OperationId>,
+) -> Result<OperationId> {
+    for id in [Some(candidate), floor].into_iter().flatten() {
+        ensure!(
+            id.uuid().get_version_num() == 7 && id.uuid().get_variant() == uuid::Variant::RFC4122,
+            "invalid admission identity"
+        );
+    }
+    let Some(floor) = floor.filter(|f| candidate <= *f) else {
+        return Ok(candidate);
+    };
+    let value = floor.uuid().as_u128();
+    let low_mask = (1u128 << 62) - 1;
+    let rank = ((value >> 80) << 74) | (((value >> 64) & 0xfff) << 62) | (value & low_mask);
+    let next = rank + 1;
+    ensure!(next < (1u128 << 122), "operation identity space exhausted");
+    let value = ((next >> 74) << 80)
+        | (7u128 << 76)
+        | (((next >> 62) & 0xfff) << 64)
+        | (2u128 << 62)
+        | (next & low_mask);
+    Ok(OperationId::from_uuid(uuid::Uuid::from_u128(value)))
+}
+
+#[cfg(test)]
+mod admission_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    fn id(s: &str) -> OperationId {
+        format!("op_{s}").parse().unwrap()
+    }
+    #[test]
+    fn rollback_and_uuid_field_carries_preserve_valid_increasing_ids() {
+        let candidate = id("00000000-0000-7000-8000-000000000000");
+        for (floor, want) in [
+            (
+                "019a9fad-3000-7000-bfff-ffffffffffff",
+                "019a9fad-3000-7001-8000-000000000000",
+            ),
+            (
+                "019a9fad-3000-7fff-bfff-ffffffffffff",
+                "019a9fad-3001-7000-8000-000000000000",
+            ),
+            (
+                "019a9fad-3000-7000-8000-000000000001",
+                "019a9fad-3000-7000-8000-000000000002",
+            ),
+        ] {
+            let floor = id(floor);
+            let next = advance_operation_id(candidate, Some(floor)).unwrap();
+            assert_eq!(next, id(want));
+            assert!(advance_operation_id(candidate, Some(next)).unwrap() > next);
+        }
+        assert_eq!(advance_operation_id(candidate, None).unwrap(), candidate);
+        let newer = OperationId::generate();
+        assert_eq!(advance_operation_id(newer, Some(candidate)).unwrap(), newer);
+        assert!(
+            advance_operation_id(candidate, Some(id("ffffffff-ffff-7fff-bfff-ffffffffffff")))
+                .is_err()
+        );
+        let bad = OperationId::from_uuid(uuid::Uuid::nil());
+        assert!(advance_operation_id(candidate, Some(bad)).is_err());
+    }
+}

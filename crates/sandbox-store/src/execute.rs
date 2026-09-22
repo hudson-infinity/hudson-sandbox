@@ -218,7 +218,7 @@ impl Store {
         }
         // A host lock wait may outlive the deadline or credential. Recheck both
         // using database time in the committing statement.
-        let operation = OperationId::generate();
+        let operation = crate::history::next_operation(&mut tx, allocation).await?;
         let payload = serde_json::to_value(&r.command).map_err(|_| DispatchError::InvalidData)?;
         let changed = sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,initiator_key_id,
             idempotency_key,request_digest,digest_version,payload,status,phase,deadline,execution_allocation_id)
@@ -385,7 +385,7 @@ impl Store {
 
 /// Called under the project/sandbox locks shared by admission and dispatch.
 /// Every admitted command conservatively reserves a journal slot and its full
-/// output limit for this allocation's lifetime, even if it never starts. Do not
+/// output limit until verified history retirement, even if it never starts. Do not
 /// lock operation rows here: reconciliation locks operation before project.
 /// Compaction atomically replaces the payload with a descriptor of equal budget.
 async fn has_capacity(
@@ -394,8 +394,10 @@ async fn has_capacity(
     additional_output: Option<u64>,
 ) -> Result<bool, DispatchError> {
     let rows = sqlx::query(
-        "SELECT * FROM operations
-        WHERE execution_allocation_id=$1 AND kind='execute' ORDER BY id LIMIT $2",
+        "SELECT o.* FROM operations o LEFT JOIN completed_allocation_history h
+        ON h.allocation_id=o.execution_allocation_id AND h.domain='commands'
+        WHERE o.execution_allocation_id=$1 AND o.kind='execute'
+        AND (h.completed_through IS NULL OR o.id>h.completed_through) ORDER BY o.id LIMIT $2",
     )
     .bind(allocation)
     .bind((MAX_COMMANDS + 1) as i64)
