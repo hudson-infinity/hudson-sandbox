@@ -1,6 +1,6 @@
 # API contract
 
-Status: partially implemented. Create, execute, destroy, sandbox/operation status, project-scoped sandbox/operation lists, retained-output reads, command cancellation, and bearer-authenticated SSE have handlers and tests; other routes and OpenAPI remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. When introduced, a versioned OpenAPI specification will own exact wire schemas; this document will retain semantic explanations and link to it.
+Status: partially implemented. Create, execute, destroy, sandbox/operation status, project-scoped sandbox/operation lists, retained-output reads, command cancellation, and bearer-authenticated SSE have handlers and tests; binary file uploads and captured downloads are also implemented. Other routes remain unfinished. This document owns client admission, idempotency, response/error behavior, cancellation requests, and output transport. The versioned [OpenAPI specification](../api/openapi.json) owns implemented wire schemas; [generation and conformance](openapi.md) describe the shared Rust models and checks. This document retains semantic explanations.
 
 ## API surfaces
 
@@ -250,7 +250,7 @@ Keep sandbox, operation, and snapshot metadata long enough to explain ownership,
 
 Client acceptance must also cover equivalent API/SDK/CLI outcomes, key reuse across client restarts, no resubmission after a wait timeout, structured output without credential leakage, output truncation/reconnects, and explicit file transfer. These checks require implemented clients and are not available today.
 
-Before implementation, define SDK distribution per registry, CLI syntax, credential configuration and exit codes, the OpenAPI schemas themselves, list filtering, the machine-readable error code list, the file size cap, and the deprecation window in [versioning](#versioning-and-deprecation). Projects cannot register their own guest images in the first release; that capability, and what it adds to this surface, follows the operator allowlist described in [data models](data-models.md#what-we-keep-inside-these-models). Examples remain proposals until validated against those schemas.
+Before implementation, define SDK distribution per registry, CLI syntax, credential configuration and exit codes, additional list filtering, and the deprecation window in [versioning](#versioning-and-deprecation). Projects cannot register their own guest images in the first release; that capability, and what it adds to this surface, follows the operator allowlist described in [data models](data-models.md#what-we-keep-inside-these-models). Examples remain proposals until validated against those schemas.
 
 ## Observation source
 
@@ -287,7 +287,7 @@ Cursors are opaque, versioned positions scoped to the authenticated project, col
 
 ## Implemented HTTPS transport
 
-The [API server guide](api-server.md#transport-contract) owns TLS configuration, listener limits, startup/shutdown, and runnable local setup. The existing create/execute/destroy JSON routes normalize malformed JSON to `400 bad_request` and oversized bodies to `413 payload_too_large`, both as uncached problems. These replace Axum's raw JSON extractor errors; streaming routes remain unfinished.
+The [API server guide](api-server.md#transport-contract) owns TLS configuration, listener limits, startup/shutdown, and runnable local setup. The existing create/execute/destroy JSON routes normalize malformed JSON to `400 bad_request` and oversized bodies to `413 payload_too_large`, both as uncached problems. These replace Axum's raw JSON extractor errors. Implemented streaming and file wire shapes are included in [OpenAPI](../api/openapi.json).
 
 
 ## Implemented retained-output reads
@@ -350,4 +350,4 @@ An independent authorization watchdog waits five seconds between checks and give
 
 [Stream tests](../crates/sandbox-api/tests/streams.rs) exercise binary reconnects, cross-tenant and cursor boundaries, forged replies, bounded readers/queues, publication races, and revocation during slow reads and final metadata lock waits. A regression first demonstrated queued bytes reaching a consumer after retention expired; the consumption-time check prevents it. [HTTPS/MinIO tests](../crates/sandbox-api/tests/server.rs) verify real SSE framing and explicit missing-object gaps. [Controlled microVM evidence](evidence/2026-09-21-aarch64-sse.json) covers live binary bytes before completion, reconnects without repeated execution, archival delivery after destruction and epoch advancement, and the limits of that evidence.
 
-The current CLI configures one live host endpoint; fleet registration/routing and automatic certificate rotation are not implemented. Archived streaming repeats full-object verification per bounded chunk, as the retained-range endpoint does; this has a bounded memory footprint but can amplify storage reads for large outputs. No throughput/fleet-load claim is made. Cross-allocation pause/resume history, browser sessions, file transfer and supported-host security release gates remain unfinished. [Output cleanup](output-storage.md#storage-retirement) and [command cancellation](command-cancellation.md) are implemented.
+The current CLI configures one live host endpoint; fleet registration/routing and automatic certificate rotation are not implemented. Archived streaming repeats full-object verification per bounded chunk, as the retained-range endpoint does; this has a bounded memory footprint but can amplify storage reads for large outputs. No throughput/fleet-load claim is made. Cross-allocation pause/resume history, browser sessions and supported-host security release gates remain unfinished. File transfer has [public upload/download routes](file-transfer.md). [Output cleanup](output-storage.md#storage-retirement) and [command cancellation](command-cancellation.md) are implemented.

@@ -1,34 +1,10 @@
 //! Normalized command input shared by admission and dispatch. Values never enter Debug.
+pub use crate::api::CommandInput;
 use crate::{Id, OperationId, guest_model::Execute};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fmt};
 
 pub const MAX_OUTPUT: u64 = 10 * 1024 * 1024;
 pub const MAX_DURATION_MS: i64 = 6 * 60 * 60 * 1000;
-fn default_cwd() -> String {
-    "/".into()
-}
-fn default_output_limit() -> u64 {
-    1024 * 1024
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommandInput {
-    pub argv: Vec<String>,
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
-    #[serde(default = "default_cwd")]
-    pub cwd: String,
-    pub deadline_unix_ms: i64,
-    #[serde(default = "default_output_limit")]
-    pub output_limit: u64,
-}
-impl fmt::Debug for CommandInput {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CommandInput").finish_non_exhaustive()
-    }
-}
 impl CommandInput {
     pub fn for_operation(&self, operation_id: OperationId) -> Execute {
         Execute {

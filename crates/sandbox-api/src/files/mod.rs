@@ -13,13 +13,13 @@ use axum::{
 };
 use client::FileReader;
 use http::{HeaderMap, StatusCode, header};
+use sandbox_protocol::api::{FileCaptureRequest as CaptureBody, FileCaptureResponse};
 use sandbox_protocol::{
     SandboxId, file_downloads as model, files as fm,
     supervisor::{FileCaptureRequest, FileDownloadRequest, FileReleaseRequest},
 };
 use sandbox_store::{Store, files::FileView};
 use serde::Deserialize;
-use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use ticket::Ticket;
 fn no_store(body: impl IntoResponse) -> Response {
@@ -45,11 +45,6 @@ impl FromRef<FileState> for Store {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EmptyQuery {}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CaptureBody {
-    path: String,
-}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Range {
@@ -128,7 +123,15 @@ async fn capture(
     let handle = model::captured(&request, &reply, before.simulated, now()?)
         .map_err(|_| Problem::FileCorrupt)?;
     let capture = handle.capture.as_ref().ok_or(Problem::FileCorrupt)?;
-    let response = json!({"capture":Ticket::new(&before,handle.clone())?.encode()?,"size":capture.size,"sha256":hex::encode(&capture.sha256),"expires_unix_ms":handle.expires_unix_ms,"chunk_size":fm::MAX_CHUNK_BYTES,"simulated":before.simulated,"guest_reported":true});
+    let response = FileCaptureResponse {
+        capture: Ticket::new(&before, handle.clone())?.encode()?,
+        size: capture.size,
+        sha256: hex::encode(&capture.sha256),
+        expires_unix_ms: handle.expires_unix_ms,
+        chunk_size: fm::MAX_CHUNK_BYTES as u32,
+        simulated: before.simulated,
+        guest_reported: true,
+    };
     Ok(no_store(
         (StatusCode::CREATED, Json(response)).into_response(),
     ))

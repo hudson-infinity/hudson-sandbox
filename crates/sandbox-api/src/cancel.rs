@@ -8,12 +8,8 @@ use axum::{
     response::Response,
 };
 use sandbox_protocol::OperationId;
+pub use sandbox_protocol::api::CancelRequest;
 use sandbox_store::cancel::{CancelAdmission, CancelCommand};
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CancelRequest {}
 
 async fn cancel(
     State(state): State<AppState>,

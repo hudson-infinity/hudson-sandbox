@@ -11,6 +11,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use cursor::Cursor;
 use http::{HeaderMap, header};
+use sandbox_protocol::api::{EndEvent, OutputEvent, OutputStats, StreamProblemEvent};
 use sandbox_protocol::{
     OperationId,
     command::CommandRecord,
@@ -23,7 +24,6 @@ use sandbox_store::{
     stream::{StreamSource, StreamView},
 };
 use serde::Deserialize;
-use serde_json::json;
 use std::{
     convert::Infallible,
     pin::Pin,
@@ -347,9 +347,19 @@ async fn produce(
         stats[index] = chunk.stats.clone();
         cursor.offsets[index] = chunk.next;
         if !chunk.bytes.is_empty() || done[index] {
-            let data = json!({"stream":if index==0 {"stdout"}else{"stderr"},"offset":chunk.offset,"next_offset":chunk.next,
-                "data_base64":STANDARD.encode(&chunk.bytes),"at_end":chunk.at_end,"complete":chunk.complete,
-                "seen":chunk.stats.seen,"stored":chunk.stats.stored,"truncated":chunk.stats.truncated,"simulated":chunk.simulated,"guest_reported":true});
+            let data = OutputEvent {
+                stream: if index == 0 { "stdout" } else { "stderr" }.into(),
+                offset: chunk.offset,
+                next_offset: chunk.next,
+                data_base64: STANDARD.encode(&chunk.bytes),
+                at_end: chunk.at_end,
+                complete: chunk.complete,
+                seen: chunk.stats.seen,
+                stored: chunk.stats.stored,
+                truncated: chunk.stats.truncated,
+                simulated: chunk.simulated,
+                guest_reported: true,
+            };
             emit(
                 pipe,
                 Event::default()
@@ -361,7 +371,21 @@ async fn produce(
             .await?;
         }
         if done.iter().all(|v| *v) {
-            emit(pipe,Event::default().event("end").id(cursor.encode()?).json_data(json!({"reason":"complete","stdout":stats[0],"stderr":stats[1],"simulated":chunk.simulated,"guest_reported":true})).map_err(|_|Problem::Internal)?).await?;
+            emit(
+                pipe,
+                Event::default()
+                    .event("end")
+                    .id(cursor.encode()?)
+                    .json_data(EndEvent {
+                        reason: "complete".into(),
+                        stdout: wire_stats(&stats[0]),
+                        stderr: wire_stats(&stats[1]),
+                        simulated: chunk.simulated,
+                        guest_reported: true,
+                    })
+                    .map_err(|_| Problem::Internal)?,
+            )
+            .await?;
             return Ok(());
         }
         let idle = chunk.bytes.is_empty();
@@ -491,10 +515,9 @@ async fn open(
                 stopped.store(true, Ordering::Release);
                 return;
             }
-            if let Ok(frame) = Event::default()
-                .event(event)
-                .json_data(json!({"code":problem.code()}))
-            {
+            if let Ok(frame) = Event::default().event(event).json_data(StreamProblemEvent {
+                code: problem.code().into(),
+            }) {
                 let _ = emit(&pipe, frame).await;
             }
         }
@@ -535,4 +558,12 @@ pub fn routes(
             archive,
             slots: Arc::new(Semaphore::new(4)),
         })
+}
+
+fn wire_stats(stats: &m::Output) -> OutputStats {
+    OutputStats {
+        seen: stats.seen,
+        stored: stats.stored,
+        truncated: stats.truncated,
+    }
 }

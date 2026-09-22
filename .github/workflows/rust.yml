@@ -63,6 +63,12 @@ jobs:
           sudo apt-get install -y protobuf-compiler
           protoc --version
 
+      - name: Set up contract validation
+        run: make api-setup
+
+      - name: Validate OpenAPI and generated models
+        run: make api
+
       - name: Format
         run: cargo fmt --all -- --check
 

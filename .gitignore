@@ -6,3 +6,6 @@ target/
 
 # Local environment
 .env
+
+# Isolated OpenAPI validation tools
+.venv-openapi/

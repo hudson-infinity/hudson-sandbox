@@ -1,0 +1,1964 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hudson Sandbox project API",
+    "version": "0.0.0",
+    "description": "Implemented single-host project API only. All operations require project bearer authentication over HTTPS. This contract is not a production-security release claim. Lifecycle admission uses project-wide idempotency keys. Results can remain unknown; never infer completion or replay uncertain work. JSON bodies at the standalone listener are capped at 65536 bytes, except file capture JSON (16384) and binary uploads (8388608)."
+  },
+  "servers": [
+    {
+      "url": "https://sandbox.example.invalid",
+      "description": "Replace with your configured trusted HTTPS API origin."
+    }
+  ],
+  "security": [
+    {
+      "ProjectBearer": []
+    }
+  ],
+  "paths": {
+    "/v1/sandboxes": {
+      "post": {
+        "operationId": "createSandbox",
+        "summary": "Create a sandbox",
+        "description": "Create a sandbox",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asynchronous operation handle; acceptance is not completion.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmittedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "403": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "413": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRequest"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listSandboxes",
+        "summary": "List project sandboxes",
+        "description": "Newest created_at/id first. Includes tombstones. Live pagination, not a snapshot.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/sandboxes/{sandbox_id}": {
+      "get": {
+        "operationId": "getSandbox",
+        "summary": "Read desired and observed sandbox state",
+        "description": "Read desired and observed sandbox state",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SandboxId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/sandboxes/{sandbox_id}/execute": {
+      "post": {
+        "operationId": "executeCommand",
+        "summary": "Admit a command",
+        "description": "Return promptly and poll this operation. HTTP disconnect or wait timeout never cancels or repeats a command. One active or unresolved guest mutation per sandbox.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SandboxId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asynchronous operation handle; acceptance is not completion.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmittedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "413": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sandboxes/{sandbox_id}/destroy": {
+      "post": {
+        "operationId": "destroySandbox",
+        "summary": "Destroy and reclaim a sandbox",
+        "description": "Completion requires verified allocation release. Unknown creates can transfer cleanup ownership. Destroying a tombstone admits a successful no-op operation.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SandboxId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asynchronous operation handle; acceptance is not completion.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmittedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "413": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestroyRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/operations": {
+      "get": {
+        "operationId": "listOperations",
+        "summary": "List project operations",
+        "description": "Newest created_at/id first. Expired terminal responses remain list tombstones with response_expired=true and result/error omitted.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PageLimit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "sandbox_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SandboxId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/operations/{operation_id}": {
+      "get": {
+        "operationId": "getOperation",
+        "summary": "Read an operation",
+        "description": "Read an operation",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OperationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/operations/{operation_id}/cancel": {
+      "post": {
+        "operationId": "cancelCommand",
+        "summary": "Request command cancellation",
+        "description": "Admits a distinct cancellation operation. Does not promise the command was cancelled; inspect the target and cancellation handles.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OperationId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asynchronous operation handle; acceptance is not completion.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmittedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "413": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/operations/{operation_id}/outputs/{output_name}": {
+      "get": {
+        "operationId": "readOutput",
+        "summary": "Read verified retained output bytes",
+        "description": "Offsets are bytes in the immutable final stream. HTTP Range and unknown/duplicate query fields are rejected. EOF may still be truncated. Offset equal to size returns empty verified EOF; missing history never becomes empty success.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OperationId"
+          },
+          {
+            "name": "output_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "stdout",
+                "stderr"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          },
+          {
+            "$ref": "#/components/parameters/ChunkLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "X-Output-Offset": {
+                "required": true,
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 18446744073709551615
+                }
+              },
+              "X-Output-Next-Offset": {
+                "required": true,
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 18446744073709551615
+                }
+              },
+              "X-Output-Size": {
+                "required": true,
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10485760
+                }
+              },
+              "X-Output-Seen": {
+                "required": true,
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 18446744073709551615
+                }
+              },
+              "X-Output-EOF": {
+                "required": true,
+                "schema": {
+                  "type": "boolean"
+                }
+              },
+              "X-Output-Truncated": {
+                "required": true,
+                "schema": {
+                  "type": "boolean"
+                }
+              },
+              "X-Output-Simulated": {
+                "required": true,
+                "schema": {
+                  "type": "boolean"
+                }
+              },
+              "Content-Disposition": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "nosniff"
+                }
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "416": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "502": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/operations/{operation_id}/stream": {
+      "get": {
+        "operationId": "streamOutput",
+        "summary": "Stream or resume command output",
+        "description": "SSE, with opaque byte-position IDs after output/end events. Supply cursor OR Last-Event-ID, never both. IDs can repeat for empty final events. output.data_base64 is binary; stdout/stderr order is unspecified. end means captured output is complete, not process success. gap/error close without an ID. Heartbeats are comments. A 90-second stream lifetime requires reconnection to the same operation. Credential checks continue during reads/backpressure; unknown/duplicate query fields and HTTP Range are rejected.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OperationId"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "X-Accel-Buffering": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no"
+                }
+              },
+              "X-Content-Type-Options": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "nosniff"
+                }
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "x-sse-events": {
+          "output": {
+            "$ref": "#/components/schemas/OutputEvent"
+          },
+          "end": {
+            "$ref": "#/components/schemas/EndEvent"
+          },
+          "gap": {
+            "$ref": "#/components/schemas/StreamProblemEvent"
+          },
+          "error": {
+            "$ref": "#/components/schemas/StreamProblemEvent"
+          }
+        }
+      }
+    },
+    "/v1/sandboxes/{sandbox_id}/files": {
+      "put": {
+        "operationId": "uploadFile",
+        "summary": "Upload a bounded workspace file",
+        "description": "Exactly one metadata header each. Unencoded application/octet-stream only, up to 8 MiB; no Content-Encoding or Range. Length and SHA-256 must match. 202 is durable admission, not guest publication. Retry the same key, descriptor and bytes even after ambiguous source storage; never pick a new key to recover uncertainty.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SandboxId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspacePath"
+            }
+          },
+          {
+            "name": "X-File-Size",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8388608
+            }
+          },
+          {
+            "name": "X-File-SHA256",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Sha256"
+            }
+          },
+          {
+            "name": "X-File-Mode",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0644",
+                "0755"
+              ],
+              "default": "0644"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asynchronous operation handle; acceptance is not completion.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmittedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "413": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "502": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "0 to 8388608 raw bytes; empty files are supported."
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sandboxes/{sandbox_id}/files/captures": {
+      "post": {
+        "operationId": "captureFile",
+        "summary": "Capture a workspace file for bounded download",
+        "description": "A fresh read may capture newer bytes. No idempotency key is required. No query fields, prior capture header or Range. Request JSON is capped at 16384 bytes. Captures expire after at most 60 seconds; the token is valid only for its original allocation and boot.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SandboxId"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileCaptureResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "413": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "502": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileCaptureRequest"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "readCapturedFile",
+        "summary": "Read a captured file chunk",
+        "description": "Read the same capture, then check the complete byte count and SHA-256 from capture metadata. Offset equal to size returns empty EOF. No Range or unknown/duplicate query fields. Guest reports are not host isolation evidence.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SandboxId"
+          },
+          {
+            "$ref": "#/components/parameters/Capture"
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          },
+          {
+            "$ref": "#/components/parameters/ChunkLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              },
+              "X-File-Offset": {
+                "required": true,
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8388608
+                }
+              },
+              "X-File-Next-Offset": {
+                "required": true,
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8388608
+                }
+              },
+              "X-File-Size": {
+                "required": true,
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8388608
+                }
+              },
+              "X-File-EOF": {
+                "required": true,
+                "schema": {
+                  "type": "boolean"
+                }
+              },
+              "X-File-Simulated": {
+                "required": true,
+                "schema": {
+                  "type": "boolean"
+                }
+              },
+              "X-File-Guest-Reported": {
+                "required": true,
+                "schema": {
+                  "type": "boolean"
+                }
+              },
+              "X-File-SHA256": {
+                "required": true,
+                "schema": {
+                  "$ref": "#/components/schemas/Sha256"
+                }
+              },
+              "Content-Disposition": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "attachment; filename=file.bin"
+                }
+              },
+              "X-Content-Type-Options": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "nosniff"
+                }
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "416": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "502": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "releaseFileCapture",
+        "summary": "Release a captured download buffer",
+        "description": "No query fields or Range. Retrying the same unexpired token can acknowledge its tombstone; expired/missing history returns an explicit error and never recaptures the file.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SandboxId"
+          },
+          {
+            "$ref": "#/components/parameters/Capture"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success.",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "401": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "409": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "500": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "502": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "503": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ProjectBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Project token from private operator provisioning. Never place tokens in URLs, cursors, command arguments or generated examples."
+      }
+    },
+    "parameters": {
+      "SandboxId": {
+        "name": "sandbox_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/SandboxId"
+        }
+      },
+      "OperationId": {
+        "name": "operation_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/OperationId"
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{16,128}$",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "description": "Project-wide key for one logical mutation. Retry with the same key and normalized payload; changed payload conflicts. Retain across process restarts."
+      },
+      "PageLimit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "description": "Opaque continuation bound to its original project and route/filter or producing operation. Reuse unchanged. Unknown/duplicate query fields are rejected."
+      },
+      "Offset": {
+        "name": "offset",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "default": 0
+        }
+      },
+      "ChunkLimit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768,
+          "default": 32768
+        }
+      },
+      "Capture": {
+        "name": "X-File-Capture",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "description": "Exactly one token returned by capture. Current bearer authorization is independently required."
+      }
+    },
+    "responses": {
+      "Problem": {
+        "description": "Structured error; missing and inaccessible resources are indistinguishable. A 503 or lost response does not authorize replay with a new key.",
+        "headers": {
+          "Cache-Control": {
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemBody"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "SandboxId": {
+        "type": "string",
+        "pattern": "^sbx_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      },
+      "OperationId": {
+        "type": "string",
+        "pattern": "^op_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      },
+      "ImageDigest": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "Sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "OperationStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "unknown"
+        ],
+        "description": "Current operation outcome. unknown requires reconciliation; never blindly resubmit the command."
+      },
+      "WorkspacePath": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "description": "Canonical relative UTF-8 workspace path, at most 4096 bytes and 255 bytes per component. No empty, dot or dot-dot components, control bytes, backslashes, or .hudson-transfers first component. No shell expansion; symlinks and mounts are rejected by the guest.",
+        "x-max-utf8-bytes": 4096,
+        "pattern": "^(?!\\.hudson-transfers(?:/|$))(?!.*(?:^|/)\\.\\.?(?:/|$))[^/\\\\\\u0000-\\u001f\\u007f]+(?:/[^/\\\\\\u0000-\\u001f\\u007f]+)*$"
+      },
+      "RequestedResources": {
+        "type": "object",
+        "properties": {
+          "vcpu": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "x-rust-integer": "i32"
+          },
+          "memory_mib": {
+            "type": "integer",
+            "minimum": 128,
+            "maximum": 8192
+          },
+          "disk_mib": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 65536
+          }
+        },
+        "required": [
+          "vcpu",
+          "memory_mib",
+          "disk_mib"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true,
+        "x-rust-copy": true
+      },
+      "CreateRequest": {
+        "type": "object",
+        "properties": {
+          "image_digest": {
+            "$ref": "#/components/schemas/ImageDigest"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "x-max-utf8-bytes": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-rust-optional": true
+          },
+          "resources": {
+            "$ref": "#/components/schemas/RequestedResources"
+          },
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-rust-optional": true
+          }
+        },
+        "required": [
+          "image_digest",
+          "resources"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true,
+        "description": "Unknown fields are ignored by this existing route. Omitted name/correlation_id normalize to null. No sandbox TTL field is currently accepted as configuration."
+      },
+      "CommandInput": {
+        "type": "object",
+        "properties": {
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "pattern": "^[^\u0000]*$"
+            },
+            "description": "argv[0] must be nonempty. All argument strings together use at most 32768 UTF-8 bytes; no implicit shell."
+          },
+          "env": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[^\u0000]*$"
+            },
+            "maxProperties": 128,
+            "default": {},
+            "description": "At most 16384 total UTF-8 key/value bytes.",
+            "x-rust-default": true
+          },
+          "cwd": {
+            "type": "string",
+            "pattern": "^/[^\u0000]*$",
+            "maxLength": 4096,
+            "default": "/",
+            "x-max-utf8-bytes": 4096,
+            "x-rust-default": true
+          },
+          "deadline_unix_ms": {
+            "type": "integer",
+            "minimum": -9223372036854775808,
+            "maximum": 9223372036854775807,
+            "description": "Absolute Unix milliseconds. New admission requires a future deadline within six hours and the sandbox lifetime; an exact retry preserves its original deadline."
+          },
+          "output_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10485760,
+            "default": 1048576,
+            "x-rust-integer": "u64",
+            "x-rust-default": true
+          }
+        },
+        "required": [
+          "argv",
+          "deadline_unix_ms"
+        ],
+        "additionalProperties": false,
+        "x-rust-model": true,
+        "x-rust-redacted-debug": true,
+        "description": "Combined stdout/stderr capture budget. The encoded internal command must fit 65536 bytes. Defaults normalize before idempotency hashing."
+      },
+      "DestroyRequest": {
+        "type": "object",
+        "properties": {
+          "correlation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "x-max-utf8-bytes": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-rust-optional": true
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "x-rust-model": true
+      },
+      "CancelRequest": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false,
+        "x-rust-model": true
+      },
+      "AdmittedResponse": {
+        "type": "object",
+        "properties": {
+          "sandbox_id": {
+            "$ref": "#/components/schemas/SandboxId"
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/OperationId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OperationStatus"
+          },
+          "status_url": {
+            "type": "string",
+            "pattern": "^/v1/operations/op_"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "operation_id",
+          "status",
+          "status_url"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "ProblemBody": {
+        "type": "object",
+        "properties": {
+          "operation_id": {
+            "$ref": "#/components/schemas/OperationId",
+            "x-rust-optional": true
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599,
+            "x-rust-integer": "u16"
+          },
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable problem code. Branch on this field, never title. Current values are listed; clients must tolerate additive codes.",
+            "enum": [
+              "bad_request",
+              "payload_too_large",
+              "unauthenticated",
+              "forbidden",
+              "image_not_allowed",
+              "not_found",
+              "gone",
+              "response_expired",
+              "output_not_ready",
+              "output_expired",
+              "output_missing",
+              "output_corrupt",
+              "output_range_invalid",
+              "file_capture_missing",
+              "file_response_invalid",
+              "file_range_invalid",
+              "command_in_progress",
+              "execution_capacity_exhausted",
+              "conflict",
+              "unavailable",
+              "internal"
+            ]
+          }
+        },
+        "required": [
+          "title",
+          "status",
+          "code"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "OperationBody": {
+        "type": "object",
+        "properties": {
+          "response_expired": {
+            "type": "boolean",
+            "default": false,
+            "x-rust-default": true,
+            "x-rust-omit-false": true
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/OperationId"
+          },
+          "sandbox_id": {
+            "$ref": "#/components/schemas/SandboxId"
+          },
+          "target_operation_id": {
+            "$ref": "#/components/schemas/OperationId",
+            "x-rust-optional": true
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "create",
+              "execute",
+              "destroy",
+              "cancel",
+              "file_write"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/OperationStatus"
+          },
+          "phase": {
+            "type": "string",
+            "x-rust-optional": true
+          },
+          "output_status": {
+            "type": "string",
+            "enum": [
+              "none",
+              "pending",
+              "uploading",
+              "published",
+              "expired"
+            ],
+            "x-rust-optional": true
+          },
+          "result": {
+            "$ref": "#/components/schemas/OperationResult",
+            "x-rust-json": true,
+            "x-rust-optional": true
+          },
+          "error": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Operation failure/uncertainty details, including a stable code; distinct from an HTTP Problem.",
+            "x-rust-optional": true
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "completed_at": {
+            "$ref": "#/components/schemas/Timestamp",
+            "x-rust-optional": true
+          }
+        },
+        "required": [
+          "operation_id",
+          "sandbox_id",
+          "kind",
+          "status",
+          "created_at"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "SandboxBody": {
+        "type": "object",
+        "properties": {
+          "observation_simulated": {
+            "type": "boolean",
+            "x-rust-optional": true
+          },
+          "sandbox_id": {
+            "$ref": "#/components/schemas/SandboxId"
+          },
+          "name": {
+            "type": "string",
+            "x-rust-optional": true
+          },
+          "desired_state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "paused",
+              "destroyed"
+            ],
+            "description": "Requested lifecycle target, not evidence of current runtime state."
+          },
+          "observed_state": {
+            "type": "string",
+            "enum": [
+              "creating",
+              "running",
+              "pausing",
+              "paused",
+              "resuming",
+              "destroying",
+              "destroyed",
+              "unknown"
+            ],
+            "description": "Last observed state. unknown means the service cannot currently prove the runtime outcome."
+          },
+          "observed_at": {
+            "$ref": "#/components/schemas/Timestamp",
+            "x-rust-optional": true,
+            "description": "Timestamp of the observation; absence means no observation has been confirmed."
+          },
+          "image_digest": {
+            "$ref": "#/components/schemas/ImageDigest"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/RequestedResources",
+            "x-rust-json": true
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "active_operation_id": {
+            "$ref": "#/components/schemas/OperationId",
+            "x-rust-optional": true,
+            "description": "Active lifecycle transition, if any. Command operations are tracked separately."
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "desired_state",
+          "observed_state",
+          "image_digest",
+          "resources",
+          "generation",
+          "created_at"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "SandboxList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/SandboxBody"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "OperationList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/OperationBody"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "FileCaptureRequest": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "$ref": "#/components/schemas/WorkspacePath"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "x-rust-model": true
+      },
+      "FileCaptureResponse": {
+        "type": "object",
+        "properties": {
+          "capture": {
+            "type": "string",
+            "maxLength": 16384,
+            "description": "Opaque capture token; send unchanged in X-File-Capture. Not a credential."
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8388608,
+            "x-rust-integer": "u64"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          },
+          "expires_unix_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          },
+          "chunk_size": {
+            "type": "integer",
+            "minimum": 32768,
+            "maximum": 32768,
+            "x-rust-integer": "u32"
+          },
+          "simulated": {
+            "type": "boolean"
+          },
+          "guest_reported": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "capture",
+          "size",
+          "sha256",
+          "expires_unix_ms",
+          "chunk_size",
+          "simulated",
+          "guest_reported"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "OutputStats": {
+        "type": "object",
+        "properties": {
+          "seen": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "x-rust-integer": "u64"
+          },
+          "stored": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760,
+            "x-rust-integer": "u64"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "seen",
+          "stored",
+          "truncated"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "OutputEvent": {
+        "type": "object",
+        "properties": {
+          "stream": {
+            "type": "string",
+            "enum": [
+              "stdout",
+              "stderr"
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760,
+            "x-rust-integer": "u64"
+          },
+          "next_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760,
+            "x-rust-integer": "u64"
+          },
+          "data_base64": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "maxLength": 43692
+          },
+          "at_end": {
+            "type": "boolean"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "seen": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "x-rust-integer": "u64"
+          },
+          "stored": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760,
+            "x-rust-integer": "u64"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "simulated": {
+            "type": "boolean"
+          },
+          "guest_reported": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "stream",
+          "offset",
+          "next_offset",
+          "data_base64",
+          "at_end",
+          "complete",
+          "seen",
+          "stored",
+          "truncated",
+          "simulated",
+          "guest_reported"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "EndEvent": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "const": "complete"
+          },
+          "stdout": {
+            "$ref": "#/components/schemas/OutputStats"
+          },
+          "stderr": {
+            "$ref": "#/components/schemas/OutputStats"
+          },
+          "simulated": {
+            "type": "boolean"
+          },
+          "guest_reported": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "reason",
+          "stdout",
+          "stderr",
+          "simulated",
+          "guest_reported"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "StreamProblemEvent": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable problem code. Includes output_missing, output_expired, output_not_ready, output_corrupt, output_range_invalid, unavailable and internal. Additional codes may be added."
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": true,
+        "x-rust-model": true
+      },
+      "OperationResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Kind-specific fields; no result is invented for unresolved execution. Fields can be added without changing operation identity.",
+        "properties": {
+          "sandbox_id": {
+            "$ref": "#/components/schemas/SandboxId"
+          },
+          "simulated": {
+            "type": "boolean"
+          },
+          "guest_reported": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "signal": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "stdout": {
+            "$ref": "#/components/schemas/OutputStats"
+          },
+          "stderr": {
+            "$ref": "#/components/schemas/OutputStats"
+          },
+          "target_operation_id": {
+            "$ref": "#/components/schemas/OperationId"
+          },
+          "target_status": {
+            "$ref": "#/components/schemas/OperationStatus"
+          },
+          "cancelled": {
+            "type": "boolean"
+          },
+          "dispatch_intent_absent": {
+            "type": "boolean"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8388608
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256"
+          }
+        }
+      }
+    }
+  }
+}

@@ -7,16 +7,9 @@ use axum::{
     extract::{Path, State},
     response::Response,
 };
+pub use sandbox_protocol::api::DestroyRequest;
 use sandbox_protocol::{RequestDigest, SandboxId};
 use sandbox_store::destroy::{DestroyAdmission, DestroySandbox};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct DestroyRequest {
-    #[serde(default)]
-    correlation_id: Option<String>,
-}
 
 pub async fn destroy(
     State(state): State<AppState>,
