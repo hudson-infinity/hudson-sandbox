@@ -233,6 +233,7 @@ impl Host {
         if !same_allocation(&record.owner, &validated) || !record.stopped {
             return Err(Status::failed_precondition("original owner is not fenced"));
         }
+        super::retirement::check(&record)?;
         // Even retries re-observe the original guardian/cgroup/filesystem fence.
         // A retained boolean, missing journal or expired lease is insufficient.
         let (state, _) = self.observe_record(&record)?;
@@ -289,3 +290,7 @@ impl Host {
 #[cfg(test)]
 #[path = "released_history_tests.rs"]
 mod tests;
+
+pub(super) fn through(record: &Record, domain: Domain) -> Option<OperationId> {
+    slot(record, domain).as_ref().map(|r| r.through)
+}

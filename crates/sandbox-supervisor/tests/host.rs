@@ -2232,3 +2232,6 @@ async fn real_host_receipts_require_active_registered_owner() {
     );
     assert_eq!(records(), 1);
 }
+
+#[path = "support/allocation_retirement.rs"]
+mod allocation_retirement;

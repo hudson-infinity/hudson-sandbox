@@ -247,3 +247,32 @@ fn receipt_admission_holds_persistent_gate_and_checks_epoch_and_frontier() {
     assert!(authorize_registered_allocation(&store.root, p.host, 1, 1, p.allocation).is_err());
     assert!(authorize_registered_allocation(&store.root, p.host, 2, 1, p.allocation).is_err());
 }
+
+#[test]
+#[ignore = "requires root in the dedicated HUDSON_GUARDIAN_TEST_VM"]
+fn retirement_authorization_binds_original_owner_frontier_and_stable_fence() {
+    use sandbox_protocol::allocation_retirement::{DomainClosure, Intent};
+    let (_dir, store, p) = setup();
+    let mut intent = Intent {
+        version: 1,
+        retirement: OperationId::generate(),
+        permit: p.clone(),
+        commands: DomainClosure::Empty {},
+        files: DomainClosure::Empty {},
+        release_evidence_sha256: "ab".repeat(32),
+        simulated: false,
+    };
+    store.advance_epoch(1, 2).unwrap();
+    let guard = authorize_retirement(&store.root, p.host, 2, 1, &intent).unwrap();
+    assert!(store.fence(2, &p, intent.retirement).is_err());
+    drop(guard);
+    assert!(authorize_retirement(&store.root, p.host, 1, 1, &intent).is_err());
+    assert!(authorize_retirement(&store.root, p.host, 2, 2, &intent).is_err());
+    let mut wrong = intent.clone();
+    wrong.permit.project = ProjectId::generate();
+    assert!(authorize_retirement(&store.root, p.host, 2, 1, &wrong).is_err());
+    store.fence(2, &p, intent.retirement).unwrap();
+    drop(authorize_retirement(&store.root, p.host, 2, 1, &intent).unwrap());
+    intent.retirement = OperationId::generate();
+    assert!(authorize_retirement(&store.root, p.host, 2, 1, &intent).is_err());
+}

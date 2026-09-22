@@ -387,6 +387,38 @@ pub fn authorize(root: &Path, permit: Option<&Permit>) -> Result<LaunchGuard> {
     Ok(LaunchGuard { _lock: lock })
 }
 
+/// Check an original registered retirement owner under the persistent gate.
+/// This permits prior epochs but grants no cleanup or absence authority.
+pub fn authorize_retirement(
+    root: &Path,
+    host: HostId,
+    epoch: i64,
+    minimum_through: u64,
+    intent: &sandbox_protocol::allocation_retirement::Intent,
+) -> Result<LaunchGuard> {
+    intent.validate()?;
+    ensure!(
+        intent.permit.host == host && intent.permit.original_epoch <= epoch,
+        "retirement owner mismatch"
+    );
+    let guard = gate(root, false)?;
+    let store = AuthorityFile {
+        root: root.to_path_buf(),
+        host,
+        minimum_epoch: epoch,
+        minimum_through,
+    };
+    let (current, ledger) = store.load()?;
+    ensure!(current == epoch, "retirement epoch mismatch");
+    match ledger.state(&intent.permit)? {
+        sandbox_protocol::allocation_authority::State::Active {} => {}
+        sandbox_protocol::allocation_authority::State::Fenced { retirement }
+            if *retirement == intent.retirement => {}
+        _ => anyhow::bail!("retirement authority conflict"),
+    }
+    Ok(LaunchGuard { _lock: guard })
+}
+
 #[cfg(test)]
 #[path = "launch_authority_tests.rs"]
 mod tests;

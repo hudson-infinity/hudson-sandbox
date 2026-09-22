@@ -26,6 +26,7 @@ fn slot_mut(record: &mut Record, domain: Domain) -> &mut Option<Retirement> {
     }
 }
 pub(super) fn check(record: &Record, domain: Domain, id: OperationId) -> Result<(), Status> {
+    super::retirement::check(record)?;
     super::released_history::check(record, domain, id)?;
     if slot(record, domain)
         .as_ref()
@@ -384,3 +385,21 @@ impl Host {
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod tests;
+
+pub(super) fn closure(record: &Record, domain: Domain) -> anyhow::Result<Option<OperationId>> {
+    let live = slot(record, domain);
+    let released = super::released_history::through(record, domain);
+    let complete = live
+        .as_ref()
+        .filter(|h| h.completed)
+        .map(|h| h.barrier.through)
+        .into_iter()
+        .chain(released)
+        .max();
+    anyhow::ensure!(
+        live.as_ref()
+            .is_none_or(|h| complete.is_some_and(|c| h.barrier.through <= c)),
+        "history closure remains pending"
+    );
+    Ok(complete)
+}
