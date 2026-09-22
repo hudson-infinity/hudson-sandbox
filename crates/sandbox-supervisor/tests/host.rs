@@ -701,6 +701,215 @@ async fn authenticated_controller_automatically_retires_real_allocation(pool: sq
     api_lifecycle(pool, false, true).await;
 }
 #[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1 and a sustained aarch64 KVM run"]
+async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPool) {
+    use sandbox_protocol::{ProjectId, ProjectToken};
+    use serde_json::json;
+    let f = Fixture::configured_permits(true, false, true).await;
+    let project = ProjectId::generate();
+    let token = ProjectToken::generate().unwrap();
+    sqlx::query("INSERT INTO projects(id,name,status,limits,api_tokens) VALUES($1,'sustained-reuse','active','{}',$2)")
+        .bind(project.uuid()).bind(json!([{"key_id":token.key_id().as_str(),"hash":hex::encode(token.hash().as_bytes())}]))
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO hosts(id,status,cpu_capacity,memory_capacity_mib,disk_capacity_mib,supervisor_epoch) VALUES($1,'ready',2,256,128,1)")
+        .bind(f.config.host.uuid()).execute(&pool).await.unwrap();
+    let store = sandbox_store::Store::from_pool(pool.clone());
+    let image = f.config.images.keys().next().unwrap().clone();
+    let app = sandbox_api::router(sandbox_api::AppState {
+        store: store.clone(),
+        images: sandbox_protocol::images::ImageAllowlist::new([image.clone()]).unwrap(),
+    });
+    let mut controller = sandbox_controller::Controller::connect(
+        store.clone(),
+        sandbox_controller::ControllerConfig {
+            endpoint: f.url.clone(),
+            host: f.config.host,
+            epoch: 1,
+            allowed_images: std::collections::BTreeSet::from([image.clone()]),
+            allow_simulated: false,
+        },
+        f.tls.ca.pem().as_bytes(),
+        f.tls.host.cert.pem().as_bytes(),
+        f.tls.host.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    let token = token.render_once();
+    let resources =
+        json!({"image_digest":image,"resources":{"vcpu":1,"memory_mib":128,"disk_mib":64}});
+    let keeper_key = OperationId::generate().to_string();
+    let (_, keeper) = http(
+        &app,
+        &token,
+        "POST",
+        "/v1/sandboxes",
+        &keeper_key,
+        resources.clone(),
+    )
+    .await;
+    let keeper_sandbox = keeper["sandbox_id"].as_str().unwrap().to_string();
+    let keeper_operation = keeper["operation_id"].as_str().unwrap().to_string();
+    wait_operation(
+        &app,
+        &token,
+        &mut controller,
+        &keeper_operation,
+        "succeeded",
+    )
+    .await;
+    let live: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM allocations WHERE sandbox_id=$1 AND status='running')",
+    )
+    .bind(keeper_sandbox.parse::<SandboxId>().unwrap().uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(live);
+    let cycles = std::env::var("HUDSON_SUSTAINED_REUSE_CYCLES")
+        .ok()
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(1025usize);
+    assert!(cycles >= 2);
+    if cycles <= 1024 {
+        eprintln!("sustained_reuse_calibration_cycles={cycles}; full acceptance requires 1025");
+    }
+    let mut history = controller.history_retirer();
+    let mut retire = controller.allocation_retirer();
+    for cycle in 0..cycles {
+        let key = OperationId::generate().to_string();
+        let (_, admitted) = http(
+            &app,
+            &token,
+            "POST",
+            "/v1/sandboxes",
+            &key,
+            resources.clone(),
+        )
+        .await;
+        let sandbox = admitted["sandbox_id"].as_str().unwrap().to_string();
+        let create_op = admitted["operation_id"].as_str().unwrap().to_string();
+        wait_operation(&app, &token, &mut controller, &create_op, "succeeded").await;
+        let execute_key = OperationId::generate().to_string();
+        let (_, execute) = http(&app, &token, "POST", &format!("/v1/sandboxes/{sandbox}/execute"), &execute_key,
+            json!({"argv":["/bin/busybox","true"],"deadline_unix_ms":guardian::wall_ms()+10000,"output_limit":1024})).await;
+        wait_operation(
+            &app,
+            &token,
+            &mut controller,
+            execute["operation_id"].as_str().unwrap(),
+            "succeeded",
+        )
+        .await;
+        let destroy_key = OperationId::generate().to_string();
+        let (_, destroy) = http(
+            &app,
+            &token,
+            "POST",
+            &format!("/v1/sandboxes/{sandbox}/destroy"),
+            &destroy_key,
+            json!({}),
+        )
+        .await;
+        wait_operation(
+            &app,
+            &token,
+            &mut controller,
+            destroy["operation_id"].as_str().unwrap(),
+            "succeeded",
+        )
+        .await;
+        sqlx::query("UPDATE operations SET response_expires_at=clock_timestamp()-interval '1 second' WHERE sandbox_id=$1 AND kind='execute' AND payload_compacted_at IS NULL")
+            .bind(sandbox.parse::<SandboxId>().unwrap().uuid())
+            .execute(&pool)
+            .await
+            .unwrap();
+        loop {
+            match store.compact_expired_response().await.unwrap() {
+                sandbox_store::compaction::Compaction::Completed(_) => {}
+                sandbox_store::compaction::Compaction::Deferred(_) => {}
+                sandbox_store::compaction::Compaction::Idle => break,
+            }
+        }
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            for _ in 0..4 {
+                history.tick().await.unwrap();
+            }
+            match retire.tick().await.unwrap() {
+                sandbox_controller::retirement::RetirementTick::Completed => break,
+                sandbox_controller::retirement::RetirementTick::Idle
+                | sandbox_controller::retirement::RetirementTick::Deferred => {}
+            }
+            assert!(
+                Instant::now() < until,
+                "cycle {cycle} retirement did not converge"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let running: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM allocations WHERE status='running'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            running, 1,
+            "cycle {cycle} disturbed the older live allocation"
+        );
+        if cycle % 64 == 63 {
+            eprintln!("sustained_reuse_cycle={}", cycle + 1);
+        }
+    }
+    let records: usize = guardian::read_json::<serde_json::Value>(
+        &f.config.state_root.join("host.json"),
+    )
+    .unwrap()["records"]
+        .as_object()
+        .unwrap()
+        .len();
+    assert_eq!(records, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM allocations WHERE status='running'")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    eprintln!(
+        "real_sustained_reuse_observation {}",
+        json!({"cycles":cycles,"older_live_allocation":true,"host_records":records,"allocation_rows":cycles+1})
+    );
+}
+
+async fn wait_operation(
+    app: &axum::Router,
+    token: &str,
+    controller: &mut sandbox_controller::Controller,
+    operation: &str,
+    expected: &str,
+) {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        controller.tick().await.unwrap();
+        let (_, result) = http(
+            app,
+            token,
+            "GET",
+            &format!("/v1/operations/{operation}"),
+            operation,
+            serde_json::Value::Null,
+        )
+        .await;
+        if result["status"] == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "operation {operation} did not reach {expected}: {result}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
 #[ignore = "requires root, KVM artifacts, PostgreSQL and HUDSON_TEST_S3_* MinIO"]
 async fn real_output_minio_archives_binary_bytes_and_reconciles_after_epoch_restart(
     pool: sqlx::PgPool,
