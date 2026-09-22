@@ -456,6 +456,15 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn retire_history(
+        &self,
+        _r: Request<sandbox_protocol::supervisor::HistoryRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::HistoryObservation>, Status> {
+        Err(Status::unimplemented(
+            "simulator does not provide durable history retirement",
+        ))
+    }
+
     async fn reconcile_previous_allocation(
         &self,
         _r: Request<sandbox_protocol::supervisor::PreviousAllocationRequest>,

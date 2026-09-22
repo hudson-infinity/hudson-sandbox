@@ -61,6 +61,30 @@ async fn dispatch(
         ensure!(files.context() == actual, "file service context mismatch");
     }
     let result = match action {
+        A::RetireHistory(value) => {
+            let result = async {
+                let barrier: sandbox_protocol::history::Barrier = value.try_into()?;
+                barrier.validate(actual, barrier.domain)?;
+                match barrier.domain {
+                    sandbox_protocol::history::Domain::Commands => {
+                        runner.retire_history(barrier).await
+                    }
+                    sandbox_protocol::history::Domain::Files => {
+                        files
+                            .context("file service unavailable")?
+                            .retire_history(barrier)
+                            .await
+                    }
+                }
+            }
+            .await;
+            match result {
+                Ok(barrier) => R::HistoryRetired((&barrier).into()),
+                Err(_) => R::Error(w::Error {
+                    code: w::ErrorCode::Uncertain as i32,
+                }),
+            }
+        }
         A::Hello(_) => R::Hello(w::Hello {}),
         A::Execute(value) => match m::Execute::try_from(value) {
             Ok(value) => match runner.start(value).await {

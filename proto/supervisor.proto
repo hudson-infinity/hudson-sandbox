@@ -4,6 +4,7 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc RetireHistory(HistoryRequest) returns (HistoryObservation);
   rpc BeginFile(FileRequest) returns (FileObservation);
   rpc WriteFile(FileWriteRequest) returns (FileObservation);
   rpc InspectFile(FileRequest) returns (FileObservation);
@@ -197,4 +198,17 @@ message FileAccessObservation {
     hudson.guest.v1.FileChunk chunk = 5;
     FileDownloadHandle released = 6;
   }
+}
+
+// Controller asserts that original outcomes and required consumer retirement are durable.
+// This independent per-domain claim does not reuse customer operation revisions.
+message HistoryRequest {
+  LeaseOwnership ownership = 1;
+  hudson.guest.v1.HistoryBarrier barrier = 2;
+}
+message HistoryObservation {
+  HistoryRequest request = 1;
+  hudson.guest.v1.HistoryBarrier completed = 2;
+  bool simulated = 3;
+  int64 observed_unix_ms = 4;
 }

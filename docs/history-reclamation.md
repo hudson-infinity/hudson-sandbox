@@ -1,6 +1,6 @@
 # Acknowledged history reclamation
 
-Status: guest-local command and file retirement primitives are implemented and tested. No RPC, controller or cleanup worker invokes them. Host journal reclamation, database coordination, reservation refunds, and storage-marker lifecycle remain unfinished under [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Public runtime capacity limits are unchanged. This document owns the retirement barrier and the prerequisites for enabling it across the platform.
+Status: guest and host command/file retirement are implemented with authenticated internal RPCs. No controller or cleanup worker invokes them automatically. Database coordination, public reservation refunds, retirement after allocation destruction, and storage-marker lifecycle remain unfinished under [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Public runtime capacity limits are unchanged. This document owns the retirement barrier and the prerequisites for enabling it across the platform.
 
 ## Why deletion needs an admission barrier
 
@@ -8,7 +8,7 @@ A retained receipt prevents a delayed request from looking like a new operation.
 
 The [barrier type](../crates/sandbox-protocol/src/history.rs) closes an inclusive prefix of operation IDs for one allocation, generation, guest boot and domain (`commands` or `files`). IDs are compared as opaque ordered values. Their UUID timestamps are not an expiry clock and are not assumed to match admission order. A retained barrier rejects every later admission at or below `through`, including IDs for which no receipt remains. One monotonic value replaces the discarded per-operation admission records.
 
-A caller must have durably retained the original outcomes and retired all consumers that still need guest bytes **before** asking the guest to remove history. The current internal library methods cannot verify those external facts and grant no cleanup authority. Do not connect them to automatic cleanup or a customer endpoint before the coordination below is implemented.
+A caller must have durably retained the original outcomes and retired all consumers that still need guest bytes **before** asking the guest to remove history. The controller-only `RetireHistory` RPC asserts that these prerequisites have been durably satisfied. The host independently verifies allocation ownership, the original guest boot, and known terminal outcomes; it does not query the database or prove output/source retirement. No automatic caller or customer endpoint is enabled before the database coordination below is implemented.
 
 ## Guest implementation
 
@@ -26,9 +26,23 @@ On reopen, load and validate the binding first, finish pruning its closed prefix
 
 Existing context files load unchanged. Only an explicit retirement upgrades the binding. Older binaries reject the upgraded context shape, so downgrading cannot silently forget the barrier. Removing/replacing the binding or restoring an older backup is unsupported. Guest root can tamper with guest state; the host must retain its own independent barrier before it discards its records. A guest acknowledgement is not proof of VM destruction, host resource release, physical erasure or sandbox isolation.
 
+## Host and authenticated transport
+
+The controller-pinned supervisor service exposes `RetireHistory(HistoryRequest)`. Its ownership uses an independent per-domain claim revision and bounded deadline. It accepts a versioned guest barrier, never a host path or storage credential. The API/output/file-reader identities cannot call this mutation. The simulator explicitly rejects retirement because it cannot supply durable evidence.
+
+Under the allocation gate, the host validates the exact project/sandbox/allocation/generation/host epoch and bound guest boot. Covered commands must be known terminal with confirmed cleanup, or have durable not-started fences. Covered uploads must be committed, aborted or durably not-started; `Unknown` is not sufficient. Newer work outside the prefix stays retained. A pending retirement must complete before its prefix can advance. Reusing a revision with a changed barrier or sending an older revision fails. A newer claim may reconcile an equal/lower prefix to the current barrier without regression.
+
+The host persists the retirement intent in its existing journal before calling the guest over pinned mTLS/vsock. Both pending and completed barriers reject old command execution/inspection/cancellation, upload begin/write/inspection/commit/abort, archive setup/completion and live-output access. Missing discarded history never becomes new not-started evidence. An archive/read already in flight can fail; a late storage writer still requires the separate object-store retirement marker to fence its effects.
+
+The guest returns a synced-deletion acknowledgement. The client validates response correlation and the **exact** approved barrier, including boot/domain/prefix. A guest cannot enlarge the prefix used for host reclamation. Timeout, lost response, malformed acknowledgement or expired claim retains the host floor and charged records. Repeating retirement reconciles guest completion; a floor-only getter is never enough.
+
+Only after a valid acknowledgement does one durable host journal replacement remove the covered domain's records, associated command archives, and those operations' revision entries. The barrier remains. A failed journal write poisons the host until restart. Completed barriers survive journal reload; older binaries reject the added fields. The host checks journal byte headroom before installing a new barrier and rejects exhaustion before contacting the guest. This recovers operation slots and their declared budgets, but does not guarantee recovery from an already byte-full legacy journal.
+
+New or unfinished retirement currently requires the original live guest in the current host epoch. A completed retry returns retained proof without requiring a live guest, including after same-epoch destruction. Restart advances the epoch and stops old ownership; pending retirement remains fenced and charged. A verified-destruction path is still required to reclaim that history without the original live guest. Database/public accounting is unchanged even when an internal retirement succeeds. Do not delete host journals, restore older snapshots, or discard storage markers as a substitute for that protocol.
+
 ## Required platform coordination
 
-These steps are the remaining delivery contract, not implemented behavior:
+The table records the complete coordination contract. Host intent, guest acknowledgement and live-guest host completion are implemented above; database and later-lifecycle integration remain required:
 
 | Layer | Required behavior before automatic retirement |
 | --- | --- |
@@ -44,6 +58,8 @@ Object-store markers have a different problem: an already issued conditional PUT
 
 ## Evidence
 
+The [host retirement evidence](evidence/2026-09-22-host-history-retirement.json) records source/binary hashes, authenticated microVM tests, failure corrections, excluded cases and the limits of these claims.
+
 The [recorded development evidence](evidence/2026-09-22-guest-history-barriers.json) contains matching source and Linux binary hashes, test totals and limitations.
 
 The [protocol tests](../crates/sandbox-protocol/src/history.rs) cover binding compatibility, scope/domain validation, inclusive ordering and fail-closed downgrade. The unprivileged Linux [file tests](../crates/sandbox-guest/tests/files.rs) cover full descriptor/byte reservations, repeated retirement, admission after recovery, unchanged published files, unresolved prefixes, pre-barrier write failure, partial deletion, failed unlink, malformed bindings and symlink safety.
@@ -57,4 +73,6 @@ cargo test -p sandbox-protocol -p sandbox-guest
 sudo env HUDSON_GUEST_TEST_VM=1 cargo test -p sandbox-guest --test linux_runner -- --ignored --test-threads=1
 ```
 
-Hosted PR runners compile but do not execute the privileged suite. These checks establish guest-local behavior. They do not establish host/database reclamation, automatic reservation refunds, supported x86_64 release readiness or hostile-workload isolation.
+The supervisor client tests reject altered acknowledgement scope/prefix and lost responses. Host state tests cover durable intent, stale claims, unknown outcomes, domain separation, retained capacity, failed journal writes and completion. Opt-in supervisor microVM tests exercise the authenticated RPC, full command/file slot recovery, delayed requests, same-epoch retries after destruction, host restart, malformed retained completion, staging refusal, failed host persistence, and an enlarged guest barrier. Direct guest calls model an acknowledgement lost before host completion; this is not packet-loss injection at every network boundary.
+
+Hosted PR runners compile but do not execute the privileged suite. These checks establish guest and host behavior in the tested development configuration. They do not establish database reclamation, automatic public reservation refunds, supported x86_64 release readiness or hostile-workload isolation.

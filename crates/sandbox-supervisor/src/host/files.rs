@@ -141,6 +141,11 @@ impl Host {
             .get(&owner.allocation_id)
             .ok_or_else(|| uncertain("missing record"))?
             .clone();
+        history::check(
+            &record,
+            sandbox_protocol::history::Domain::Files,
+            upload.operation_id,
+        )?;
         // Reader captures and upload controls share one guest file worker. Reject
         // contention before recording a mutation intent, rather than making it uncertain.
         let _file_io = record

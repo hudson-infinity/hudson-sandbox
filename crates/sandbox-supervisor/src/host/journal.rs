@@ -25,6 +25,10 @@ pub(super) struct Record {
     pub files: BTreeMap<String, sandbox_protocol::supervisor_files::FileRecord>,
     #[serde(default)]
     pub archives: BTreeMap<String, crate::archive::ArchiveRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_history: Option<super::history::Retirement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_history: Option<super::history::Retirement>,
     pub lease_revision: i64,
     pub lease_request: Option<(i64, i64)>,
     #[serde(skip)]
@@ -250,6 +254,7 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
                 );
             }
         }
+        super::history::validate_retained(record)?;
         record.stopped = true;
     }
     save(config, &mut journal)?;

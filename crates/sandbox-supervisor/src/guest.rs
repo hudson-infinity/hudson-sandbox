@@ -138,6 +138,25 @@ impl GuestClient {
         .context("guest call uncertain: connection deadline")?
     }
     /// Discover boot identity without implicitly authorizing commands in a new boot.
+    /// The host must persist its independent floor before calling this method.
+    /// A lost reply is reconciled by repeating retirement, never by a floor-only read.
+    pub async fn retire_history(
+        &self,
+        barrier: &sandbox_protocol::history::Barrier,
+    ) -> Result<sandbox_protocol::history::Barrier> {
+        barrier.validate(&self.context, barrier.domain)?;
+        let w::response::Result::HistoryRetired(value) = self
+            .call(w::request::Action::RetireHistory(barrier.into()))
+            .await?
+            .1
+        else {
+            anyhow::bail!("unexpected history response")
+        };
+        let acknowledged: sandbox_protocol::history::Barrier = value.try_into()?;
+        // A compromised or stale guest cannot expand the controller-approved prefix.
+        ensure!(&acknowledged == barrier, "history acknowledgement changed");
+        Ok(acknowledged)
+    }
     pub async fn hello(&self) -> Result<m::Context> {
         let (context, result) = self.call(w::request::Action::Hello(w::Hello {})).await?;
         ensure!(

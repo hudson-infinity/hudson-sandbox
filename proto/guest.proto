@@ -23,7 +23,7 @@ message Request {
   oneof action { Hello hello = 4; Execute execute = 5; Operation inspect = 6; Operation cancel = 7; ReadOutput output = 8;
     FileUpload begin_upload = 9; WriteFile write_file = 10; FileOperation inspect_upload = 11;
     FileOperation commit_upload = 12; FileOperation abort_upload = 13; CaptureFile capture_file = 14;
-    ReadFile read_file = 15; FileHandle release_file = 16;
+    ReadFile read_file = 15; FileHandle release_file = 16; HistoryBarrier retire_history = 17;
   }
 }
 enum State { STATE_UNSPECIFIED = 0; STATE_LAUNCH_INTENT = 1; STATE_EXITED = 2; STATE_TIMED_OUT = 3; STATE_CANCELLED = 4; STATE_UNKNOWN = 5; }
@@ -54,7 +54,7 @@ message Response {
   uint32 version = 1; string request_id = 2; Context context = 3;
   oneof result { Hello hello = 4; Receipt receipt = 5; OutputChunk output = 6; Error error = 7;
     FileReceipt file_receipt = 8; FileProgress file_progress = 9; FileCapture file_capture = 10;
-    FileChunk file_chunk = 11; FileHandle file_released = 12;
+    FileChunk file_chunk = 11; FileHandle file_released = 12; HistoryBarrier history_retired = 13;
   }
 }
 
@@ -83,3 +83,7 @@ message FileChunk {
   FileHandle handle = 1; uint64 offset = 2; bytes data = 3; uint64 next_offset = 4;
   uint64 size = 5; bool at_end = 6;
 }
+
+// Successful reply acknowledges synced deletion, not merely installation of a floor.
+enum HistoryDomain { HISTORY_DOMAIN_UNSPECIFIED = 0; HISTORY_DOMAIN_COMMANDS = 1; HISTORY_DOMAIN_FILES = 2; }
+message HistoryBarrier { uint32 version = 1; Context context = 2; HistoryDomain domain = 3; string through = 4; }

@@ -87,6 +87,13 @@ impl FileService {
     pub async fn call(&self, action: w::request::Action) -> Result<w::response::Result> {
         self.run(move |state| state.dispatch(action)).await
     }
+    pub async fn retire_history(
+        &self,
+        barrier: sandbox_protocol::history::Barrier,
+    ) -> Result<sandbox_protocol::history::Barrier> {
+        self.run(move |state| state.transfers.retire_history(barrier))
+            .await
+    }
     async fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut State) -> Result<T> + Send + 'static,

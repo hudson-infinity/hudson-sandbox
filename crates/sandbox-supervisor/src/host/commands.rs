@@ -43,6 +43,11 @@ impl Host {
                 .records
                 .get(&owner.allocation_id)
                 .ok_or_else(|| uncertain("missing allocation"))?;
+            history::check(
+                r,
+                sandbox_protocol::history::Domain::Commands,
+                owner.operation_id.parse().map_err(uncertain)?,
+            )?;
             if r.files.contains_key(&owner.operation_id) {
                 return Err(Status::already_exists(
                     "operation belongs to a file transfer",

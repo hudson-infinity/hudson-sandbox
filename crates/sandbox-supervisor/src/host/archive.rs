@@ -56,6 +56,11 @@ impl Host {
                 .get_mut(&id)
                 .ok_or_else(|| uncertain("allocation missing"))?;
             validate_owner(&r.owner, &ticket)?;
+            history::check(
+                r,
+                sandbox_protocol::history::Domain::Commands,
+                ticket.owner.operation_id,
+            )?;
             let command = r
                 .commands
                 .get(&op)
@@ -135,6 +140,11 @@ impl Host {
             .get_mut(&id)
             .ok_or_else(|| uncertain("allocation missing"))?;
         validate_owner(&r.owner, &ticket)?;
+        history::check(
+            r,
+            sandbox_protocol::history::Domain::Commands,
+            ticket.owner.operation_id,
+        )?;
         let receipt = r
             .commands
             .get(&op)
