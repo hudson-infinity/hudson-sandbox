@@ -1,6 +1,6 @@
 # Threat model
 
-Status: proposed. No implementation exists, so nothing here is validated. This document owns the adversary model, the trust boundaries, and the explicit list of what the service does and does not promise. [Architecture](architecture.md#isolation-and-data-protection) owns the isolation mechanisms, [auth design](auth-design.md) owns access control, and [roadmap](roadmap.md#required-evidence-by-delivery-gate) owns the evidence required before any promise here is claimed.
+Status: selected security contract, with partial mechanisms and development evidence. The complete adversarial validation set and supported-host release gates have not passed. Implemented controls and their limits are linked from the [roadmap](roadmap.md#required-evidence-by-delivery-gate). This document owns the adversary model, the trust boundaries, and the explicit list of what the service does and does not promise. [Architecture](architecture.md#isolation-and-data-protection) owns the isolation mechanisms, [auth design](auth-design.md) owns access control, and [roadmap](roadmap.md#required-evidence-by-delivery-gate) owns the evidence required before any promise here is claimed.
 
 The security requirements were previously spread across several documents. This one states what we are defending, against whom, and what we are deliberately not defending, so a reader can judge the mechanisms against a stated goal.
 

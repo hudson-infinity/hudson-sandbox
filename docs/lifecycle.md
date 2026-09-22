@@ -1,8 +1,8 @@
 # Sandbox lifecycle and recovery
 
-Status: partially implemented; the create control-plane path has tests, while VM execution and the remaining lifecycle still need implementation. This document owns state transitions, completion evidence, pause/resume, deadlines, cancellation, and recovery. [API contract](api-contract.md) owns client retries and HTTP behavior; [data models](data-models.md) owns persisted fields and constraints.
+Status: create, execute, cancellation, files, destroy and scoped recovery paths are implemented with controlled development evidence. Pause/resume and the complete supported-host failure matrix remain unfinished. This document owns state transitions, completion evidence, pause/resume, deadlines, cancellation, and recovery. [API contract](api-contract.md) owns client retries and HTTP behavior; [data models](data-models.md) owns persisted fields and constraints.
 
-Implemented so far: [controller claim storage](../crates/sandbox-store/src/claims.rs), its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs), and [single-host reservation storage](data-models.md#implemented-single-host-reservation). The [create/destroy controller](controller.md) persists dispatch and stop intent, communicates over mTLS, and reconciles fake-host observations. No VM execution or isolation has been verified.
+Implemented ownership includes [controller claim storage](../crates/sandbox-store/src/claims.rs), its [PostgreSQL concurrency/recovery tests](../crates/sandbox-store/tests/claims.rs), and [single-host reservation storage](data-models.md#implemented-single-host-reservation). The [controller](controller.md) persists dispatch and stop intent, communicates over mTLS, and reconciles simulated and real-host observations. The [real supervisor](real-supervisor.md) links controlled microVM execution and recovery evidence; complete supported-host isolation validation remains open.
 
 ## Identity through a sandbox session
 

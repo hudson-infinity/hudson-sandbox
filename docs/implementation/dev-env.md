@@ -36,11 +36,11 @@ The fake models bounded resource accounting, stale ownership, lease expiry, dupl
 
 A dedicated aarch64 Linux/KVM host and a real Firecracker/jailer boot have now been verified on an M4 Pro. The [Linux development guide](../linux-development.md) owns the pinned Lima configuration, setup commands, observed process/cgroup evidence, and the limits of that experiment.
 
-The guest runner and real supervisor integration remain unfinished. This local environment lets those components be developed and tested without mounting the Mac filesystem. It does not validate the supported x86_64 host, hostile workload isolation, or production performance. Keep those release gates separate from the aarch64 development evidence.
+The guest runner, real supervisor and API/controller paths now execute commands, transfer files, stream output and reconcile destruction in this environment. The linked component contracts and evidence describe the tested boundaries. This setup keeps the Mac filesystem unmounted. It does not validate the supported x86_64 host, hostile workload isolation, or production performance. Keep those release gates separate from the aarch64 development evidence.
 
 ## Stage 2 — rented x86_64 hardware
 
-Needed for three things and nothing else: trustworthy performance numbers, genuine cross-host restore, and a CI runner for VM tests. Bare metal by the hour is enough for the [spikes](phase-0-spikes.md); a monthly box makes sense once the supervisor is real.
+Needed for supported x86_64 compatibility and hostile-workload acceptance, trustworthy performance measurements, later cross-host restore and privileged VM CI. The [spike sheet](phase-0-spikes.md) records the remaining questions. Existing development evidence does not transfer automatically to this configuration.
 
 Not blocking stages 0 and 1. It is [still listed as blocking](../roadmap.md#still-blocking) because the phase gates cannot pass without it.
 

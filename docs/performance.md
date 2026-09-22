@@ -1,6 +1,6 @@
 # Performance and resource budgets
 
-Status: proposed targets. Nothing here is measured; no implementation exists to measure. This document owns latency and size budgets, the constraints those budgets place on designs we have already selected, and how results must be reported. [Product goal](goal.md) owns scope; [lifecycle](lifecycle.md) owns correctness of the same operations; [roadmap](roadmap.md) owns when each target must be demonstrated.
+Status: proposed targets without supported-host acceptance measurements. A development runtime exists, but test durations and nested-VM observations are not product latency or throughput benchmarks. This document owns latency and size budgets, the constraints those budgets place on designs we have already selected, and how results must be reported. [Product goal](goal.md) owns scope; [lifecycle](lifecycle.md) owns correctness of the same operations; [roadmap](roadmap.md) owns when each target must be demonstrated.
 
 ## Why targets exist before code
 

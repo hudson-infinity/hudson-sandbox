@@ -1,35 +1,35 @@
 # Roadmap and delivery gates
 
-Status: all milestones planned. The runtime is design only. Contribution tooling and documentation checks exist; there are no deployed services, working runtime setup commands, migrations, or runtime validation results.
+Status: partially implemented, with local control-plane checks and controlled nested-aarch64 runtime evidence. The authenticated API, clients, SQLx migrations, controller, real supervisor and guest execution/file paths exist. No complete supported-host release gate or reproducible production installation is established.
 
-The design documents are well ahead of the code, and their central assumptions have never been executed on real hardware. The phase order below starts by testing those assumptions rather than adding to the contracts that rest on them.
+Implemented components and evidence are listed below and in the [documentation guide](README.md). Development evidence does not establish the selected x86_64 compatibility envelope, the complete adversarial test set, production performance, or operational readiness. Phase status describes the whole exit gate, not merely whether its code exists.
 
 ## First usable milestone
 
 **Create → execute and transfer files → enforce isolation and limits → destroy**, on one compatible Linux/KVM host with PostgreSQL and object storage. Include failure recovery, confirmed cleanup, and a reproducible CLI installation. Run it without Hudson, Temporal, or Kubernetes. Authentication stays enabled. [Product goal](goal.md) owns the general-purpose scope and the two-sandbox acceptance scenario.
 
-The first milestone requires phases 1–3 below. Pause/resume follows as a separate capability: create → run a script → pause → release resources → resume the same script → destroy. Its existing memory/disk, controlled-resume, and recovery guarantees remain required before it ships.
+The first usable milestone requires phases 1 and 2 below, consistent with the [product scope](goal.md#scope-after-the-foundation). Pause/resume follows as a separate capability: create → run a script → pause → release resources → resume the same script → destroy. Its existing memory/disk, controlled-resume, and recovery guarantees remain required before it ships.
 
 ## Implementation phases
 
 | Phase | Deliverable and exit gate | Status |
 | --- | --- | --- |
-| 0. Feasibility spikes | Throwaway code on a real Linux/KVM host answering the questions in [feasibility spikes](#feasibility-spikes-phase-0); written findings, kept or discarded design assumptions, and first [performance](performance.md) measurements | Planned |
-| 1. Foundation, execution, recovery and isolation | Two gates, built together and passed in order. **Gate 1a — it works:** the [threat model](threat-model.md) turned into enforced behavior, plus the compatibility and privilege contract; Rust protocol/API/controller/supervisor/guest, SQLx storage with versioned migrations for the records shipped operations touch, authenticated setup and project requests; one jailed VM runs commands and long-running processes, transfers files, streams output, enforces resource and network limits, and tears down. **Gate 1b — it does not lie:** failure-injection at create/execute/cancel/destroy boundaries; fenced ownership, honest unknown outcomes, retry deduplication, egress and tenant isolation, cleanup convergence, and the applicable [threat model](threat-model.md#required-validation) test set | Planned |
-| 2. Usable distribution | Supported single-host installation, CLI, working workload example, diagnostics, monitoring, client conformance checks, and verified teardown exercised by another developer; basic backup/restore and upgrade procedures for the shipped components | Planned |
+| 0. Feasibility spikes | Throwaway code on a real Linux/KVM host answering the questions in [feasibility spikes](#feasibility-spikes-phase-0); written findings, kept or discarded design assumptions, and first [performance](performance.md) measurements | Development feasibility evidence; supported-host findings incomplete |
+| 1. Foundation, execution, recovery and isolation | Two gates, built together and passed in order. **Gate 1a — it works:** the [threat model](threat-model.md) turned into enforced behavior, plus the compatibility and privilege contract; Rust protocol/API/controller/supervisor/guest, SQLx storage with versioned migrations for the records shipped operations touch, authenticated setup and project requests; one jailed VM runs commands and long-running processes, transfers files, streams output, enforces resource and network limits, and tears down. **Gate 1b — it does not lie:** failure-injection at create/execute/cancel/destroy boundaries; fenced ownership, honest unknown outcomes, retry deduplication, egress and tenant isolation, cleanup convergence, and the applicable [threat model](threat-model.md#required-validation) test set | Substantial implementation and development evidence; gates 1a/1b incomplete |
+| 2. Usable distribution | Supported single-host installation, CLI, working workload example, diagnostics, monitoring, client conformance checks, and verified teardown exercised by another developer; basic backup/restore and upgrade procedures for the shipped components | CLI/SDKs and conformance implemented; installation and operator acceptance incomplete |
 | 3. Pause/resume | Snapshot persistence and verified complete memory/disk publication, compute release, compatible restore, guest handshake, original deadlines, and failure-injection at every snapshot/restore boundary; the published format satisfies the [page-addressable constraints](performance.md#constraints-on-designs-we-are-choosing-now) | Planned |
 | 4. Management UI and platform packaging | Session migrations, shared Project/Admin policy, UI flows and acceptance checks, and Hudson using ordinary APIs; Kubernetes packaging follows the standalone proof | Planned |
 | 5. Multiple hosts and optimization | Compatible cross-host restore, placement, draining, provider autoscaling, and measured cache/snapshot optimizations including differential and lazily loaded snapshots | Planned |
 
-API contracts come first; implement the CLI against working endpoints and add SDKs against the same versioned schemas. A minimal CLI supports the single-host milestone; client packaging and conformance checks belong to the distribution phase, and cover all three SDKs. Existing UI designs remain available for later implementation, which shares the same admission and lifecycle services instead of creating a second control path. Define generic authenticated service connectivity before exposing guest services. Exact work breakdown can be split into issues once each phase has concrete interfaces.
+The [OpenAPI contract](openapi.md), [Rust client/CLI](client-cli.md), and [Python/TypeScript clients](language-clients.md) now cover implemented Project endpoints with conformance and package smoke checks. Package publication, an installer and independent operator acceptance remain distribution work. Existing UI designs remain available for later implementation, which shares the same admission and lifecycle services instead of creating a second control path. Define generic authenticated service connectivity before exposing guest services. Exact work breakdown can be split into issues once each phase has concrete interfaces.
 
 ## Feasibility spikes (Phase 0)
 
-Two assumptions carry most of this design's risk, and neither has been executed. The first is that a jailed Firecracker VM on our supported host enforces the resource and connectivity limits the contracts assume. The second is that a guest agent can survive a snapshot outside the frozen customer process groups, reconnect afterwards, and gate the release of those processes; everything in [lifecycle](lifecycle.md#resume) depends on it.
+Two assumptions still require supported-host findings. The [Linux development experiment](linux-development.md#verified-boot-and-its-limits) and component tests provide partial evidence, not completion of these questions. The first is that a jailed Firecracker VM on our supported host enforces the resource and connectivity limits the contracts assume. The second is that a guest agent can survive a snapshot outside the frozen customer process groups, reconnect afterwards, and gate the release of those processes; everything in [lifecycle](lifecycle.md#resume) depends on it.
 
 The second group gates Phase 3, not Phase 1, but it belongs here anyway: a negative answer changes what pause/resume can promise, and it is cheaper to learn that before two phases of contracts are built on top of it.
 
-Spike on a real Linux/KVM host, with throwaway code that is not intended to merge, and write the findings down.
+Complete the remaining experiments on the selected supported Linux/KVM configuration and record commands, artifacts, host configuration and findings. Retain useful regression tests; do not replace missing hostile-workload or performance measurements with a successful boot.
 
 | Question | Gates | Why it decides the design |
 | --- | --- | --- |
@@ -60,16 +60,16 @@ Scope discipline still applies to both. Migrations cover the records those opera
 
 | Area | Required evidence | Current evidence |
 | --- | --- | --- |
-| Feasibility | Written [Phase 0 spike findings](#feasibility-spikes-phase-0) on a real KVM host, before the phase each question gates | Not run |
-| Recovery under failure | Every applicable row of the [lifecycle recovery table](lifecycle.md#destroy-and-recovery) reconciled under injected failure, at gate 1b | Not implemented/tested |
-| Lifecycle correctness | [Lifecycle acceptance cases](lifecycle.md#acceptance-checks) applicable to shipped operations, including controller/host failure and cleanup; snapshot/restore cases are mandatory at the pause/resume gate | Not implemented/tested |
-| API behavior | [Admission, retries, errors, and streaming checks](api-contract.md#acceptance-checks-and-open-decisions) for each shipped endpoint | Not implemented/tested |
-| Ownership/storage | SQLx query/schema checks, fresh and supported-upgrade migration tests, and [model constraints and ID/storage checks](data-models.md#acceptance-checks-and-open-decisions) for shipped resources; snapshot checks before pause/resume | Not implemented/tested |
-| Authentication | [Auth acceptance](auth-design.md#acceptance-checks) for shipped surfaces, mandatory locally and in deployment; browser/session checks before shipping the UI | Not implemented/tested |
-| Host isolation | The adversarial test set in [threat model](threat-model.md#required-validation): guest privilege, filesystem traversal, metadata/control-plane egress, cross-tenant access, and credential/session attacks | Not implemented/tested |
-| Distribution and usability | Fresh-host installation, workload/file example, diagnostics, failure recovery, and verified resource reclamation by another developer | Not implemented/tested |
-| Performance | [Budget table](performance.md#proposed-budgets) measured on a supported host, with configuration recorded; resume budgets at the pause/resume gate | Not measured |
-| Management UI | [UI acceptance](ui-design.md#acceptance-checks) before shipping the dashboard | Not implemented/tested |
+| Feasibility | Written [Phase 0 spike findings](#feasibility-spikes-phase-0) on a real KVM host, before the phase each question gates | [Nested aarch64 boot](linux-development.md#verified-boot-and-its-limits) and [guardian](allocation-guardian.md) component evidence; supported-host spike findings incomplete |
+| Recovery under failure | Every applicable row of the [lifecycle recovery table](lifecycle.md#destroy-and-recovery) reconciled under injected failure, at gate 1b | [Controller recovery](controller.md), [host retirement tests](evidence/2026-09-22-released-host-history.json) and [destruction accounting](evidence/2026-09-22-released-history-accounting.json); complete supported-host failure matrix remains open |
+| Lifecycle correctness | [Lifecycle acceptance cases](lifecycle.md#acceptance-checks) applicable to shipped operations, including controller/host failure and cleanup; snapshot/restore cases are mandatory at the pause/resume gate | [Real lifecycle adapter](real-supervisor.md), [guest execution](guest-runner.md), [files](file-transfer.md) and [cancellation](command-cancellation.md) have development evidence; full release gate and snapshot/restore remain open |
+| API behavior | [Admission, retries, errors, and streaming checks](api-contract.md#acceptance-checks-and-open-decisions) for each shipped endpoint | [Implemented OpenAPI routes](openapi.md) and [API tests](../crates/sandbox-api/tests), including streams and file routes; planned Admin/snapshot surfaces remain unimplemented |
+| Ownership/storage | SQLx query/schema checks, fresh and supported-upgrade migration tests, and [model constraints and ID/storage checks](data-models.md#acceptance-checks-and-open-decisions) for shipped resources; snapshot checks before pause/resume | [Versioned migrations](../migrations), [store tests](../crates/sandbox-store/tests) and [history reclamation](history-reclamation.md); operational backup/upgrade and snapshot gates remain open |
+| Authentication | [Auth acceptance](auth-design.md#acceptance-checks) for shipped surfaces, mandatory locally and in deployment; browser/session checks before shipping the UI | [HTTPS and offline provisioning](api-server.md), bearer authorization and pinned internal mTLS have tests; Admin/session/UI and production credential operations remain open |
+| Host isolation | The adversarial test set in [threat model](threat-model.md#required-validation): guest privilege, filesystem traversal, metadata/control-plane egress, cross-tenant access, and credential/session attacks | [Guardian controls](allocation-guardian.md) and guest/host transport tests exist; the full adversarial set is not validated. Development VMs have no NIC, which does not implement the planned network-policy engine |
+| Distribution and usability | Fresh-host installation, workload/file example, diagnostics, failure recovery, and verified resource reclamation by another developer | [CLI](client-cli.md), [SDKs](language-clients.md) and runnable development setup exist; fresh supported-host installation and independent operator acceptance are not established |
+| Performance | [Budget table](performance.md#proposed-budgets) measured on a supported host, with configuration recorded; resume budgets at the pause/resume gate | Supported-host latency/size budgets have no acceptance measurements; development test durations are not product benchmarks |
+| Management UI | [UI acceptance](ui-design.md#acceptance-checks) before shipping the dashboard | Not implemented; remains a later phase |
 
 Add links to actual test files, CI runs, supported-host evidence, and releases as each gate is demonstrated. A document, successful process start, or passing unit test alone does not establish snapshot or isolation correctness.
 
@@ -96,16 +96,16 @@ The pre-implementation decisions were worked through on 2026-09-21 and now live 
 
 ## Still blocking
 
-Two decisions remain, and both are procurement rather than design. Phase 0 cannot start without the first.
+Supported-host evidence and delivery infrastructure remain external prerequisites. They do not block native control-plane development or the existing nested-aarch64 tests. Implementation gaps in networking, production images, operational packaging and full lifecycle reclamation also remain; hardware alone will not complete those gates.
 
 | Decision | What it blocks | Owner action |
 | --- | --- | --- |
-| Hardware for the spikes | Every Phase 0 question, and therefore Phase 1. None of this work runs on macOS | Rent a bare-metal x86_64 host with KVM |
-| CI for tests that need a real VM | Whether snapshot and isolation tests run on every pull request or only when someone remembers | Decide once the host exists; a self-hosted runner on it is the obvious answer, with fork pull requests excluded |
+| Supported x86_64 KVM capacity | Supported-envelope isolation/compatibility acceptance, trustworthy performance and cross-host restore measurements | Provide a host matching [compatibility](compatibility.md#host) and record its configuration |
+| Trusted privileged CI capacity | Repeatable supported-host VM, isolation and later snapshot gates | Configure a reviewed runner/workflow that never runs untrusted fork code; ordinary PR checks remain on hosted runners |
 
 ## Work breakdown
 
-Phase 0 and Phase 1 are concrete enough to become issues now, and the decisions above remove the remaining excuse for not writing them. Both are broken down in [implementation notes](implementation/README.md): a [spike sheet](implementation/phase-0-spikes.md) and a [task list](implementation/phase-1-tasks.md) covering both gates.
+The [implementation notes](implementation/README.md) retain the unanswered [spike questions](implementation/phase-0-spikes.md) and remaining [Phase 1 acceptance work](implementation/phase-1-tasks.md). Completed implementation belongs in the owning contract and its evidence, not in an accumulating checklist.
 
 Those notes are deliberately temporary and are deleted as the work lands. This document, the contracts, and the decision records are not — the reasoning outlives the build order.
 
@@ -113,7 +113,7 @@ Those notes are deliberately temporary and are deleted as the work lands. This d
 
 Begin with one Linux compute host matching [supported configuration](compatibility.md#host): x86_64, Ubuntu 24.04, KVM available. A standalone development setup needs the API/controller, PostgreSQL, object storage, and that host. It must run without the Hudson harness or a Temporal service. Kubernetes is the intended platform deployment, not a requirement for every developer unit test.
 
-Local admin setup creates the installation's first admin credential. The Admin UI/API or authenticated tooling then creates projects and issues project tokens once; contributors and self-hosters use the same authenticated setup contract as Hudson deployments. Keep the raw token in the calling backend's secret configuration and only its hash in PostgreSQL. Setup requires installation-administrator authority; no unprotected public bootstrap endpoint is provided. Local development does not disable authentication. This tooling is planned, not implemented yet.
+The implemented [offline provisioning command](api-server.md#offline-project-provisioning) requires operator database access, writes a private credential file and stores only hashed project token metadata in PostgreSQL. Project API authentication remains mandatory. Admin credentials, the management API/UI and their broader setup workflow remain planned; offline provisioning does not claim to implement them. No unprotected public bootstrap endpoint exists.
 
 Use a remote Linux host for real VM tests from macOS. An unrestricted local process is not a substitute for the isolation boundary. Publish reproducible guest image builds with immutable digests and compatibility metadata.
 
@@ -135,4 +135,4 @@ Differential snapshots, lazy loading, and warm pools are deferred to Phase 5, bu
 - `self-hosting.md`: actual installation, first Admin credential, TLS, storage, upgrades, and rollback.
 - `operations.md`: backup recovery, monitoring, host drains, and incident procedures.
 
-These future guides are intentionally not empty placeholders today. [CONTRIBUTING.md](../CONTRIBUTING.md) defines the PR/release process and documentation checks; [SECURITY.md](../SECURITY.md) provides the private reporting channel; [decisions](decisions/README.md) records significant choices as they are made. The repository is released under Apache-2.0. Version pins, frontend framework, provider integration, and concrete test locations remain open.
+These future guides are intentionally not empty placeholders today. [CONTRIBUTING.md](../CONTRIBUTING.md) defines the PR/release process and documentation checks; [SECURITY.md](../SECURITY.md) provides the private reporting channel; [decisions](decisions/README.md) records significant choices as they are made. The repository is released under Apache-2.0. The Rust toolchain and development dependency/artifact versions are pinned or recorded, and executable tests are linked from the implemented contracts. Production guest image/release pins, frontend framework and provider integration remain open.
