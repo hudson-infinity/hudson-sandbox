@@ -40,6 +40,7 @@ fn fixture() -> (Record, Barrier) {
         lease_request: None,
         gate: Arc::new(Mutex::new(())),
         file_io: journal::file_io(),
+        readers: Arc::default(),
     };
     (
         record,

@@ -140,3 +140,7 @@ The controller persists an independent database checkpoint and supplies the regi
 ## Whole-allocation launch fencing
 
 `FenceAllocation` carries a strict bounded `allocation_retirement::Request` as JSON. The mTLS controller identity must already have frozen that exact intent in the database. The host independently binds it to its registered owner and completed command/file scope, persists it, and installs durable launch denial. Its acknowledgement echoes the exact request and observation time; it has no `Released`, `FencedAbsent`, cleanup or deletion flag. Consult the [retirement contract](allocation-retirement.md#host-fencing-component) for ordering and failure semantics. The fake host returns unimplemented, and no controller worker dispatches this RPC yet.
+
+### Host reader closure during allocation fencing
+
+Live-output and file-download calls pin the allocation while holding the journal lock that validates admission. File worker admission uses that same lock. Whole-allocation fencing persists its intent and installs launch denial before attempting exclusive reader access; it returns unavailable while a reader or pending/unreleased capture ticket remains. An identical retry can succeed after those consumers finish or expire. A failed capture retains its ticket until monotonic expiry, because a failed response cannot establish that capture did not happen. Host reader closure does not prove guest cleanup or authorize metadata deletion.

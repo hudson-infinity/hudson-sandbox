@@ -221,3 +221,34 @@ async fn detached_download_callers_keep_all_slots_until_worker_deadline() {
     }
     workers.run(async { Ok(()) }).await.unwrap();
 }
+
+#[test]
+fn retirement_waits_for_pending_capture_and_unreleased_handles_only_for_its_allocation() {
+    let (scope, context, capture) = fixture();
+    let now = Instant::now();
+    let mut registry = Registry::default();
+    let id = registry
+        .reserve(
+            scope.clone(),
+            context.clone(),
+            capture.path.clone(),
+            1000,
+            now,
+        )
+        .unwrap();
+    assert!(registry.pending_allocation(scope.allocation_id, now));
+    assert!(!registry.pending_allocation(AllocationId::generate(), now));
+    let handle = registry.finish(id, capture.clone(), now).unwrap();
+    assert!(registry.pending_allocation(scope.allocation_id, now));
+    registry.released(&scope, &handle, now).unwrap();
+    assert!(!registry.pending_allocation(scope.allocation_id, now));
+    // An uncertain capture has no handle to release and must retain its full TTL.
+    registry
+        .reserve(scope.clone(), context, capture.path, 1000, now)
+        .unwrap();
+    assert!(registry.pending_allocation(
+        scope.allocation_id,
+        now + TTL - std::time::Duration::from_nanos(1)
+    ));
+    assert!(!registry.pending_allocation(scope.allocation_id, now + TTL));
+}
