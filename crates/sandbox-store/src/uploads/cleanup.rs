@@ -226,3 +226,31 @@ impl Store {
         Ok(())
     }
 }
+
+/// Read-only verification for allocation history. The caller owns the allocation
+/// admission lock; do not acquire operation/file locks in the reverse order here.
+pub(crate) async fn validate_retired(
+    db: &mut PgConnection,
+    op: &PgRow,
+    file: &PgRow,
+) -> Result<SourcePlan, DispatchError> {
+    let saved = manifest(db, op, file).await?;
+    if file
+        .try_get::<Option<OffsetDateTime>, _>("source_retired_at")?
+        .is_none()
+        || file
+            .try_get::<Option<OffsetDateTime>, _>("source_cleanup_lease_until")?
+            .is_some()
+    {
+        return Err(DispatchError::InvalidData);
+    }
+    let receipt: SourceRetirement = serde_json::from_value(file.try_get("source_retirement")?)
+        .map_err(|_| DispatchError::InvalidData)?;
+    receipt
+        .validate(&saved.plan)
+        .map_err(|_| DispatchError::InvalidData)?;
+    if receipt.previous != saved.selected {
+        return Err(DispatchError::InvalidData);
+    }
+    Ok(saved.plan)
+}

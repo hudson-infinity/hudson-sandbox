@@ -93,7 +93,7 @@ impl Store {
         sqlx::query("SELECT pg_advisory_xact_lock(7213091301)")
             .execute(&mut *tx)
             .await?;
-        let counts=sqlx::query("SELECT count(*) AS total,COALESCE(sum(size) FILTER(WHERE source_retired_at IS NULL),0)::bigint AS bytes,count(*) FILTER(WHERE project_id=$1) AS project_count,COALESCE(sum(size) FILTER(WHERE project_id=$1 AND source_retired_at IS NULL),0)::bigint AS project_bytes,count(*) FILTER(WHERE allocation_id=$2) AS allocation_count,COALESCE(sum(size) FILTER(WHERE allocation_id=$2),0)::bigint AS allocation_bytes FROM file_uploads")
+        let counts=sqlx::query("SELECT count(*) FILTER(WHERE h.completed_through IS NULL OR f.operation_id>h.completed_through) AS total,COALESCE(sum(f.size) FILTER(WHERE f.source_retired_at IS NULL),0)::bigint AS bytes,count(*) FILTER(WHERE f.project_id=$1 AND (h.completed_through IS NULL OR f.operation_id>h.completed_through)) AS project_count,COALESCE(sum(f.size) FILTER(WHERE f.project_id=$1 AND f.source_retired_at IS NULL),0)::bigint AS project_bytes,count(*) FILTER(WHERE f.allocation_id=$2 AND (h.completed_through IS NULL OR f.operation_id>h.completed_through)) AS allocation_count,COALESCE(sum(f.size) FILTER(WHERE f.allocation_id=$2 AND (h.completed_through IS NULL OR f.operation_id>h.completed_through)),0)::bigint AS allocation_bytes FROM file_uploads f LEFT JOIN completed_allocation_history h ON h.allocation_id=f.allocation_id AND h.domain='files'")
  .bind(r.project_id.uuid()).bind(allocation).fetch_one(&mut *tx).await?;
         if counts.try_get::<i64, _>("total")? >= 1024
             || counts.try_get::<i64, _>("bytes")? + r.input.size as i64 > 1024 * 1024 * 1024
@@ -117,7 +117,7 @@ impl Store {
         if deadline <= now {
             return Ok(UploadAdmission::NotRunning);
         }
-        let id = OperationId::generate();
+        let id = crate::history::next_operation(&mut tx, allocation).await?;
         let plan = SourcePlan {
             version: 1,
             owner: SourceOwner {

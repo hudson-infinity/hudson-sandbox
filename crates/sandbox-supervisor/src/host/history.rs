@@ -196,16 +196,8 @@ pub(super) fn validate_retained(record: &Record) -> anyhow::Result<()> {
     Ok(())
 }
 impl Host {
-    pub(super) fn retire_history_sync(
-        &self,
-        request: HistoryRequest,
-    ) -> Result<HistoryObservation, Status> {
-        let owner = request
-            .ownership
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("retirement ownership required"))?;
-        // Reuse strict allocation identity validation, without consuming a customer operation slot.
-        let validated = self.owner(Some(Ownership {
+    fn history_owner(&self, owner: &LeaseOwnership) -> Result<Ownership, Status> {
+        self.owner(Some(Ownership {
             host_id: owner.host_id.clone(),
             project_id: owner.project_id.clone(),
             sandbox_id: owner.sandbox_id.clone(),
@@ -215,7 +207,62 @@ impl Host {
             supervisor_epoch: owner.supervisor_epoch,
             claim_revision: owner.revision,
             claim_expires_unix_ms: owner.claim_expires_unix_ms,
-        }))?;
+        }))
+    }
+    pub(super) fn history_binding_sync(
+        &self,
+        request: LeaseInspection,
+    ) -> Result<sandbox_protocol::supervisor::HistoryBindingObservation, Status> {
+        let owner = request
+            .ownership
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("history ownership required"))?;
+        let validated = self.history_owner(owner)?;
+        let gate = self
+            .journal()?
+            .records
+            .get(&owner.allocation_id)
+            .ok_or_else(|| Status::not_found("allocation history missing"))?
+            .gate
+            .clone();
+        let _gate = lock(&gate)?;
+        deadline(owner.claim_expires_unix_ms)?;
+        let record = self
+            .journal()?
+            .records
+            .get(&owner.allocation_id)
+            .ok_or_else(|| uncertain("allocation missing"))?
+            .clone();
+        if !same_allocation(&record.owner, &validated) || record.stopped || record.released {
+            return Err(Status::failed_precondition(
+                "original live allocation required",
+            ));
+        }
+        let client = record
+            .manifest
+            .as_ref()
+            .ok_or_else(|| uncertain("guest manifest missing"))?
+            .guest_client()
+            .map_err(uncertain)?;
+        deadline(owner.claim_expires_unix_ms)?;
+        Ok(sandbox_protocol::supervisor::HistoryBindingObservation {
+            request: Some(request),
+            context: Some(client.context().into()),
+            simulated: false,
+            observed_unix_ms: guardian::wall_ms(),
+        })
+    }
+
+    pub(super) fn retire_history_sync(
+        &self,
+        request: HistoryRequest,
+    ) -> Result<HistoryObservation, Status> {
+        let owner = request
+            .ownership
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("retirement ownership required"))?;
+        // Reuse strict allocation identity validation, without consuming a customer operation slot.
+        let validated = self.history_owner(owner)?;
         let barrier: Barrier = request
             .barrier
             .clone()

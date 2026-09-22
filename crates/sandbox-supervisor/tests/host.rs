@@ -1028,6 +1028,10 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     public_cancel_case(&pool, &app, &token, &mut controller, sandbox, &m).await;
     let file_capture =
         public_files::round_trip(&app, &token, &mut controller, sandbox, output).await;
+    if !output {
+        history::public_capacity_retirement(&pool, &store, &app, &token, &mut controller, sandbox)
+            .await;
+    }
     if output {
         // Archive retries may not replay a command with side effects.
         let guest = m.guest_client().unwrap();

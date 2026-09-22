@@ -1,6 +1,6 @@
 # Acknowledged history reclamation
 
-Status: guest and host command/file retirement are implemented with authenticated internal RPCs. No controller or cleanup worker invokes them automatically. Database coordination, public reservation refunds, retirement after allocation destruction, and storage-marker lifecycle remain unfinished under [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Public runtime capacity limits are unchanged. This document owns the retirement barrier and the prerequisites for enabling it across the platform.
+Status: live-allocation database coordination, authenticated host/guest retirement and public capacity refunds are implemented behind the controller's `--retire-history` opt-in. Retirement after allocation destruction or host epoch change, whole-allocation journal retirement, and storage-marker lifecycle remain unfinished under [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). This document owns the retirement barrier and its platform prerequisites.
 
 ## Why deletion needs an admission barrier
 
@@ -8,7 +8,7 @@ A retained receipt prevents a delayed request from looking like a new operation.
 
 The [barrier type](../crates/sandbox-protocol/src/history.rs) closes an inclusive prefix of operation IDs for one allocation, generation, guest boot and domain (`commands` or `files`). IDs are compared as opaque ordered values. Their UUID timestamps are not an expiry clock and are not assumed to match admission order. A retained barrier rejects every later admission at or below `through`, including IDs for which no receipt remains. One monotonic value replaces the discarded per-operation admission records.
 
-A caller must have durably retained the original outcomes and retired all consumers that still need guest bytes **before** asking the guest to remove history. The controller-only `RetireHistory` RPC asserts that these prerequisites have been durably satisfied. The host independently verifies allocation ownership, the original guest boot, and known terminal outcomes; it does not query the database or prove output/source retirement. No automatic caller or customer endpoint is enabled before the database coordination below is implemented.
+A caller must have durably retained the original outcomes and retired all consumers that still need guest bytes **before** asking the guest to remove history. The controller-only `RetireHistory` RPC asserts that these prerequisites have been durably satisfied. The host independently verifies allocation ownership, the original guest boot, and known terminal outcomes; it does not query the database or prove output/source retirement. The independent controller worker below is the automatic caller; there is no customer retirement endpoint.
 
 ## Guest implementation
 
@@ -38,11 +38,11 @@ The guest returns a synced-deletion acknowledgement. The client validates respon
 
 Only after a valid acknowledgement does one durable host journal replacement remove the covered domain's records, associated command archives, and those operations' revision entries. The barrier remains. A failed journal write poisons the host until restart. Completed barriers survive journal reload; older binaries reject the added fields. The host checks journal byte headroom before installing a new barrier and rejects exhaustion before contacting the guest. This recovers operation slots and their declared budgets, but does not guarantee recovery from an already byte-full legacy journal.
 
-New or unfinished retirement currently requires the original live guest in the current host epoch. A completed retry returns retained proof without requiring a live guest, including after same-epoch destruction. Restart advances the epoch and stops old ownership; pending retirement remains fenced and charged. A verified-destruction path is still required to reclaim that history without the original live guest. Database/public accounting is unchanged even when an internal retirement succeeds. Do not delete host journals, restore older snapshots, or discard storage markers as a substitute for that protocol.
+New or unfinished retirement currently requires the original live guest in the current host epoch. A completed retry returns retained proof without requiring a live guest, including after same-epoch destruction. Restart advances the epoch and stops old ownership; pending retirement remains fenced and charged. A verified-destruction path is still required to reclaim that history without the original live guest. A direct internal RPC does not refund database reservations: the database worker must verify and persist its own exact completion. Do not delete host journals, restore older snapshots, or discard storage markers as a substitute for that protocol.
 
-## Required platform coordination
+## Platform coordination
 
-The table records the complete coordination contract. Host intent, guest acknowledgement and live-guest host completion are implemented above; database and later-lifecycle integration remain required:
+The table records the coordination contract. The live original-epoch path is implemented; the later-lifecycle row remains future work:
 
 | Layer | Required behavior before automatic retirement |
 | --- | --- |
@@ -56,7 +56,29 @@ The table records the complete coordination contract. Host intent, guest acknowl
 
 Object-store markers have a different problem: an already issued conditional PUT may complete after a local timeout. Guest barriers do not fence that storage request. The [output](output-storage.md#storage-retirement) and [file-source](file-transfer.md#source-cleanup-worker) markers remain retained until a separate namespace/authority protocol proves old writers cannot recreate payloads. No marker deletion is added here.
 
+## Database claims, accounting and operation ordering
+
+[Migration 0015](../migrations/0015_history_retirement.sql) records independent command/file history claims, reserved and completed prefixes, frozen guest context, request and completion proof. A new prefix is reserved under the allocation row lock before any host request. The same lock protects command and upload ID allocation: each ID exceeds both reserved domain floors and the last admitted ID. The UUIDv7 version/variant bits survive counter carries and clock rollback. The migration backfills the last admitted ID from existing pinned operations; it neither retires history nor changes original operation rows.
+
+The [coordinator](../crates/sandbox-store/src/history/coordinator.rs) scans up to 32 allocations per tick, rotating by per-domain scan time and skipping locked allocations. It selects a contiguous prefix of at most 33 commands or 17 uploads, stopping at the first ineligible operation. Corrupt candidates retain their data and are deferred without preventing other allocations from progressing. Retirement never takes operation/project/sandbox/host row locks after its allocation lock. Completed output-cleanup evidence is revalidated under its cleanup-row lock; source validation shares the already-owned allocation lock.
+
+Commands require durable not-started evidence or a known terminal receipt with confirmed process cleanup. Executed commands require expired output and verified cleanup of every issued ticket, or completed payload compaction that fenced an unissued ticket. Uploads require known not-started/committed/aborted state and completed source retirement, including the frozen original plan/reference. Unknown outcomes, expiry alone and cleanup intent are insufficient. Original operation IDs, keys, digests, outcomes and database receipts remain retained.
+
+When terminal evidence supplies a guest context, the coordinator freezes it. Otherwise controller-only `HistoryBinding(LeaseInspection)` reads the original manifest's bound boot under the host allocation gate. It never boots or rebinds a guest. The database validates the exact request echo, owner, boot, provenance and observation time before persisting a retirement request. A later response cannot replace that boot. The simulator refuses both binding and durable retirement.
+
+Claims last at most 300 seconds; the worker uses 120 seconds and a 30-second bound per RPC. Retries retain the reserved prefix and obtain a newer independent claim revision. The prefix and its consumers are revalidated before sending a prepared request and again before completion. Final writes recheck claim expiry and current live ownership after lock waits. Only an exact authenticated acknowledgement promotes `reserved_through` to `completed_through`. Lost replies or cancelled tasks retain the floor and charges until reconciliation.
+
+Both command and upload admission use `completed_allocation_history`, a shared view that checks the retained acknowledgement against its prefix, domain, boot and allocation ownership. Mismatched metadata remains charged or fails closed. Command accounting excludes only verified completed IDs. Upload accounting excludes those IDs from global/project/allocation operation slots and allocation declared-byte budgets; source bytes still require independent `source_retired_at` evidence. No subtractive counter is decremented, so retries cannot double-refund. Larger pending prefixes remain charged while earlier completed prefixes remain usable.
+
+## Operator activation
+
+Add `--retire-history` to an already configured `sandbox-controller`. The worker has its own task and alternates command/file domains, independently of lifecycle maintenance and output archival. With `--once`, it runs one tick for each domain. Database, API, controller and host versions must support migration 0015 and the retirement RPCs; mixed old admission writers are unsupported because they do not obey reserved ID floors.
+
+Configure the separate [response retention and payload compaction](operation-retention.md) and [output retirement](output-storage.md#storage-retirement) policies for commands, and [source cleanup](file-transfer.md#source-cleanup-worker) for uploads. The history worker does not shorten those policies or delete storage objects. Without consumer-retirement evidence, capacity remains reserved. Global upload accounting still scans retained metadata; no large-fleet throughput claim is made.
+
 ## Evidence
+
+The [database retirement evidence record](evidence/2026-09-22-database-history-retirement.json) includes matching source and Linux binary hashes, final validation scope and limitations.
 
 The [host retirement evidence](evidence/2026-09-22-host-history-retirement.json) records source/binary hashes, authenticated microVM tests, failure corrections, excluded cases and the limits of these claims.
 
@@ -75,4 +97,4 @@ sudo env HUDSON_GUEST_TEST_VM=1 cargo test -p sandbox-guest --test linux_runner 
 
 The supervisor client tests reject altered acknowledgement scope/prefix and lost responses. Host state tests cover durable intent, stale claims, unknown outcomes, domain separation, retained capacity, failed journal writes and completion. Opt-in supervisor microVM tests exercise the authenticated RPC, full command/file slot recovery, delayed requests, same-epoch retries after destruction, host restart, malformed retained completion, staging refusal, failed host persistence, and an enlarged guest barrier. Direct guest calls model an acknowledgement lost before host completion; this is not packet-loss injection at every network boundary.
 
-Hosted PR runners compile but do not execute the privileged suite. These checks establish guest and host behavior in the tested development configuration. They do not establish database reclamation, automatic public reservation refunds, supported x86_64 release readiness or hostile-workload isolation.
+Hosted PR runners compile but do not execute the privileged suite. These checks establish guest and host behavior in the tested development configuration. The database and controller tests additionally cover admission ordering, exhausted slot/byte refunds, boot binding, stale claims, corrupt evidence, consumer retirement and unchanged retries. A controlled real API/controller/Firecracker case fills 32 command slots, blocks while output is unexpired, retires through the automatic worker, executes another command and confirms teardown. File database tests use explicitly simulated observations; the separate real host/guest RPC case exercises file pruning. These checks do not establish supported x86_64 release readiness or hostile-workload isolation.

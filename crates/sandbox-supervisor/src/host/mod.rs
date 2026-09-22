@@ -709,6 +709,15 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn history_binding(
+        &self,
+        r: Request<LeaseInspection>,
+    ) -> Result<Response<sandbox_protocol::supervisor::HistoryBindingObservation>, Status> {
+        self.work(move |h| h.history_binding_sync(r.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn retire_history(
         &self,
         r: Request<sandbox_protocol::supervisor::HistoryRequest>,

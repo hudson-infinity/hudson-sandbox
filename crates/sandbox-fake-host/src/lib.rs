@@ -456,6 +456,15 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn history_binding(
+        &self,
+        _r: Request<LeaseInspection>,
+    ) -> Result<Response<sandbox_protocol::supervisor::HistoryBindingObservation>, Status> {
+        Err(Status::unimplemented(
+            "simulator does not provide durable history binding",
+        ))
+    }
+
     async fn retire_history(
         &self,
         _r: Request<sandbox_protocol::supervisor::HistoryRequest>,

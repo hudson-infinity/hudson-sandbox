@@ -4,6 +4,7 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc HistoryBinding(LeaseInspection) returns (HistoryBindingObservation);
   rpc RetireHistory(HistoryRequest) returns (HistoryObservation);
   rpc BeginFile(FileRequest) returns (FileObservation);
   rpc WriteFile(FileWriteRequest) returns (FileObservation);
@@ -209,6 +210,14 @@ message HistoryRequest {
 message HistoryObservation {
   HistoryRequest request = 1;
   hudson.guest.v1.HistoryBarrier completed = 2;
+  bool simulated = 3;
+  int64 observed_unix_ms = 4;
+}
+
+// Authenticated read of the original bound boot; does not install a retirement floor.
+message HistoryBindingObservation {
+  LeaseInspection request = 1;
+  hudson.guest.v1.Context context = 2;
   bool simulated = 3;
   int64 observed_unix_ms = 4;
 }

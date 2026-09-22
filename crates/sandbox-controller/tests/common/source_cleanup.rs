@@ -733,3 +733,253 @@ async fn cleanup_rechecks_claim_after_file_and_allocation_lock_waits(pool: PgPoo
         );
     }
 }
+
+async fn retired_unstarted(f: &Fixture, s: SandboxId, bytes: Vec<u8>) -> (OperationId, SourcePlan) {
+    let (id, p) = aged(f, s, bytes).await;
+    let op = f
+        .store
+        .claim_next(OperationKind::FileWrite, 30)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.operation_id, id);
+    assert!(matches!(
+        f.store.prepare_upload(&op, f.config.host, 1).await.unwrap(),
+        UploadAction::Rejected
+    ));
+    let cleanup = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    let work = f.store.prepare_file_source_cleanup(&cleanup).await.unwrap();
+    f.store
+        .complete_file_source_cleanup(&cleanup, &receipt(&p, work.manifest.selected.as_ref()))
+        .await
+        .unwrap();
+    (id, p)
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn history_file_slots_and_bytes_require_both_source_retirement_and_guest_ack(pool: PgPool) {
+    use sandbox_protocol::{
+        guest_model::Context,
+        history::Domain,
+        supervisor::{HistoryBindingObservation, HistoryObservation},
+    };
+    use sandbox_store::history::Preparation;
+    let _guard = TEST_LOCK.lock().await;
+    for (count, size) in [(16, 1), (8, 8 * 1024 * 1024)] {
+        let (f, _sources, mut c, s) = setup(&pool).await;
+        let mut last = None;
+        for _ in 0..count {
+            last = Some(retired_unstarted(&f, s, vec![7; size]).await);
+        }
+        let (id, p) = last.unwrap();
+        let bytes:i64=sqlx::query_scalar("SELECT COALESCE(sum(size) FILTER(WHERE source_retired_at IS NULL),0)::bigint FROM file_uploads WHERE allocation_id=$1").bind(p.owner.scope.allocation_id.uuid()).fetch_one(&pool).await.unwrap();
+        assert_eq!(bytes, 0);
+        let (status, _) = put(
+            f.app.clone(),
+            f.token.clone(),
+            s,
+            OperationId::generate().to_string(),
+            vec![7],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let Preparation::Binding { claim, request } = f
+            .store
+            .claim_history(f.config.host, 1, Domain::Files, 30, true)
+            .await
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("binding")
+        };
+        let context = Context {
+            allocation_id: p.owner.scope.allocation_id,
+            generation: 1,
+            boot_id: "synthetic-retirement".into(),
+        };
+        let request = f
+            .store
+            .bind_history(
+                &claim,
+                &HistoryBindingObservation {
+                    request: Some(request),
+                    context: Some((&context).into()),
+                    simulated: true,
+                    observed_unix_ms: time::OffsetDateTime::now_utc().unix_timestamp_nanos() as i64
+                        / 1_000_000,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        let (status, _) = put(
+            f.app.clone(),
+            f.token.clone(),
+            s,
+            OperationId::generate().to_string(),
+            vec![7],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        f.store
+            .complete_history(
+                &claim,
+                &HistoryObservation {
+                    completed: request.barrier.clone(),
+                    request: Some(request),
+                    simulated: true,
+                    observed_unix_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+                        / 1_000_000) as i64,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        let (_, body) = admit(&f, s, vec![7]).await;
+        assert_ne!(body["operation_id"], id.to_string());
+        assert_eq!(
+            settle(&f, &mut c, body["operation_id"].as_str().unwrap()).await["status"],
+            "succeeded"
+        );
+        assert_eq!(state(&f, &id.to_string()).await["status"], "failed");
+        let retained: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM file_uploads WHERE allocation_id=$1")
+                .bind(p.owner.scope.allocation_id.uuid())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(retained, count + 1);
+    }
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn history_worker_refuses_fake_durable_evidence_and_defers_reserved_prefix(pool: PgPool) {
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, c, s) = setup(&pool).await;
+    let (_, p) = retired_unstarted(&f, s, vec![1]).await;
+    let mut worker = c.history_retirer();
+    assert_eq!(
+        worker.tick().await.unwrap(),
+        sandbox_controller::history::HistoryTick::Idle
+    );
+    assert!(matches!(
+        worker.tick().await,
+        Err(sandbox_controller::history::HistoryError::Rpc)
+    ));
+    let (completed,leased,deferred):(bool,bool,bool)=sqlx::query_as("SELECT completed_through IS NOT NULL,lease_expires_at IS NOT NULL,next_retry_at>clock_timestamp() FROM allocation_history WHERE allocation_id=$1 AND domain='files'").bind(p.owner.scope.allocation_id.uuid()).fetch_one(&pool).await.unwrap();
+    assert_eq!((completed, leased, deferred), (false, false, true));
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn history_committed_file_requires_source_proof_and_original_boot(pool: PgPool) {
+    use sandbox_protocol::{history::Domain, supervisor::HistoryObservation};
+    use sandbox_store::history::{Error as HistoryError, Preparation};
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, mut c, s) = setup(&pool).await;
+    let bytes = b"committed".to_vec();
+    let (key, a) = admit(&f, s, bytes.clone()).await;
+    let id: OperationId = a["operation_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(
+        settle(&f, &mut c, &id.to_string()).await["status"],
+        "succeeded"
+    );
+    assert!(
+        f.store
+            .claim_history(f.config.host, 1, Domain::Files, 30, true)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // Synthetic clock advance: retain the exact plan/reference/intent binding.
+    let raw: Value =
+        sqlx::query_scalar("SELECT source_ref FROM file_uploads WHERE operation_id=$1")
+            .bind(id.uuid())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut reference: SourceRef = serde_json::from_value(raw).unwrap();
+    for t in [
+        &mut reference.plan.created_unix_ms,
+        &mut reference.plan.write_expires_unix_ms,
+        &mut reference.plan.expires_unix_ms,
+        &mut reference.plan.delete_after_unix_ms,
+    ] {
+        *t -= 7200000;
+    }
+    reference.validate().unwrap();
+    sqlx::query("UPDATE file_uploads SET plan=$2,source_ref=$3 WHERE operation_id=$1")
+        .bind(id.uuid())
+        .bind(serde_json::json!(reference.plan))
+        .bind(serde_json::json!(reference))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE operations SET deadline=clock_timestamp()-interval '2 hours',attempt_receipts=$2 WHERE id=$1").bind(id.uuid()).bind(serde_json::json!([{"phase":"file_begin_intent","plan_sha256":reference.plan.metadata_digest().unwrap()}])).execute(&pool).await.unwrap();
+    let cleanup = f
+        .store
+        .claim_file_source_cleanup(30)
+        .await
+        .unwrap()
+        .unwrap();
+    f.store.prepare_file_source_cleanup(&cleanup).await.unwrap();
+    assert!(
+        f.store
+            .claim_history(f.config.host, 1, Domain::Files, 30, true)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    f.store
+        .complete_file_source_cleanup(&cleanup, &receipt(&reference.plan, Some(&reference)))
+        .await
+        .unwrap();
+    let Preparation::Retire { claim, request } = f
+        .store
+        .claim_history(f.config.host, 1, Domain::Files, 30, true)
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("expected boot from committed receipt")
+    };
+    let saved: Value = sqlx::query_scalar("SELECT record FROM file_uploads WHERE operation_id=$1")
+        .bind(id.uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE file_uploads SET record=jsonb_set(record,'{context,boot_id}','\"another-boot\"') WHERE operation_id=$1").bind(id.uuid()).execute(&pool).await.unwrap();
+    let observation = HistoryObservation {
+        completed: request.barrier.clone(),
+        request: Some(request),
+        simulated: true,
+        observed_unix_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+            as i64,
+    };
+    assert!(matches!(
+        f.store.complete_history(&claim, &observation, true).await,
+        Err(HistoryError::Evidence)
+    ));
+    sqlx::query("UPDATE file_uploads SET record=$2 WHERE operation_id=$1")
+        .bind(id.uuid())
+        .bind(saved)
+        .execute(&pool)
+        .await
+        .unwrap();
+    f.store
+        .complete_history(&claim, &observation, true)
+        .await
+        .unwrap();
+    let (status, retry) = put(f.app.clone(), f.token.clone(), s, key, bytes).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(retry["operation_id"], id.to_string());
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM completed_allocation_history WHERE domain='files'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+}

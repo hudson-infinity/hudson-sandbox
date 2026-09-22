@@ -279,7 +279,9 @@ async fn compaction_upgrade_preserves_old_payload_and_then_reclaims_it(pool: PgP
         ..sqlx::migrate::Migrator::DEFAULT
     };
     old.run(&pool).await.unwrap();
-    let f = pending(&pool).await;
+    let f = Fixture::with_schema(&pool, true).await;
+    f.finish().await;
+    expire_response(&f).await;
     let before = row(&f).await;
     sandbox_store::MIGRATOR.run(&pool).await.unwrap();
     let mut after = row(&f).await;

@@ -59,7 +59,10 @@ async fn age(f: &Fixture, future_grace: bool) {
     .unwrap();
 }
 async fn published(pool: &PgPool) -> (Fixture, OutputClaim) {
-    let f = Fixture::new(pool).await;
+    published_with_schema(pool, false).await
+}
+async fn published_with_schema(pool: &PgPool, legacy: bool) -> (Fixture, OutputClaim) {
+    let f = Fixture::with_schema(pool, legacy).await;
     f.finish().await;
     let (claim, work) = f.work().await;
     let p = plans(&work);
@@ -334,7 +337,7 @@ async fn cleanup_migration_preserves_existing_publication_and_execution(pool: Pg
         ..sqlx::migrate::Migrator::DEFAULT
     };
     old.run(&pool).await.unwrap();
-    let (f, _) = published(&pool).await;
+    let (f, _) = published_with_schema(&pool, true).await;
     age(&f, false).await;
     let before: Value = sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o WHERE id=$1")
         .bind(f.operation.uuid())

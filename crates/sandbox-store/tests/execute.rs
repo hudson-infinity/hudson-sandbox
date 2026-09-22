@@ -14,11 +14,15 @@ use sandbox_store::{
 use serde_json::json;
 use sqlx::PgPool;
 use time::OffsetDateTime;
+#[path = "support/legacy_execute.rs"]
+mod legacy_execute;
 
 #[path = "support/cancel.rs"]
 mod cancellation;
 #[path = "support/execution_capacity.rs"]
 mod capacity;
+#[path = "support/history.rs"]
+mod history;
 
 fn now_ms() -> i64 {
     (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64

@@ -319,7 +319,7 @@ async fn cancellation_upgrade_preserves_generic_rows_without_activating_them(poo
     };
     old.run(&pool).await.unwrap();
     let mut f = Fixture::new(&pool).await;
-    let target = f.admit().await;
+    let target = legacy_execute::seed(&pool, &f.request, f.allocation).await;
     let legacy = OperationId::generate();
     sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,idempotency_key,request_digest,digest_version,payload,target_operation_id,status)
         SELECT $1,project_id,sandbox_id,'cancel','service',$2,request_digest,digest_version,'{}',id,'queued' FROM operations WHERE id=$3")
