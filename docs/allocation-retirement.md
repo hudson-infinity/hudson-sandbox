@@ -1,6 +1,6 @@
 # Whole-allocation retirement
 
-Status: proposed protocol requirements; no whole-allocation deletion is implemented. This document extends [history reclamation](history-reclamation.md) for the remaining host/guardian lifecycle work in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). It does not authorize manual deletion or claim a passing release gate.
+Status: database preparation, host fencing and recoverable guardian metadata deletion are implemented components. Controller handoff, database completion and bounded forgetting remain incomplete. This document extends [history reclamation](history-reclamation.md) for the remaining host/guardian lifecycle work in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). It does not authorize manual deletion or claim a passing release gate.
 
 ## Problem and current ownership
 
@@ -28,7 +28,7 @@ The replacement must stay bounded under sustained reuse, including while an olde
 
 Admission identities must be issued by trusted control-plane code and bound to host, project, sandbox, allocation, generation and original epoch. Wall-clock age, a caller-selected UUID, a local timeout and a release flag are not replacement authorities. Restart must retain the fence, reject rollback and fail closed on missing/corrupt authority. Upgraded state must be rejected by binaries that do not enforce the replacement fence.
 
-An epoch-based design must additionally show how admission resumes under sustained same-process operation and how active workloads behave during epoch advancement. An ordered-admission design must synchronize ID issuance and barrier reservation in the database and preserve older active owners explicitly. Neither design is selected or implemented here; these obligations rule out deleting records merely because their original epoch is old.
+An epoch-based design must additionally show how admission resumes under sustained same-process operation and how active workloads behave during epoch advancement. An ordered-admission design must synchronize ID issuance and barrier reservation in the database and preserve older active owners explicitly. The implementation uses ordered permits and retains active owners explicitly. End-to-end bounded retirement is still incomplete; records cannot be deleted merely because their original epoch is old.
 
 ## Preparation and consumer closure
 
@@ -44,7 +44,7 @@ Host receipt deletion does not delete project-lifetime operation identities. Sto
 
 ## Frozen request vocabulary
 
-The shared [allocation retirement types](../crates/sandbox-protocol/src/allocation_retirement.rs) define a bounded version-1 intent and a separate renewable request envelope. The database preparation path below now persists this intent. The host fencing RPC also consumes this intent; no metadata deletion consumes it yet.
+The shared [allocation retirement types](../crates/sandbox-protocol/src/allocation_retirement.rs) define a bounded version-1 intent and a separate renewable request envelope. The database preparation path below now persists this intent. The host fencing and metadata-retirement RPCs consume the same immutable intent.
 
 The immutable intent binds a retry-stable retirement ID to the complete allocation permit, explicit command and file closures, a lowercase SHA-256 digest of retained release evidence, and whether the evidence is simulated. Each domain is explicitly `empty` or `retired` through an operation ID. These are proposed scopes requiring independent verification; an empty scope never substitutes for host acknowledgement. The release digest identifies evidence and does not prove cleanup.
 
@@ -60,7 +60,7 @@ Preparation rejects unfinished lifecycle work, unknown command/file outcomes, ac
 
 A held preparation claim returns no work. After expiry, preparation revalidates the original scope and keeps the same retirement identity while incrementing its claim revision; a changed owner, release receipt or domain cannot replace the stored intent. All leases use database time. Allowing simulation marks the frozen intent simulated even if a particular input receipt is physical, so a later retry cannot silently upgrade a simulation-enabled preparation.
 
-The retained freeze rejects further command/file IDs under the allocation lock and stops new released-history claims. Original project-lifetime operation keys, digests and retained outcomes are untouched. Database rows remain retained; this component neither refunds host receipt capacity nor deletes anything. It does not inspect host-local download pins or physical files: those remain mandatory host-side completion checks. There is no periodic preparation worker, deletion acknowledgement or forgetting integration yet. The host fencing RPC below is callable but has no automatic controller handoff yet.
+The retained freeze rejects further command/file IDs under the allocation lock and stops new released-history claims. Original project-lifetime operation keys, digests and retained outcomes are untouched. Database rows remain retained; this component neither refunds host receipt capacity nor deletes anything. It does not inspect host-local download pins or physical files: those remain mandatory host-side completion checks. There is no periodic preparation worker, database deletion acknowledgement or forgetting integration yet. The host fencing RPC below is callable but has no automatic controller handoff yet.
 
 Database tests use synthetic release/history receipts, not isolation evidence. They exercise concurrent claims, retry stability across epochs, changed evidence, explicit empty scopes, pending outcomes and consumers, malformed completion, simulation policy, and admission rejection after freezing. Existing store migration and history suites remain required alongside these tests.
 
@@ -72,7 +72,19 @@ The host checks its independently retained permit frontier under the persistent 
 
 Only after persisting scope does the host release the shared lock and install the exclusive root fence. A failed fence can leave the earlier root grant active, but retains the host intent and returns no successful acknowledgement. Retrying the identical scope reconciles that window; a newer database claim can renew revision/epoch without changing scope. Restart retains the intent and rejects older binaries through the journal's strict unknown-field decoding.
 
-This RPC neither verifies physical cleanup nor removes metadata, marks authority complete, forgets an owner, or frees host capacity. Guardian receipts and manifests remain available to existing restart validation. The following deletion stage must persist recoverable intent before unlinking and must make restart validation distinguish authorized partial deletion from unexplained missing files. The [host fencing evidence](evidence/2026-09-22-host-retirement-fence.json) records controlled validation separately from the unfinished deletion and release gates.
+This RPC neither verifies physical cleanup nor removes metadata, marks authority complete, forgets an owner, or frees host capacity. Guardian receipts and manifests remain available to existing restart validation. The metadata-retirement RPC below persists recoverable intent before unlinking and makes restart validation distinguish authorized partial deletion from unexplained missing files. The [host fencing evidence](evidence/2026-09-22-host-retirement-fence.json) records controlled validation separately from the unfinished deletion and release gates.
+
+## Host metadata deletion component
+
+The authenticated `RetireAllocationMetadata` RPC consumes the same bounded claim and reconciles `FenceAllocation` first. It rechecks the exact current claim under the allocation gate, closes host readers, and acquires the persistent root authority lock exclusively. It requires the exact fenced permit and retirement ID; active, forgotten, simulated, foreign and changed scopes cannot authorize deletion. The acknowledgement echoes the exact request and observation time. No controller dispatches this RPC automatically yet.
+
+For a staged guardian, the host independently verifies the original manifest and stopped cleanup receipt, absence of the owned cgroup, and a free original lifecycle lock. Only `receipt.json`, `manifest.json` and `lifecycle.lock` may remain. Runtime files, unknown entries, symlinks, hard links, nonprivate files and changed ownership prevent deletion. The host records directory/file identities, bounded file hashes, the original cleanup receipt and the immutable intent digest in its journal before the first unlink. For an unused registered permit, it requires absence of both the allocation directory and cgroup; it retains an explicit unused-owner plan and does not fabricate an ordinary release receipt.
+
+Removal unlinks only those verified files, syncing the allocation directory after each step and the root after removing the empty directory. The root authority files remain. Guardian cleanup now shares the persistent authority gate; a fenced cleanup can use existing metadata but cannot recreate a missing directory or lifecycle lock. A delayed wrapper carrying the old manifest therefore cannot repopulate a retired directory.
+
+Restart verifies the retained plan against the frozen scope, independently retained registration frontier and exact root fence. It permits missing inventory entries only with that saved deletion plan, rejects changed surviving files, and uses the retained validated cleanup receipt for original command/file boot-history checks. A saved completion requires directory absence. An interrupted prepared record can finish deletion or reconcile a lost completion save; missing original files without a plan still fail startup. Old binaries reject the new strict journal field.
+
+This RPC retains its original host record, manifest, history floors and completion plan. The root entry stays fenced; it is not marked complete or forgotten. Database completion, controller recovery callers and bounded removal of these protocol records remain necessary before the 1,024-record admission limit can recover. Host metadata retirement alone is not a release or distribution gate.
 
 ## Durable sequence
 
@@ -110,3 +122,5 @@ The implementation is incomplete until these cases are linked to executable test
 Unit/state tests establish ordering and malformed-input behavior. Database tests establish admission/consumer serialization. Controlled Linux/KVM tests establish process and filesystem behavior. Full supported-host isolation and distribution gates remain governed by the [roadmap](roadmap.md); a passing retirement test does not replace them.
 
 Reader closure validation is recorded separately in [reader-drain evidence](evidence/2026-09-22-retirement-reader-drain.json), including the initial parallel privileged test failure and the serial rerun.
+
+[Metadata-retirement evidence](evidence/2026-09-22-allocation-metadata-retirement.json) records partial-unlink recovery, retained-history restart checks and controlled host validation, including their limits.

@@ -387,6 +387,68 @@ pub fn authorize(root: &Path, permit: Option<&Permit>) -> Result<LaunchGuard> {
     Ok(LaunchGuard { _lock: lock })
 }
 
+/// Serialize cleanup with retirement. Fenced owners can inspect/clean existing
+/// state but cannot create an allocation directory or replacement lifecycle lock.
+pub(crate) fn authorize_cleanup(
+    root: &Path,
+    permit: Option<&Permit>,
+) -> Result<(LaunchGuard, bool)> {
+    let lock = gate(root, false)?;
+    let may_create = if let Some(permit) = permit {
+        let store = AuthorityFile {
+            root: root.into(),
+            host: permit.host,
+            minimum_epoch: permit.original_epoch,
+            minimum_through: permit.serial,
+        };
+        let (_, ledger) = store.load()?;
+        match ledger.state(permit)? {
+            sandbox_protocol::allocation_authority::State::Active {} => true,
+            sandbox_protocol::allocation_authority::State::Fenced { .. } => false,
+            _ => anyhow::bail!("cleanup authority retired"),
+        }
+    } else {
+        ensure!(
+            !exists(&root.join(REQUIRED))?
+                && !exists(&root.join(STATE))?
+                && !exists(&root.join(NEXT))?,
+            "cleanup permit required"
+        );
+        true
+    };
+    Ok((LaunchGuard { _lock: lock }, may_create))
+}
+/// Exclusive against launch and cleanup metadata writers. This proves only
+/// durable launch denial; the deletion caller must independently verify cleanup.
+pub(crate) fn authorize_deletion(
+    root: &Path,
+    epoch: i64,
+    minimum_through: u64,
+    intent: &sandbox_protocol::allocation_retirement::Intent,
+) -> Result<LaunchGuard> {
+    intent.validate()?;
+    ensure!(
+        !intent.simulated && intent.permit.original_epoch <= epoch,
+        "physical retirement required"
+    );
+    let lock = gate(root, true)?;
+    let store = AuthorityFile {
+        root: root.into(),
+        host: intent.permit.host,
+        minimum_epoch: epoch,
+        minimum_through,
+    };
+    let (current, ledger) = store.load()?;
+    ensure!(current == epoch, "deletion epoch mismatch");
+    ensure!(
+        matches!(ledger.state(&intent.permit)?,
+        sandbox_protocol::allocation_authority::State::Fenced { retirement }
+        if *retirement == intent.retirement),
+        "exact retirement fence required"
+    );
+    Ok(LaunchGuard { _lock: lock })
+}
+
 /// Check an original registered retirement owner under the persistent gate.
 /// This permits prior epochs but grants no cleanup or absence authority.
 pub fn authorize_retirement(

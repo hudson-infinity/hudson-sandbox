@@ -4,7 +4,7 @@ use sandbox_protocol::{
     history::{Barrier, Domain},
     supervisor::{CommandInspection, CommandRequest, HistoryRequest},
 };
-fn request(
+pub(super) fn request(
     owner: &Ownership,
     context: &gm::Context,
     domain: Domain,
@@ -24,7 +24,7 @@ fn request(
         ),
     }
 }
-async fn execute(
+pub(super) async fn execute(
     c: &mut SupervisorClient<Channel>,
     o: &Ownership,
 ) -> (CommandRequest, gm::Receipt) {

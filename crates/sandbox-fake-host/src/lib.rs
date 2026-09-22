@@ -456,6 +456,15 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn retire_allocation_metadata(
+        &self,
+        _: Request<sandbox_protocol::supervisor::AllocationMetadataRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::AllocationMetadataObservation>, Status> {
+        Err(Status::unimplemented(
+            "fake host does not provide physical metadata retirement",
+        ))
+    }
+
     async fn fence_allocation(
         &self,
         _: Request<sandbox_protocol::supervisor::AllocationFenceRequest>,
