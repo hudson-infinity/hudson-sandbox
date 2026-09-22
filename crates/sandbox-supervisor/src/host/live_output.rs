@@ -19,6 +19,11 @@ impl Host {
             .records
             .get(&scope.owner.allocation_id.to_string())
             .ok_or_else(|| Status::not_found("allocation history missing"))?;
+        history::check(
+            record,
+            sandbox_protocol::history::Domain::Commands,
+            scope.owner.operation_id,
+        )?;
         let command = record
             .commands
             .get(&scope.owner.operation_id.to_string())

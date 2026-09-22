@@ -139,3 +139,70 @@ async fn rejects_output_cursor_stream_id_and_size_mismatches() {
         task.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn retirement_requires_exact_authenticated_acknowledgement_and_never_retries_loss() {
+    use sandbox_protocol::history::{Barrier, Domain};
+    for mode in 0..11 {
+        let certs = certs::Fixture::new();
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("history.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let context = m::Context {
+            allocation_id: certs.allocation,
+            generation: 1,
+            boot_id: "boot".into(),
+        };
+        let client = GuestClient::new(socket, 52, certs.client(), context.clone()).unwrap();
+        let barrier = Barrier {
+            version: 1,
+            context: context.clone(),
+            domain: Domain::Files,
+            through: OperationId::generate(),
+        };
+        let tls = certs.server();
+        let task = tokio::spawn(async move {
+            let (mut io, _) = listener.accept().await.unwrap();
+            let mut header = [0; 11];
+            io.read_exact(&mut header).await.unwrap();
+            io.write_all(b"OK 52\n").await.unwrap();
+            let mut io = tls.accept(io).await.unwrap();
+            let request: w::Request = wire::read_frame(&mut io).await.unwrap();
+            let w::request::Action::RetireHistory(mut b) = request.action.unwrap() else {
+                panic!("unexpected request")
+            };
+            if mode == 10 {
+                return;
+            } // Lost acknowledgement; no automatic retry.
+            match mode {
+                1 => b.version = 2,
+                2 => b.context.as_mut().unwrap().boot_id = "other".into(),
+                3 => b.context.as_mut().unwrap().generation += 1,
+                4 => b.domain = w::HistoryDomain::Commands as i32,
+                5 => b.through = "op_019a9fad-3000-7000-8000-000000000001".into(),
+                6 => b.through = "op_ffffffff-ffff-7fff-bfff-ffffffffffff".into(),
+                7 => b.domain = 0,
+                _ => {}
+            }
+            let mut response = w::Response {
+                version: 1,
+                request_id: request.request_id,
+                context: Some((&context).into()),
+                result: Some(w::response::Result::HistoryRetired(b)),
+            };
+            if mode == 8 {
+                response.request_id = OperationId::generate().to_string();
+            }
+            if mode == 9 {
+                response.result = Some(w::response::Result::Hello(w::Hello {}));
+            }
+            wire::write_frame(&mut io, &response).await.unwrap();
+        });
+        assert_eq!(
+            client.retire_history(&barrier).await.is_ok(),
+            mode == 0,
+            "mode {mode}"
+        );
+        task.await.unwrap();
+    }
+}

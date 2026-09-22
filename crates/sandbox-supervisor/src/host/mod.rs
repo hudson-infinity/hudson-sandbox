@@ -3,6 +3,7 @@ mod archive;
 mod commands;
 mod file_downloads;
 mod files;
+mod history;
 mod journal;
 mod live_output;
 mod previous;
@@ -247,6 +248,8 @@ impl Host {
                 commands: BTreeMap::new(),
                 files: BTreeMap::new(),
                 archives: BTreeMap::new(),
+                command_history: None,
+                file_history: None,
                 lease_revision: 0,
                 lease_request: None,
                 gate: gate.clone(),
@@ -706,6 +709,15 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn retire_history(
+        &self,
+        r: Request<sandbox_protocol::supervisor::HistoryRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::HistoryObservation>, Status> {
+        self.work(move |h| h.retire_history_sync(r.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn reconcile_previous_allocation(
         &self,
         r: Request<sandbox_protocol::supervisor::PreviousAllocationRequest>,

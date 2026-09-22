@@ -138,3 +138,71 @@ mod tests {
         assert!(!barrier.covers(id(11)));
     }
 }
+
+impl TryFrom<crate::guest::HistoryBarrier> for Barrier {
+    type Error = anyhow::Error;
+    fn try_from(value: crate::guest::HistoryBarrier) -> Result<Self> {
+        let domain = match crate::guest::HistoryDomain::try_from(value.domain)? {
+            crate::guest::HistoryDomain::Commands => Domain::Commands,
+            crate::guest::HistoryDomain::Files => Domain::Files,
+            _ => anyhow::bail!("unspecified history domain"),
+        };
+        let barrier = Self {
+            version: value.version,
+            context: value
+                .context
+                .ok_or_else(|| anyhow::anyhow!("missing history context"))?
+                .try_into()?,
+            domain,
+            through: value.through.parse()?,
+        };
+        barrier.validate(&barrier.context, domain)?;
+        Ok(barrier)
+    }
+}
+impl From<&Barrier> for crate::guest::HistoryBarrier {
+    fn from(value: &Barrier) -> Self {
+        Self {
+            version: value.version,
+            context: Some((&value.context).into()),
+            domain: match value.domain {
+                Domain::Commands => crate::guest::HistoryDomain::Commands as i32,
+                Domain::Files => crate::guest::HistoryDomain::Files as i32,
+            },
+            through: value.through.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    #[test]
+    fn wire_barriers_reject_missing_scope_unknown_domain_and_invalid_ids() {
+        let barrier = Barrier {
+            version: 1,
+            context: Context {
+                allocation_id: crate::AllocationId::generate(),
+                generation: 1,
+                boot_id: "boot".into(),
+            },
+            domain: Domain::Commands,
+            through: OperationId::generate(),
+        };
+        let wire: crate::guest::HistoryBarrier = (&barrier).into();
+        assert_eq!(Barrier::try_from(wire.clone()).unwrap(), barrier);
+        for mode in 0..6 {
+            let mut bad = wire.clone();
+            match mode {
+                0 => bad.version = 0,
+                1 => bad.context = None,
+                2 => bad.domain = 0,
+                3 => bad.domain = 99,
+                4 => bad.through = "op_00000000-0000-4000-8000-000000000001".into(),
+                _ => bad.context.as_mut().unwrap().boot_id.clear(),
+            }
+            assert!(Barrier::try_from(bad).is_err());
+        }
+    }
+}
