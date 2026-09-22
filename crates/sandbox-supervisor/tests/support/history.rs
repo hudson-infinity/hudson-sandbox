@@ -533,7 +533,9 @@ pub(super) async fn public_capacity_retirement(
             other => panic!("{other:?}"),
         }
     }
-    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Idle); // files domain
+    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Idle); // live files
+    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Idle); // released commands
+    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Idle); // released files
     assert_eq!(worker.tick().await.unwrap(), HistoryTick::Completed);
     let (floor,simulated):(sqlx::types::Uuid,bool)=sqlx::query_as("SELECT completed_through,(completion->>'simulated')::boolean FROM allocation_history WHERE domain='commands'").fetch_one(pool).await.unwrap();
     assert_eq!(floor, id.parse::<OperationId>().unwrap().uuid());
@@ -776,4 +778,79 @@ async fn real_released_history_fenced_absence_requires_retained_owner_and_clean_
         c.create(create).await.unwrap_err().code(),
         Code::FailedPrecondition
     );
+}
+
+pub(super) async fn public_released_retirement(
+    pool: &sqlx::PgPool,
+    store: &sandbox_store::Store,
+    f: &mut Fixture,
+    image: &str,
+) {
+    use sandbox_controller::{Controller, ControllerConfig, history::HistoryTick};
+    let last: sqlx::types::Uuid = sqlx::query_scalar(
+        "SELECT id FROM operations WHERE kind='execute' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    f.restart().await;
+    sqlx::query("UPDATE hosts SET supervisor_epoch=$2 WHERE id=$1")
+        .bind(f.config.host.uuid())
+        .bind(f.config.epoch)
+        .execute(pool)
+        .await
+        .unwrap();
+    let c = Controller::connect(
+        store.clone(),
+        ControllerConfig {
+            endpoint: f.url.clone(),
+            host: f.config.host,
+            epoch: f.config.epoch,
+            allowed_images: std::collections::BTreeSet::from([image.to_owned()]),
+            allow_simulated: false,
+        },
+        f.tls.ca.pem().as_bytes(),
+        f.tls.host.cert.pem().as_bytes(),
+        f.tls.host.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut worker = c.history_retirer();
+    for _ in 0..4 {
+        assert_eq!(
+            worker.tick().await.unwrap(),
+            HistoryTick::Idle,
+            "live output still owns the last command"
+        );
+    }
+    sqlx::query("UPDATE operations SET response_expires_at=clock_timestamp()-interval '1 second' WHERE kind='execute' AND payload_compacted_at IS NULL").execute(pool).await.unwrap();
+    assert!(matches!(
+        store.compact_expired_response().await.unwrap(),
+        sandbox_store::compaction::Compaction::Completed(_)
+    ));
+    let before: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o WHERE kind='execute' ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Idle);
+    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Idle);
+    assert_eq!(worker.tick().await.unwrap(), HistoryTick::Completed);
+    let (through,epoch,original,simulated):(sqlx::types::Uuid,i64,i64,bool)=sqlx::query_as("SELECT completed_through,(completion->'request'->>'reporting_epoch')::bigint,(completion->'request'->'ownership'->>'supervisor_epoch')::bigint,(completion->>'simulated')::boolean FROM released_allocation_history WHERE domain='commands'").fetch_one(pool).await.unwrap();
+    assert_eq!((through, epoch, original, simulated), (last, 2, 1, false));
+    let after: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o WHERE kind='execute' ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after.len(), 33);
+    let (count,prefix):(i64,sqlx::types::Uuid)=sqlx::query_as("SELECT count(*) OVER(),completed_through FROM completed_allocation_history WHERE domain='commands'").fetch_one(pool).await.unwrap();
+    assert_eq!((count, prefix), (1, last));
+    let retained: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.config.state_root.join("host.json")).unwrap()).unwrap();
+    for record in retained["records"].as_object().unwrap().values() {
+        assert!(record["commands"].as_object().unwrap().is_empty());
+        assert_eq!(record["stopped"], true);
+    }
 }

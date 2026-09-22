@@ -12,7 +12,7 @@ pub struct Retirer {
     store: Store,
     config: ControllerConfig,
     client: SupervisorClient<Channel>,
-    next: Domain,
+    next: u8,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryTick {
@@ -32,17 +32,22 @@ impl Controller {
             store: self.store.clone(),
             config: self.config.clone(),
             client: self.archive_client.clone(),
-            next: Domain::Commands,
+            next: 0,
         }
     }
 }
 impl Retirer {
     pub async fn tick(&mut self) -> Result<HistoryTick, HistoryError> {
-        let domain = self.next;
-        self.next = match domain {
-            Domain::Commands => Domain::Files,
-            Domain::Files => Domain::Commands,
+        let turn = self.next;
+        self.next = (self.next + 1) % 4;
+        let domain = if turn.is_multiple_of(2) {
+            Domain::Commands
+        } else {
+            Domain::Files
         };
+        if turn >= 2 {
+            return self.released_tick(domain).await;
+        }
         let Some(preparation) = self
             .store
             .claim_history(
@@ -62,6 +67,40 @@ impl Retirer {
         let result = self.process(preparation, &claim).await;
         if result.is_err() {
             let _ = self.store.defer_history(&claim).await;
+        }
+        result
+    }
+    async fn released_tick(&mut self, domain: Domain) -> Result<HistoryTick, HistoryError> {
+        let Some(prepared) = self
+            .store
+            .claim_released_history(
+                self.config.host,
+                self.config.epoch,
+                domain,
+                120,
+                self.config.allow_simulated,
+            )
+            .await?
+        else {
+            return Ok(HistoryTick::Idle);
+        };
+        let result = async {
+            let observed = tokio::time::timeout(
+                Duration::from_secs(30),
+                self.client.retire_released_history(prepared.request),
+            )
+            .await
+            .map_err(|_| HistoryError::Rpc)?
+            .map_err(|_| HistoryError::Rpc)?
+            .into_inner();
+            self.store
+                .complete_released_history(&prepared.claim, &observed, self.config.allow_simulated)
+                .await?;
+            Ok(HistoryTick::Completed)
+        }
+        .await;
+        if result.is_err() {
+            let _ = self.store.defer_released_history(&prepared.claim).await;
         }
         result
     }

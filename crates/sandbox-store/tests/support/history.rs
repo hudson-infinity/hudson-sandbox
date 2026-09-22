@@ -588,3 +588,6 @@ async fn history_concurrent_admission_never_enters_reserved_prefix(pool: PgPool)
             .is_none()
     );
 }
+
+#[path = "released_history.rs"]
+mod released;

@@ -1,6 +1,6 @@
 # Acknowledged history reclamation
 
-Status: live-allocation database coordination, authenticated host/guest retirement and public capacity refunds are implemented behind the controller's `--retire-history` opt-in. Authenticated host retirement after verified allocation destruction is implemented; its database coordination/refunds, whole-allocation journal retirement, and storage-marker lifecycle remain unfinished under [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). This document owns the retirement barrier and its platform prerequisites.
+Status: live-allocation database coordination, authenticated host/guest retirement and public capacity refunds are implemented behind the controller's `--retire-history` opt-in. Verified destruction retirement, including database coordination and refunds across host epoch changes, is implemented behind the same opt-in. Whole-allocation journal retirement and storage-marker lifecycle remain unfinished under [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). This document owns the retirement barrier and its platform prerequisites.
 
 ## Why deletion needs an admission barrier
 
@@ -38,11 +38,11 @@ The guest returns a synced-deletion acknowledgement. The client validates respon
 
 Only after a valid acknowledgement does one durable host journal replacement remove the covered domain's records, associated command archives, and those operations' revision entries. The barrier remains. A failed journal write poisons the host until restart. Completed barriers survive journal reload; older binaries reject the added fields. The host checks journal byte headroom before installing a new barrier and rejects exhaustion before contacting the guest. This recovers operation slots and their declared budgets, but does not guarantee recovery from an already byte-full legacy journal.
 
-New or unfinished retirement currently requires the original live guest in the current host epoch. A completed retry returns retained proof without requiring a live guest, including after same-epoch destruction. Restart advances the epoch and stops old ownership; pending retirement remains fenced and charged. A verified-destruction path is still required to reclaim that history without the original live guest. A direct internal RPC does not refund database reservations: the database worker must verify and persist its own exact completion. Do not delete host journals, restore older snapshots, or discard storage markers as a substitute for that protocol.
+New or unfinished `RetireHistory` requests require the original live guest in the current host epoch. A completed retry returns retained proof without requiring a live guest, including after same-epoch destruction. Restart advances the epoch and stops old ownership; pending retirement remains fenced and charged. The separate `RetireReleasedHistory` path below reclaims eligible history after verified destruction without requiring that guest. A direct internal RPC does not refund database reservations: the database worker must verify and persist its own exact completion. Do not delete host journals, restore older snapshots, or discard storage markers as a substitute for that protocol.
 
 ## Platform coordination
 
-The table records the coordination contract. The live original-epoch path is implemented; the later-lifecycle row remains future work:
+The table records the coordination contract. Live and verified-destruction paths are implemented; snapshot/restore and whole-allocation journal lifecycle remain future work:
 
 | Layer | Required behavior before automatic retirement |
 | --- | --- |
@@ -64,7 +64,11 @@ Under the existing allocation gate, the host requires retained exact ownership a
 
 One synced journal replacement removes covered records and retains a versioned per-domain completion plus the whole allocation tombstone. A save failure poisons the host; restart reloads the last durable state, and retries revalidate destruction before completion. Lower prefixes cannot regress the floor, changed requests cannot reuse a revision, and a newer reporting epoch requires a newer claim. Delayed command/file/archive/read requests remain fenced. The new journal fields make older binaries reject upgraded state. The allocation tombstone, guardian metadata, database outcomes and permanent storage markers are not deleted.
 
-This host path has no automatic database caller yet. The live worker still requires an original live allocation. A separate database proof variant and coordinator must validate the destruction acknowledgement, preserve contiguous eligibility and consumer prerequisites, and only then refund reservations. A host test passing does not establish these unfinished accounting properties.
+[Migration 0016](../migrations/0016_released_history.sql) adds independent `released_allocation_history` claims and retains the exact destruction request and acknowledgement. `released_at` and allocation status only schedule verification; they never authorize a refund. The coordinator preserves the original allocation epoch, uses the current host reporting epoch, reserves an eligible contiguous prefix under the allocation lock, and repeats its consumer checks before completion. Terminal guest evidence freezes an optional original context; never-started allocations need no invented boot.
+
+The initial lower bound may use a separately verified live completion. Corrupt prior proof cannot skip old operations. Lost replies preserve the reserved prefix and use a newer claim, including after host restart. Final writes recheck the lease and reporting epoch after lock waits. Only an exact fresh `Released`/`FencedAbsent` acknowledgement completes the prefix. Unknown predecessors, unretired sources/output, partial cleanup, stale workers and mismatched ownership remain charged. No original outcome is rewritten.
+
+The shared accounting view selects one greatest verified live/destruction prefix per allocation/domain, preventing join multiplication and duplicate refunds. Project/global upload slots recover only after verified completion; source-byte accounting still depends on its own retirement proof. Existing operation rows, retry keys, request digests and outcomes remain retained. Migration 0016 preserves existing live proofs and does not retire records by itself.
 
 The [destruction-retirement evidence](evidence/2026-09-22-released-host-history.json) records matching source hashes, binary hashes, validation and remaining integration limits. The Linux state tests cover domain separation, prefix/revision ordering, retained tombstones, malformed completion, unknown commands and unfinished uploads. Controlled authenticated host tests cover actual VM destruction, new retirement after a host epoch change, lost replies, reader denial, mismatched/expired ownership, fenced absence without a boot, unowned filesystem state, failed persistence/restart and delayed Create rejection. These remain development-environment evidence, not supported-platform isolation certification.
 
@@ -84,11 +88,13 @@ Both command and upload admission use `completed_allocation_history`, a shared v
 
 ## Operator activation
 
-Add `--retire-history` to an already configured `sandbox-controller`. The worker has its own task and alternates command/file domains, independently of lifecycle maintenance and output archival. With `--once`, it runs one tick for each domain. Database, API, controller and host versions must support migration 0015 and the retirement RPCs; mixed old admission writers are unsupported because they do not obey reserved ID floors.
+Add `--retire-history` to an already configured `sandbox-controller`. The worker has its own task and cycles through live commands, live files, released commands and released files, independently of lifecycle maintenance and output archival. With `--once`, it runs all four ticks. Database, API, controller and host versions must support migration 0016 and both retirement RPCs; mixed old admission writers are unsupported because they do not obey reserved ID floors.
 
 Configure the separate [response retention and payload compaction](operation-retention.md) and [output retirement](output-storage.md#storage-retirement) policies for commands, and [source cleanup](file-transfer.md#source-cleanup-worker) for uploads. The history worker does not shorten those policies or delete storage objects. Without consumer-retirement evidence, capacity remains reserved. Global upload accounting still scans retained metadata; no large-fleet throughput claim is made.
 
 ## Evidence
+
+The [destruction accounting evidence](evidence/2026-09-22-released-history-accounting.json) records the final workspace checks, real API/controller destruction-and-restart case, quota regressions and remaining lifecycle limits.
 
 The [database retirement evidence record](evidence/2026-09-22-database-history-retirement.json) includes matching source and Linux binary hashes, final validation scope and limitations.
 
