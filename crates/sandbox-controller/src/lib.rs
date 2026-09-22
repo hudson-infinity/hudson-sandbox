@@ -4,6 +4,7 @@ mod allocation_authority;
 pub mod archive;
 pub mod history;
 mod recovery;
+pub mod retirement;
 mod uploads;
 
 use sandbox_protocol::{

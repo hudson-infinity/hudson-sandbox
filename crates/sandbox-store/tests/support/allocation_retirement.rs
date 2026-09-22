@@ -288,3 +288,6 @@ mod completion;
 
 #[path = "allocation_forgetting.rs"]
 mod forgetting;
+
+#[path = "allocation_retirement_scheduling.rs"]
+mod scheduling;

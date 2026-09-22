@@ -82,7 +82,7 @@ The controller rejects a simulated supervisor unless `--allow-simulated` is expl
 
 ## Running the controller
 
-The binary connects to PostgreSQL, applies migrations, requires mTLS credentials and explicit host/image configuration, then polls every 500 ms. It handles shutdown without erasing pending intent. `--once` performs at most one tick for controlled diagnostics.
+The binary connects to PostgreSQL, applies migrations, requires mTLS credentials and explicit host/image configuration, then polls every 500 ms. It handles shutdown without erasing pending intent. `--once` performs one lifecycle tick plus the explicitly enabled maintenance workers for controlled diagnostics.
 
 ```sh
 cargo run -p sandbox-controller -- --help
@@ -95,6 +95,8 @@ The image allowlist is static process configuration and checked at dispatch. Upd
 Public state remains a timestamped last observation, not a live VM-presence guarantee. The maintenance loop renews confirmed allocations and reconciles same-epoch watchdog release. Controlled nested-aarch64 tests exercise watchdog teardown and restart fencing; supported-host failure and isolation gates remain separate.
 
 An optional `--retire-history` task coordinates live and verified-destruction history retirement, cycling through both command/file domains for each proof path. It does not run inside the lifecycle tick and cannot refund pending or unverified prefixes. Consumer cleanup must complete first; see [activation and limits](history-reclamation.md#operator-activation). The simulator refuses durable history evidence even with `--allow-simulated`.
+
+`--retire-allocations` requires `--retire-history` and rejects simulation mode. Its independent task discovers released allocations with registered physical permits, retires guardian metadata, records database completion and then forgets host records. Durable scan cooldowns and delivery leases bound retries; retained database proof resolves lost acknowledgements. `--once` runs four history turns followed by one allocation-retirement tick when enabled. See [automatic allocation retirement](allocation-retirement.md#automatic-controller-worker) for activation, ownership and remaining reuse gates.
 
 ## Evidence and remaining work
 

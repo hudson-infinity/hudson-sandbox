@@ -1,5 +1,5 @@
-//! Real host filesystem/RPC tests with synthetic controller metadata bindings.
-//! The database tests independently verify issuance; these are not a worker loop.
+//! Real host filesystem/RPC tests with synthetic bindings and separate full
+//! database/controller lifecycle cases, including periodic CLI retirement.
 use super::allocation_retirement::{permit, register, retirement};
 use super::*;
 use sandbox_protocol::{
@@ -408,6 +408,7 @@ pub(super) async fn public_handoff(
     pool: &sqlx::PgPool,
     store: &sandbox_store::Store,
     f: &mut Fixture,
+    image: &str,
 ) {
     let allocation: sqlx::types::Uuid = sqlx::query_scalar("SELECT id FROM allocations")
         .fetch_one(pool)
@@ -471,16 +472,38 @@ pub(super) async fn public_handoff(
     assert_eq!(first.state, AllocationForgetState::Forgotten as i32);
     // Lose the first host reply before the database consumes it. The host no
     // longer retains this identity; exact database metadata proof must carry it.
-    let retry = client
-        .forget_allocation(wire(&fresh))
+    // Let the actual delivery lease expire; do not manufacture a new claim or
+    // mutate its deadline. A newly constructed controller must discover the
+    // retained metadata proof and consume Retired under a fresh database claim.
+    sqlx::query("SELECT pg_sleep(GREATEST(extract(epoch FROM (forget_lease_expires_at-clock_timestamp())),0)+0.01) FROM allocation_retirements")
+        .execute(pool).await.unwrap();
+    let controller = sandbox_controller::Controller::connect(
+        store.clone(),
+        sandbox_controller::ControllerConfig {
+            endpoint: f.url.clone(),
+            host: f.config.host,
+            epoch: f.config.epoch,
+            allowed_images: std::collections::BTreeSet::from([image.to_owned()]),
+            allow_simulated: false,
+        },
+        f.tls.ca.pem().as_bytes(),
+        f.tls.host.cert.pem().as_bytes(),
+        f.tls.host.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        controller.allocation_retirer().tick().await.unwrap(),
+        sandbox_controller::retirement::RetirementTick::Completed
+    );
+    let completed = store
+        .allocation_forgetting_completion(&request.intent)
         .await
         .unwrap()
-        .into_inner();
-    assert_eq!(retry.state, AllocationForgetState::Retired as i32);
-    let completed = store
-        .complete_allocation_forgetting(&fresh, &retry)
-        .await
         .unwrap();
+    assert_eq!(completed.state, AllocationForgetState::Retired);
+    assert_eq!(completed.request.claim.revision, fresh.claim.revision + 1);
+    assert_eq!(completed.request.metadata_request, fresh.metadata_request);
     assert_eq!(journal(f)["records"].as_object().unwrap().len(), 0);
     assert!(
         !f.config
@@ -533,6 +556,200 @@ pub(super) async fn public_handoff(
     assert_eq!(before, after);
     eprintln!(
         "real_allocation_forgetting_observation {}",
-        serde_json::json!({"database_metadata_acknowledged":true,"host_records_removed":true,"retired_denial_consumed_with_retained_database_proof":true,"lost_host_and_database_replies_reconciled":true,"original_operation_results_unchanged":true,"reporting_epoch":f.config.epoch})
+        serde_json::json!({"database_metadata_acknowledged":true,"host_records_removed":true,"retired_denial_consumed_with_retained_database_proof":true,"lost_host_and_database_replies_reconciled":true,"controller_discovered_and_reconciled_lost_host_reply":true,"original_operation_results_unchanged":true,"reporting_epoch":f.config.epoch})
     );
+}
+
+/// Drive the actual controller worker from candidate discovery through both
+/// authenticated handoffs. No test code issues or completes a retirement claim.
+pub(super) async fn automatic_handoff(
+    pool: &sqlx::PgPool,
+    store: &sandbox_store::Store,
+    f: &mut Fixture,
+    image: &str,
+) {
+    use sandbox_controller::{Controller, ControllerConfig, retirement::RetirementTick};
+    let before: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    use sqlx::ConnectOptions;
+    use std::os::unix::fs::PermissionsExt;
+    let cert = f.vm.temp.path().join("controller.pem");
+    let key = f.vm.temp.path().join("controller.key");
+    fs::write(&cert, f.tls.host.cert.pem()).unwrap();
+    fs::write(&key, f.tls.host.key.serialize_pem()).unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+    let log = f.vm.temp.path().join("controller.log");
+    // Build with `cargo build -p sandbox-controller --bin sandbox-controller`
+    // before this controlled integration test. The sibling executable must be
+    // the current source build; no installed controller is substituted.
+    let binary =
+        PathBuf::from(env!("CARGO_BIN_EXE_sandbox-host")).with_file_name("sandbox-controller");
+    assert!(
+        binary.is_file(),
+        "build the controller binary before this test"
+    );
+    let mut controller = ControllerProcess(
+        Command::new(binary)
+            .env(
+                "DATABASE_URL",
+                pool.connect_options().to_url_lossy().as_str(),
+            )
+            .arg("--endpoint")
+            .arg(&f.url)
+            .arg("--host-id")
+            .arg(f.config.host.to_string())
+            .arg("--host-epoch")
+            .arg(f.config.epoch.to_string())
+            .arg("--ca-cert")
+            .arg(f.vm.temp.path().join("ca.pem"))
+            .arg("--client-cert")
+            .arg(&cert)
+            .arg("--client-key")
+            .arg(&key)
+            .arg("--image-digest")
+            .arg(image)
+            .arg("--retire-history")
+            .arg("--retire-allocations")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let until = Instant::now() + Duration::from_secs(300);
+    loop {
+        assert!(
+            controller.0.try_wait().unwrap().is_none(),
+            "controller exited: {}",
+            fs::read_to_string(&log).unwrap()
+        );
+        assert!(
+            Instant::now() < until,
+            "automatic retirement did not converge: {}",
+            fs::read_to_string(&log).unwrap()
+        );
+        let complete: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM allocation_retirements WHERE forget_completion IS NOT NULL)")
+            .fetch_one(pool).await.unwrap();
+        if complete {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Exercise normal shutdown of the actual periodic loop, including its
+    // independently spawned workers. The guard also reaps the child on panic.
+    rustix::process::kill_process(
+        rustix::process::Pid::from_raw(controller.0.id() as i32).unwrap(),
+        rustix::process::Signal::INT,
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = controller.0.try_wait().unwrap() {
+            assert!(status.success(), "controller shutdown failed");
+            break;
+        }
+        assert!(Instant::now() < until, "controller did not stop");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let intent: serde_json::Value = sqlx::query_scalar("SELECT intent FROM allocation_retirements")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let intent =
+        serde_json::from_value::<sandbox_protocol::allocation_retirement::Intent>(intent).unwrap();
+    let metadata = store
+        .allocation_retirement_completion(&intent)
+        .await
+        .unwrap()
+        .unwrap();
+    let completion = store
+        .allocation_forgetting_completion(&intent)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completion.request.metadata_request, metadata.request);
+    assert_eq!(completion.state, AllocationForgetState::Forgotten);
+    assert!(journal(f)["records"].as_object().unwrap().is_empty());
+    assert!(
+        !f.config
+            .state_root
+            .join("a")
+            .join(intent.permit.allocation.to_string())
+            .exists()
+    );
+    assert!(
+        !f.config
+            .cgroup_parent
+            .join(intent.permit.allocation.uuid().to_string())
+            .exists()
+    );
+    f.restart().await;
+    sqlx::query("UPDATE hosts SET supervisor_epoch=$2 WHERE id=$1")
+        .bind(f.config.host.uuid())
+        .bind(f.config.epoch)
+        .execute(pool)
+        .await
+        .unwrap();
+    let mut restarted = Controller::connect(
+        store.clone(),
+        ControllerConfig {
+            endpoint: f.url.clone(),
+            host: f.config.host,
+            epoch: f.config.epoch,
+            allowed_images: std::collections::BTreeSet::from([image.to_owned()]),
+            allow_simulated: false,
+        },
+        f.tls.ca.pem().as_bytes(),
+        f.tls.host.cert.pem().as_bytes(),
+        f.tls.host.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        restarted.allocation_retirer().tick().await.unwrap(),
+        RetirementTick::Idle
+    );
+    assert_eq!(
+        restarted.tick().await.unwrap(),
+        sandbox_controller::Tick::Idle
+    );
+    let mut history = restarted.history_retirer();
+    for _ in 0..4 {
+        assert_eq!(
+            history.tick().await.unwrap(),
+            sandbox_controller::history::HistoryTick::Idle
+        );
+    }
+    assert_eq!(
+        store
+            .allocation_forgetting_completion(&intent)
+            .await
+            .unwrap(),
+        Some(completion)
+    );
+    let after: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM operations o ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+    eprintln!(
+        "real_automatic_retirement_observation {}",
+        serde_json::json!({
+            "periodic_controller_binary":true,"controller_sigint_shutdown":true,"database_candidate_discovered":true,"controller_completed_metadata_and_forgetting":true,
+            "host_record_and_resources_removed":true,"restart_did_not_redispatch":true,
+            "original_operation_results_unchanged":true,"reporting_epoch":f.config.epoch,
+        })
+    );
+}
+
+struct ControllerProcess(Child);
+impl Drop for ControllerProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }

@@ -179,7 +179,12 @@ async fn allocation_serial_upgrade_preserves_legacy_owner_without_inventing_perm
         .fetch_one(&new_pool)
         .await
         .unwrap();
-    assert_eq!(before, after);
+    let mut expected = before;
+    expected
+        .as_object_mut()
+        .unwrap()
+        .insert("retirement_scan_at".into(), serde_json::Value::Null);
+    assert_eq!(expected, after);
     let batch = store.allocation_permits_after(host, 0).await.unwrap();
     assert!(batch.has_unissued_allocations);
     assert!(batch.permits.is_empty());
