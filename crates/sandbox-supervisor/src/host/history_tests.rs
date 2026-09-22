@@ -32,6 +32,8 @@ fn fixture() -> (Record, Barrier) {
         files: BTreeMap::new(),
         archives: BTreeMap::new(),
         command_history: None,
+        released_commands: None,
+        released_files: None,
         file_history: None,
         lease_revision: 0,
         lease_request: None,
