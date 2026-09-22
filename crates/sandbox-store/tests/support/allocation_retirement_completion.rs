@@ -42,7 +42,12 @@ async fn completion_is_durable_idempotent_and_never_rewrites_original_results(po
             .fetch_one(&pool)
             .await
             .unwrap();
-    let r = prepare(&f).await.unwrap().unwrap();
+    let r = f
+        .store
+        .prepare_allocation_retirement(f.allocation, f.host, 1, 2, false)
+        .await
+        .unwrap()
+        .unwrap();
     let observed = observation(&r);
     let completion = f
         .store
@@ -58,6 +63,9 @@ async fn completion_is_durable_idempotent_and_never_rewrites_original_results(po
         Some(completion.clone())
     );
     assert!(prepare(&f).await.unwrap().is_none());
+    sqlx::query("SELECT pg_sleep(GREATEST(extract(epoch FROM (metadata_claim_expires_at-clock_timestamp())),0)+0.01) FROM allocation_retirements")
+        .execute(&pool).await.unwrap();
+    assert!(now_ms() >= r.expires_unix_ms);
     sqlx::query("UPDATE hosts SET supervisor_epoch=2 WHERE id=$1")
         .bind(f.host.uuid())
         .execute(&pool)
@@ -183,7 +191,7 @@ async fn changed_scope_claim_echo_and_observation_clock_never_complete(pool: PgP
         );
         assert!(pending(&pool).await);
     }
-    for time in [0, now_ms() - 11000, now_ms() + 6000, r.expires_unix_ms + 1] {
+    for time in [0, now_ms() - 11000, now_ms() + 20000, r.expires_unix_ms + 1] {
         let mut o = observation(&r);
         o.observed_unix_ms = time;
         assert!(
@@ -401,4 +409,160 @@ async fn simulated_preparation_and_partial_or_changed_sql_completion_are_rejecte
     assert!(sqlx::query("UPDATE allocation_retirements SET metadata_completion=$1,metadata_completed_at=clock_timestamp(),metadata_claim_expires_at=lease_expires_at,lease_expires_at=NULL")
         .bind(e).execute(&pool).await.is_err());
     assert!(pending(&pool).await);
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn independent_host_mode_and_registration_frontier_are_required(pool: PgPool) {
+    let f = Fixture::new(&pool).await;
+    released(&f).await;
+    let r = prepare(&f).await.unwrap().unwrap();
+    sqlx::query("UPDATE hosts SET launch_authority_required=false WHERE id=$1")
+        .bind(f.host.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .complete_allocation_retirement(&r, &observation(&r))
+            .await,
+        Err(Error::LostClaim)
+    ));
+    sqlx::query("UPDATE hosts SET launch_authority_required=true,registered_allocation_serial=0 WHERE id=$1").bind(f.host.uuid()).execute(&pool).await.unwrap();
+    assert!(matches!(
+        f.store
+            .complete_allocation_retirement(&r, &observation(&r))
+            .await,
+        Err(Error::LostClaim)
+    ));
+    assert!(pending(&pool).await);
+    sqlx::query("UPDATE hosts SET registered_allocation_serial=1 WHERE id=$1")
+        .bind(f.host.uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    f.store
+        .complete_allocation_retirement(&r, &observation(&r))
+        .await
+        .unwrap();
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn malformed_retained_completion_is_not_historical_proof(pool: PgPool) {
+    let f = Fixture::new(&pool).await;
+    released(&f).await;
+    let r = prepare(&f).await.unwrap().unwrap();
+    let completed = f
+        .store
+        .complete_allocation_retirement(&r, &observation(&r))
+        .await
+        .unwrap();
+    let original: Value =
+        sqlx::query_scalar("SELECT metadata_completion FROM allocation_retirements")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    for field in ["revision", "expires_unix_ms"] {
+        let mut bad = original.clone();
+        bad["request"][field] = 0.into();
+        assert!(
+            sqlx::query("UPDATE allocation_retirements SET metadata_completion=$1")
+                .bind(bad)
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+    }
+    // Shape-valid but stale evidence must also fail the application validator.
+    sqlx::query("UPDATE allocation_retirements SET metadata_completion=jsonb_set(metadata_completion,'{observed_unix_ms}','1')").execute(&pool).await.unwrap();
+    assert!(matches!(
+        f.store.allocation_retirement_completion(&r.intent).await,
+        Err(Error::Evidence)
+    ));
+    assert!(matches!(prepare(&f).await, Err(Error::Evidence)));
+    sqlx::query("UPDATE allocation_retirements SET metadata_completion=$1")
+        .bind(original)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store
+            .allocation_retirement_completion(&r.intent)
+            .await
+            .unwrap(),
+        Some(completed)
+    );
+}
+#[sqlx::test(migrations = false)]
+async fn completion_upgrade_preserves_prepared_claim_without_inventing_acknowledgement(
+    pool: PgPool,
+) {
+    use sandbox_protocol::{allocation_authority::Permit, allocation_retirement::Intent};
+    use sha2::{Digest, Sha256};
+    let previous = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            sandbox_store::MIGRATOR.iter().take(19).cloned().collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    previous.run(&pool).await.unwrap();
+    let mut f = Fixture::new(&pool).await;
+    released(&f).await;
+    // Seed the v19 shape directly; current preparation requires v20 columns.
+    let create: uuid::Uuid =
+        sqlx::query_scalar("SELECT create_operation_id FROM allocation_permits")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let release: Value = sqlx::query_scalar("SELECT release_evidence FROM allocations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let intent = Intent {
+        version: 1,
+        retirement: OperationId::generate(),
+        permit: Permit {
+            host: f.host,
+            project: f.request.project_id,
+            sandbox: f.request.sandbox_id,
+            allocation: f.allocation,
+            create_operation: OperationId::from_uuid(create),
+            generation: 1,
+            original_epoch: 1,
+            serial: 1,
+        },
+        commands: DomainClosure::Empty {},
+        files: DomainClosure::Empty {},
+        release_evidence_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&release).unwrap())),
+        simulated: false,
+    };
+    let expires:OffsetDateTime=sqlx::query_scalar("INSERT INTO allocation_retirements(allocation_id,retirement_id,intent,claim_revision,reporting_epoch,lease_expires_at) VALUES($1,$2,$3,1,1,clock_timestamp()+interval '30 seconds') RETURNING lease_expires_at")
+        .bind(f.allocation.uuid()).bind(intent.retirement.uuid()).bind(serde_json::to_value(&intent).unwrap()).fetch_one(&pool).await.unwrap();
+    let before: Value = sqlx::query_scalar("SELECT to_jsonb(r) FROM allocation_retirements r")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sandbox_store::MIGRATOR.run(&pool).await.unwrap();
+    sandbox_store::MIGRATOR.run(&pool).await.unwrap();
+    let pool = reconnect_after_upgrade(&pool).await;
+    f.store = Store::from_pool(pool.clone());
+    let after:Value=sqlx::query_scalar("SELECT to_jsonb(r)-'metadata_completion'-'metadata_completed_at'-'metadata_claim_expires_at' FROM allocation_retirements r").fetch_one(&pool).await.unwrap();
+    assert_eq!(before, after);
+    assert!(pending(&pool).await);
+    assert!(
+        f.store
+            .allocation_retirement_completion(&intent)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(prepare(&f).await.unwrap().is_none());
+    let request = Request {
+        intent,
+        reporting_epoch: 1,
+        revision: 1,
+        expires_unix_ms: (expires.unix_timestamp_nanos() / 1_000_000) as i64,
+    };
+    f.store
+        .complete_allocation_retirement(&request, &observation(&request))
+        .await
+        .unwrap();
 }

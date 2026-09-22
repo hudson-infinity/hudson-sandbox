@@ -119,4 +119,4 @@ Hosted PR runners compile but do not execute the privileged suite. These checks 
 
 ## Whole-allocation lifecycle
 
-The [whole-allocation retirement protocol](allocation-retirement.md) now has database preparation, host launch fencing, consumer closure and recoverable guardian metadata deletion components. Controller handoff, database completion and bounded host-record retirement remain incomplete. Only the authenticated metadata-retirement RPC may remove verified guardian metadata; allocation tombstones remain retained. Manual deletion does not establish cleanup or restore admission capacity.
+The [whole-allocation retirement protocol](allocation-retirement.md) now has database preparation, host launch fencing, consumer closure and recoverable guardian metadata deletion components. The database can retain exact metadata completion; automatic controller handoff and bounded host-record retirement remain incomplete. Only the authenticated metadata-retirement RPC may remove verified guardian metadata; allocation tombstones remain retained. Manual deletion does not establish cleanup or restore admission capacity.
