@@ -145,6 +145,14 @@ impl Host {
             ));
         }
         deadline(request.expires_unix_ms)?;
+        // Release is durable before allocation retirement is eligible, but a
+        // guardian can still hold its lifecycle lock while its watchdog exits.
+        // Reissue the exact stop before taking that lock; this is idempotent and
+        // cannot affect another allocation because the retained manifest has
+        // already been bound to the frozen retirement intent above.
+        if let Some(manifest) = &record.manifest {
+            let _ = guardian::control(manifest, Action::Stop);
+        }
         let mut session = Session::open(
             &self.inner.config.state_root.join("a"),
             &self.inner.config.cgroup_parent,
