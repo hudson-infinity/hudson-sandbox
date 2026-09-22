@@ -158,7 +158,7 @@ impl Fixture {
             .arg(hex::encode(file_reader.pin()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(fs::File::create(vm.temp.path().join("host.stderr")).unwrap())
             .spawn()
             .unwrap()
     }
@@ -831,18 +831,29 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
             }
         }
         let until = Instant::now() + Duration::from_secs(60);
+        let mut last_retirement_rpc = None;
         loop {
             for _ in 0..4 {
-                history.tick().await.unwrap();
+                match history.tick().await {
+                    Ok(_) | Err(sandbox_controller::history::HistoryError::Rpc) => {}
+                    Err(error) => panic!("cycle {cycle} history retirement failed: {error}"),
+                }
             }
-            match retire.tick().await.unwrap() {
-                sandbox_controller::retirement::RetirementTick::Completed => break,
-                sandbox_controller::retirement::RetirementTick::Idle
-                | sandbox_controller::retirement::RetirementTick::Deferred => {}
+            match retire.tick().await {
+                Ok(sandbox_controller::retirement::RetirementTick::Completed) => break,
+                Ok(
+                    sandbox_controller::retirement::RetirementTick::Idle
+                    | sandbox_controller::retirement::RetirementTick::Deferred,
+                ) => {}
+                Err(error @ sandbox_controller::retirement::RetirementError::Rpc(_)) => {
+                    last_retirement_rpc = Some(error.to_string());
+                }
+                Err(error) => panic!("cycle {cycle} allocation retirement failed: {error}"),
             }
             assert!(
                 Instant::now() < until,
-                "cycle {cycle} retirement did not converge"
+                "cycle {cycle} retirement did not converge; last RPC error: {last_retirement_rpc:?}; host stderr: {}",
+                fs::read_to_string(f.vm.temp.path().join("host.stderr")).unwrap_or_default(),
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }

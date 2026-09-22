@@ -27,8 +27,8 @@ pub enum RetirementTick {
 pub enum RetirementError {
     #[error("allocation retirement storage failed: {0}")]
     Store(#[from] sandbox_store::allocation_retirement::Error),
-    #[error("allocation retirement RPC failed; retained claim requires reconciliation")]
-    Rpc,
+    #[error("allocation retirement RPC failed; retained claim requires reconciliation: {0}")]
+    Rpc(#[source] tonic::Status),
     #[error("allocation retirement request encoding failed")]
     Encoding,
 }
@@ -101,8 +101,12 @@ impl Retirer {
                     }),
             )
             .await
-            .map_err(|_| RetirementError::Rpc)?
-            .map_err(|_| RetirementError::Rpc)?
+            .map_err(|_| {
+                RetirementError::Rpc(tonic::Status::deadline_exceeded(
+                    "allocation metadata retirement timed out",
+                ))
+            })?
+            .map_err(RetirementError::Rpc)?
             .into_inner();
             match self
                 .store
@@ -151,8 +155,12 @@ impl Retirer {
             }),
         )
         .await
-        .map_err(|_| RetirementError::Rpc)?
-        .map_err(|_| RetirementError::Rpc)?
+        .map_err(|_| {
+            RetirementError::Rpc(tonic::Status::deadline_exceeded(
+                "allocation forgetting timed out",
+            ))
+        })?
+        .map_err(RetirementError::Rpc)?
         .into_inner();
         if let Err(error) = self
             .store

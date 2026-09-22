@@ -103,7 +103,8 @@ struct Inner {
 pub struct Host {
     inner: Arc<Inner>,
 }
-fn uncertain(_: impl std::fmt::Display) -> Status {
+fn uncertain(error: impl std::fmt::Display) -> Status {
+    eprintln!("sandbox host uncertain operation: {error}");
     Status::unavailable("host operation uncertain; inspect retained allocation before retry")
 }
 fn lock<T>(value: &Mutex<T>) -> Result<MutexGuard<'_, T>, Status> {
