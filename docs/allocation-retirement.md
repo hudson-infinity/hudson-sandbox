@@ -140,3 +140,5 @@ Unit/state tests establish ordering and malformed-input behavior. Database tests
 Reader closure validation is recorded separately in [reader-drain evidence](evidence/2026-09-22-retirement-reader-drain.json), including the initial parallel privileged test failure and the serial rerun.
 
 [Metadata-retirement evidence](evidence/2026-09-22-allocation-metadata-retirement.json) records partial-unlink recovery, retained-history restart checks and controlled host validation, including their limits.
+
+[Completion-scope evidence](evidence/2026-09-22-retirement-completion-scope.json) records exact-scope restart checks, persistent-lock exclusion, real guardian/host admission regression tests and their limits.
