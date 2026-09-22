@@ -8,8 +8,11 @@
 //! Integration must durably commit transitions under cross-process launch
 //! serialization. Callers independently verify consumer closure, physical cleanup
 //! and database acknowledgement before invoking the corresponding transitions.
-//! No runtime currently uses this model to authorize deletion.
-use crate::{AllocationId, HostId, Id, OperationId, ProjectId, SandboxId};
+//! Host retirement uses fencing for deletion. Completion and forgetting remain
+//! caller-verified components until the controller handoff is integrated.
+use crate::{
+    AllocationId, HostId, Id, OperationId, ProjectId, SandboxId, allocation_retirement::Intent,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -81,8 +84,13 @@ fn valid_uuid(id: uuid::Uuid) -> Result<(), Error> {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum State {
     Active {},
-    Fenced { retirement: OperationId },
-    Complete { retirement: OperationId },
+    Fenced {
+        retirement: OperationId,
+    },
+    Complete {
+        retirement: OperationId,
+        intent_sha256: [u8; 32],
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,7 +175,7 @@ impl Authority {
             previous = e.permit.serial;
             match e.state {
                 State::Active {} => {}
-                State::Fenced { retirement } | State::Complete { retirement } => {
+                State::Fenced { retirement } | State::Complete { retirement, .. } => {
                     valid_uuid(retirement.uuid())?;
                 }
             }
@@ -270,34 +278,53 @@ impl Authority {
         let i = self.index(permit)?;
         match self.0.entries[i].state {
             State::Active {} => self.0.entries[i].state = State::Fenced { retirement },
-            State::Fenced { retirement: r } | State::Complete { retirement: r }
+            State::Fenced { retirement: r } | State::Complete { retirement: r, .. }
                 if r == retirement => {}
             _ => return Err(Error::Conflict),
         }
         Ok(())
     }
     /// Caller has independently verified exact-owner cleanup and synced metadata
-    /// deletion. The retained completion permits lost-reply reconciliation.
-    pub fn complete(&mut self, permit: &Permit, retirement: OperationId) -> Result<(), Error> {
-        let i = self.index(permit)?;
-        match self.0.entries[i].state {
-            State::Fenced { retirement: r } | State::Complete { retirement: r }
-                if r == retirement => {}
+    /// deletion. Bind the full frozen scope before the host record can disappear.
+    /// This digest is not a signature or proof of database acknowledgement.
+    pub fn complete(&mut self, intent: &Intent) -> Result<(), Error> {
+        let complete = completion_state(intent)?;
+        let i = self.index(&intent.permit)?;
+        match &self.0.entries[i].state {
+            State::Fenced { retirement } if *retirement == intent.retirement => {}
+            retained if *retained == complete => return Ok(()),
             _ => return Err(Error::Conflict),
         }
-        self.0.entries[i].state = State::Complete { retirement };
+        self.0.entries[i].state = complete;
+        Ok(())
+    }
+    /// Read the exact retained completion after a restart or lost response.
+    /// Closed after forgetting is only denial, never an exact-scope receipt.
+    pub fn completed(&self, intent: &Intent) -> Result<(), Error> {
+        let expected = completion_state(intent)?;
+        if *self.state(&intent.permit)? != expected {
+            return Err(Error::Conflict);
+        }
         Ok(())
     }
     /// Caller has verified durable database completion. Afterwards Closed means
     /// only denial, never a receipt for this request's identity or cleanup.
-    pub fn forget(&mut self, permit: &Permit, retirement: OperationId) -> Result<(), Error> {
-        let i = self.index(permit)?;
-        if self.0.entries[i].state != (State::Complete { retirement }) {
-            return Err(Error::Conflict);
-        }
+    pub fn forget(&mut self, intent: &Intent) -> Result<(), Error> {
+        self.completed(intent)?;
+        let i = self.index(&intent.permit)?;
         self.0.entries.remove(i);
         Ok(())
     }
+}
+fn completion_state(intent: &Intent) -> Result<State, Error> {
+    let intent_sha256 = intent.digest().map_err(|_| Error::Invalid)?;
+    if intent.simulated {
+        return Err(Error::Invalid);
+    }
+    Ok(State::Complete {
+        retirement: intent.retirement,
+        intent_sha256,
+    })
 }
 
 #[cfg(test)]

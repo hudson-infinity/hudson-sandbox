@@ -18,6 +18,12 @@ Activation is explicit and restricted to a fresh, private root-owned allocation 
 
 The root retains `launch.lock`, `launch.required` and `launch.json`; atomic updates use one `launch.next` staging file. The activation record binds the stable lock inode. An interrupted staging file cannot turn the root into legacy mode or replace a missing authoritative state. A failed fence may leave the previous valid grant active: callers must retain original metadata until a successful durable acknowledgement. `complete` and `forget` trust their caller to verify physical cleanup and database completion; neither performs deletion or establishes those proofs.
 
+A retained root `Complete` entry now also requires the canonical SHA-256 digest of the full frozen retirement intent. Completing, reconciling completion and forgetting take that intent, reject simulation, and compare its permit, retirement identity and digest. A changed release digest or command/file boundary cannot reuse the original completion after the larger host record disappears. The digest binds scope; it is not an authentication signature or independent cleanup/database proof.
+
+`AuthorityFile::completed` returns a shared root-lock guard after validating the exact scope and current epoch and syncing the root directory. A future host-journal removal caller must retain this guard through its durable write, preventing concurrent root forgetting or epoch advancement from removing the proof in that interval. The host RPC does not invoke this transition yet, and startup still rejects root `Complete` for its existing metadata-deletion records until the forgetting handoff is implemented.
+
+Compatibility: existing active and fenced entries remain readable. A completed entry without the required digest is rejected rather than upgraded from incomplete evidence. Older strict readers reject the new completion field. These transitions have only component-test callers at this stage; do not manually manufacture completion records or use this as a rolling-upgrade procedure.
+
 Controlled development-VM validation is recorded in [guardian authority evidence](implementation/guardian-authority-evidence.md). This component does not complete the whole-allocation retirement protocol or authorize production tombstone deletion.
 
 ## Required replacement authority
@@ -134,3 +140,5 @@ Unit/state tests establish ordering and malformed-input behavior. Database tests
 Reader closure validation is recorded separately in [reader-drain evidence](evidence/2026-09-22-retirement-reader-drain.json), including the initial parallel privileged test failure and the serial rerun.
 
 [Metadata-retirement evidence](evidence/2026-09-22-allocation-metadata-retirement.json) records partial-unlink recovery, retained-history restart checks and controlled host validation, including their limits.
+
+[Completion-scope evidence](evidence/2026-09-22-retirement-completion-scope.json) records exact-scope restart checks, persistent-lock exclusion, real guardian/host admission regression tests and their limits.
