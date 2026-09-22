@@ -983,3 +983,159 @@ async fn history_committed_file_requires_source_proof_and_original_boot(pool: Pg
     .unwrap();
     assert_eq!(count, 1);
 }
+
+// Synthetic source and destruction proofs isolate public accounting from storage I/O.
+async fn released_quota_case(pool: PgPool, global: bool) {
+    use sandbox_protocol::{
+        AllocationId, ProjectId,
+        history::Domain,
+        supervisor::{AllocationState, ReleasedHistoryObservation},
+    };
+    let _guard = TEST_LOCK.lock().await;
+    let (f, _sources, c, s) = setup(&pool).await;
+    let (first, template) = retired_unstarted(&f, s, vec![1]).await;
+    let payload: Value = sqlx::query_scalar("SELECT payload FROM operations WHERE id=$1")
+        .bind(first.uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut remaining = if global { 1023 } else { 127 };
+    let mut tx = pool.begin().await.unwrap();
+    let mut project = template.owner.scope.project_id;
+    let mut allocations: usize = 0;
+    while remaining > 0 {
+        if global && allocations.is_multiple_of(8) {
+            project = ProjectId::generate();
+            sqlx::query("INSERT INTO projects(id,name,status,limits,api_tokens) VALUES($1,'retired quota','active','{}','[]')").bind(project.uuid()).execute(&mut *tx).await.unwrap();
+        }
+        let sandbox = SandboxId::generate();
+        let allocation = AllocationId::generate();
+        sqlx::query("INSERT INTO sandboxes(id,project_id,image_digest,resources,desired_state,observed_state,generation,destroyed_at) VALUES($1,$2,'sha256:history','{}','destroyed','destroyed',1,clock_timestamp())").bind(sandbox.uuid()).bind(project.uuid()).execute(&mut *tx).await.unwrap();
+        sqlx::query("INSERT INTO allocations(id,project_id,sandbox_id,host_id,generation,supervisor_epoch,vcpu,memory_mib,disk_mib,status,released_at,release_evidence) VALUES($1,$2,$3,$4,1,1,1,128,64,'released',clock_timestamp(),'{\"simulated\":true}')").bind(allocation.uuid()).bind(project.uuid()).bind(sandbox.uuid()).bind(f.config.host.uuid()).execute(&mut *tx).await.unwrap();
+        for _ in 0..remaining.min(16) {
+            let id = OperationId::generate();
+            let mut p = template.clone();
+            p.owner.scope.project_id = project;
+            p.owner.scope.sandbox_id = sandbox;
+            p.owner.scope.allocation_id = allocation;
+            p.owner.operation_id = id;
+            p.upload.operation_id = id;
+            p.source_attempt = OperationId::generate();
+            let digest = sandbox_protocol::RequestDigest::compute(
+                "PUT",
+                &format!("/v1/sandboxes/{sandbox}/files"),
+                &payload,
+            )
+            .unwrap();
+            sqlx::query("INSERT INTO operations(id,project_id,sandbox_id,kind,initiator_kind,idempotency_key,request_digest,digest_version,payload,status,phase,file_allocation_id,deadline,completed_at) VALUES($1,$2,$3,'file_write','service',$4,$5,1,$6,'failed','file_not_started',$7,clock_timestamp()-interval '1 hour',clock_timestamp())")
+                .bind(id.uuid()).bind(project.uuid()).bind(sandbox.uuid()).bind(id.to_string()).bind(digest.as_bytes().as_slice()).bind(&payload).bind(allocation.uuid()).execute(&mut *tx).await.unwrap();
+            let manifest = sandbox_store::uploads::cleanup::SourceCleanupManifest {
+                version: 1,
+                plan: p.clone(),
+                selected: None,
+            };
+            sqlx::query("INSERT INTO file_uploads(operation_id,project_id,sandbox_id,allocation_id,size,token_hash,plan,source_frozen_at,source_cleanup_revision,source_cleanup_manifest,source_retired_at,source_retirement) VALUES($1,$2,$3,$4,1,$5,$6,clock_timestamp(),1,$7,clock_timestamp(),$8)")
+                .bind(id.uuid()).bind(project.uuid()).bind(sandbox.uuid()).bind(allocation.uuid()).bind([0u8;32].as_slice()).bind(serde_json::json!(p)).bind(serde_json::json!(manifest)).bind(serde_json::json!(receipt(&p,None))).execute(&mut *tx).await.unwrap();
+            remaining -= 1;
+        }
+        allocations += 1;
+    }
+    tx.commit().await.unwrap();
+    let key = OperationId::generate().to_string();
+    assert_eq!(
+        put(f.app.clone(), f.token.clone(), s, key.clone(), vec![1])
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    // A fake supervisor cannot manufacture a durable destruction acknowledgement.
+    let mut worker = c.history_retirer();
+    for _ in 0..3 {
+        let _ = worker.tick().await;
+    }
+    assert!(matches!(
+        worker.tick().await,
+        Err(sandbox_controller::history::HistoryError::Rpc)
+    ));
+    sqlx::query("UPDATE released_allocation_history SET next_retry_at=NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let p = f
+        .store
+        .claim_released_history(f.config.host, 1, Domain::Files, 30, true)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        put(f.app.clone(), f.token.clone(), s, key.clone(), vec![1])
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let mut observed = ReleasedHistoryObservation {
+        completed_through: p.request.through.clone(),
+        request: Some(p.request.clone()),
+        release_state: AllocationState::Released as i32,
+        simulated: true,
+        observed_unix_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+            as i64,
+    };
+    observed.release_state = AllocationState::Absent as i32;
+    assert!(
+        f.store
+            .complete_released_history(&p.claim, &observed, true)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        put(f.app.clone(), f.token.clone(), s, key.clone(), vec![1])
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    observed.release_state = AllocationState::Released as i32;
+    let (covered, saved): (sqlx::types::Uuid, Value) = sqlx::query_as("SELECT operation_id,source_retirement FROM file_uploads WHERE allocation_id=$1 ORDER BY operation_id LIMIT 1")
+        .bind(p.claim.claim.allocation_id.uuid()).fetch_one(&pool).await.unwrap();
+    sqlx::query("UPDATE file_uploads SET source_retirement=jsonb_set(source_retirement,'{plan_sha256}',to_jsonb($2::text)) WHERE operation_id=$1")
+        .bind(covered).bind("0".repeat(64)).execute(&pool).await.unwrap();
+    assert!(
+        f.store
+            .complete_released_history(&p.claim, &observed, true)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        put(f.app.clone(), f.token.clone(), s, key.clone(), vec![1])
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    sqlx::query("UPDATE file_uploads SET source_retirement=$2 WHERE operation_id=$1")
+        .bind(covered)
+        .bind(saved)
+        .execute(&pool)
+        .await
+        .unwrap();
+    f.store
+        .complete_released_history(&p.claim, &observed, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        put(f.app.clone(), f.token.clone(), s, key, vec![1]).await.0,
+        StatusCode::ACCEPTED
+    );
+    let retained: i64 = sqlx::query_scalar("SELECT count(*) FROM file_uploads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(retained, if global { 1025 } else { 129 });
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn released_history_restores_project_slots_only_after_destruction_ack(pool: PgPool) {
+    released_quota_case(pool, false).await;
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn released_history_restores_global_slots_only_after_destruction_ack(pool: PgPool) {
+    released_quota_case(pool, true).await;
+}

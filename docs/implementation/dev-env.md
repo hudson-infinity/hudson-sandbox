@@ -62,4 +62,4 @@ You will be on aarch64 locally and x86_64 in production for a long time. Paramet
 
 ## Opt-in history retirement
 
-The controller's `--retire-history` worker can reclaim original live-allocation command/file reservations after consumer cleanup and authenticated guest/host acknowledgement. Configure [history retirement prerequisites](../history-reclamation.md#operator-activation) first. Ordinary development runs keep this disabled. The fake host does not provide durable retirement proof. Controlled nested-aarch64 evidence is distinct from supported-host release acceptance.
+The controller's `--retire-history` worker can reclaim command/file reservations after consumer cleanup and either authenticated live guest/host acknowledgement or independently verified allocation destruction. Destruction claims preserve original ownership across host epoch changes. Configure [history retirement prerequisites](../history-reclamation.md#operator-activation) first. Ordinary development runs keep this disabled. The fake host does not provide durable retirement proof. Controlled nested-aarch64 evidence is distinct from supported-host release acceptance.

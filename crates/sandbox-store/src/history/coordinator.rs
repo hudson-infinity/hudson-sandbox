@@ -12,7 +12,7 @@ pub enum Preparation {
     },
 }
 
-fn owner(a: &PgRow, claim: &Claim) -> Result<LeaseOwnership, Error> {
+pub(super) fn owner(a: &PgRow, claim: &Claim) -> Result<LeaseOwnership, Error> {
     Ok(LeaseOwnership {
         host_id: HostId::from_uuid(a.try_get("host_id")?).to_string(),
         project_id: ProjectId::from_uuid(a.try_get("project_id")?).to_string(),
@@ -74,7 +74,7 @@ async fn save_request(
     }
     Ok(())
 }
-fn fresh(observed: i64, claim: &Claim, now: OffsetDateTime) -> Result<(), Error> {
+pub(super) fn fresh(observed: i64, claim: &Claim, now: OffsetDateTime) -> Result<(), Error> {
     // Observations must belong to this short claim, allowing bounded clock skew.
     if observed <= 0
         || observed > millis(now)?.saturating_add(5_000)

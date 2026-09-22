@@ -84,9 +84,10 @@ async fn main() -> anyhow::Result<()> {
         }
         if args.retire_history {
             let mut worker = controller.history_retirer();
-            // Both independent domains receive a turn in diagnostic mode.
-            eprintln!("{:?}", worker.tick().await?);
-            eprintln!("{:?}", worker.tick().await?);
+            // Both domains and both lifecycle proof paths receive a turn.
+            for _ in 0..4 {
+                eprintln!("{:?}", worker.tick().await?);
+            }
         }
         return Ok(());
     }

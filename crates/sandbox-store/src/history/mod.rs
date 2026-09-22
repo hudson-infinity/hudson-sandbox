@@ -14,7 +14,9 @@ use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 mod coordinator;
 mod evidence;
+mod released;
 pub use coordinator::Preparation;
+pub use released::{ReleasedClaim, ReleasedPreparation};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -60,7 +62,7 @@ pub(crate) async fn next_operation(
             .await?;
     let mut floor = row.try_get::<Option<uuid::Uuid>, _>("last_admitted_operation_id")?;
     for value in sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT reserved_through FROM allocation_history WHERE allocation_id=$1",
+        "SELECT reserved_through FROM allocation_history WHERE allocation_id=$1 UNION ALL SELECT reserved_through FROM released_allocation_history WHERE allocation_id=$1",
     )
     .bind(allocation)
     .fetch_all(&mut *db)

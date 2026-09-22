@@ -94,7 +94,7 @@ The image allowlist is static process configuration and checked at dispatch. Upd
 
 Public state remains a timestamped last observation, not a live VM-presence guarantee. The maintenance loop renews confirmed allocations and reconciles same-epoch watchdog release. Controlled nested-aarch64 tests exercise watchdog teardown and restart fencing; supported-host failure and isolation gates remain separate.
 
-An optional `--retire-history` task coordinates original live-allocation history retirement, alternating command and file domains. It does not run inside the lifecycle tick and cannot refund pending or unverified prefixes. Consumer cleanup must complete first; see [activation and limits](history-reclamation.md#operator-activation). The simulator refuses durable history evidence even with `--allow-simulated`.
+An optional `--retire-history` task coordinates live and verified-destruction history retirement, cycling through both command/file domains for each proof path. It does not run inside the lifecycle tick and cannot refund pending or unverified prefixes. Consumer cleanup must complete first; see [activation and limits](history-reclamation.md#operator-activation). The simulator refuses durable history evidence even with `--allow-simulated`.
 
 ## Evidence and remaining work
 

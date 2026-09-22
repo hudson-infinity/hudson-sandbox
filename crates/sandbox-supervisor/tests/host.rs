@@ -1121,6 +1121,9 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     assert!(m.receipt().unwrap().cleanup_confirmed);
     let (released,):(bool,)=sqlx::query_as("SELECT released_at IS NOT NULL AND release_evidence->>'simulated'='false' FROM allocations").fetch_one(&pool).await.unwrap();
     assert!(released);
+    if !output {
+        history::public_released_retirement(&pool, &store, &mut f, &image).await;
+    }
     if let Some(artifacts) = &artifacts {
         f.restart().await;
         let mut client = transport::connect_archiver(
