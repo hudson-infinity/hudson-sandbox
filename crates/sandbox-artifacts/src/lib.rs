@@ -92,7 +92,7 @@ fn storage_error(error: object_store::Error) -> Error {
         _ => Error::Unavailable,
     }
 }
-// Even an uncertain PUT can have committed. Perform one verified read, never
+// Even an uncertain PUT can have committed. Perform a verified read, never
 // another PUT; a missing read cannot resolve a request that may still commit.
 fn uncertain_put(result: &object_store::Result<object_store::PutResult>) -> bool {
     !matches!(
@@ -107,6 +107,20 @@ fn upload_error(error: Error, uncertain: bool) -> Error {
         Error::Corrupt => Error::Conflict,
         Error::Missing if uncertain => Error::Unavailable,
         other => other,
+    }
+}
+// A reused HTTP connection can close before the confirming GET finishes.
+// Retry only the read, once, within the caller's original transfer timeout and
+// permit. Each attempt verifies the complete object from scratch. Missing or
+// conflicting evidence is authoritative for that read and is never retried.
+async fn confirm_upload<T, F, Fut>(mut read: F) -> Result<T, Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, Error>>,
+{
+    match read().await {
+        Err(Error::Unavailable) => read().await,
+        result => result,
     }
 }
 fn check_owner(plan: &OutputPlan, expected: &OutputOwner, now: i64) -> Result<(), Error> {
@@ -186,8 +200,7 @@ impl ArtifactStore {
             // Do not infer success from AlreadyExists or an ETag (not a content
             // digest). Verify the complete object and bound metadata, including
             // after a successful PUT. Lost acknowledgements take this same path.
-            let (reference, _) = self
-                .fetch(plan, None)
+            let (reference, _) = confirm_upload(|| self.fetch(plan, None))
                 .await
                 .map_err(|error| upload_error(error, uncertain))?;
             Ok(reference)
