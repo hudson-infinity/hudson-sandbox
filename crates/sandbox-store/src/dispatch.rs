@@ -272,6 +272,7 @@ impl Store {
         fence(&mut tx, claim).await?;
         tx.commit().await?;
         Ok(CreateAction::Start(CreateRequest {
+            launch_permit_json: Vec::new(),
             ownership: Some(ctx.owner),
             image_digest: digest,
             resources: Some(resources),

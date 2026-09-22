@@ -456,6 +456,16 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn allocation_authority(
+        &self,
+        _: Request<sandbox_protocol::supervisor::AllocationAuthorityRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::AllocationAuthorityObservation>, Status>
+    {
+        Err(Status::unimplemented(
+            "fake host does not provide durable launch authority",
+        ))
+    }
+
     async fn retire_released_history(
         &self,
         _r: Request<sandbox_protocol::supervisor::ReleasedHistoryRequest>,
@@ -583,6 +593,7 @@ impl Supervisor for FakeHost {
             return Err(Status::unavailable("injected health failure"));
         }
         Ok(Response::new(HostInfo {
+            launch_permits_required: false,
             host_id: self.config.host.to_string(),
             supervisor_epoch: self.config.epoch,
             simulated: true,

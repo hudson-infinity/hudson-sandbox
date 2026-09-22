@@ -179,6 +179,7 @@ fn failed_durable_intent_write_poison_fences_without_discarding_receipts() {
         epoch: 1,
         state_root: temp.path().into(),
         cgroup_parent: temp.path().join("unused"),
+        launch_permits_required: false,
         guardian_binary: temp.path().join("unused"),
         firecracker: artifact.clone(),
         jailer: artifact,
@@ -193,6 +194,7 @@ fn failed_durable_intent_write_poison_fences_without_discarding_receipts() {
     };
     let allocation = record.owner.allocation_id.clone();
     let mut journal = Journal {
+        launch_authority: None,
         version: 1,
         host,
         epoch: 1,

@@ -1,6 +1,6 @@
 # Bounded allocation authority model
 
-Status: implemented state model and database serial issuance; host registration, guardian enforcement and deletion are not integrated. [The protocol module](../crates/sandbox-protocol/src/allocation_authority.rs) and [its tests](../crates/sandbox-protocol/src/allocation_authority_tests.rs) explore the replacement authority required for whole-allocation reclamation in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Existing host/guardian tombstones remain mandatory.
+Status: implemented state model, database serial issuance and opt-in fresh-host registration with guardian enforcement. Whole-allocation deletion and legacy migration remain unfinished. [The protocol module](../crates/sandbox-protocol/src/allocation_authority.rs) and [its tests](../crates/sandbox-protocol/src/allocation_authority_tests.rs) explore the replacement authority required for whole-allocation reclamation in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Existing host/guardian tombstones remain mandatory.
 
 ## Serial registration and retained owners
 
@@ -57,3 +57,15 @@ Do not use a missing authority file as permission to call `Authority::new`, dele
 The model suite runs 4,096 newer allocation registrations/retirements while the oldest permit remains active, serializing and reloading at retirement boundaries. It also fills all 1,024 slots, confirms that fenced/completed records remain charged, frees an interior slot and admits newer work without reopening it. Other tests exercise out-of-order launches after registration, changed identities/intents, registration atomicity, serial exhaustion, malformed storage, duplicate fields and rollback below an independent frontier.
 
 These are deterministic state-machine tests on the Mac, not 4,096 microVM lifecycles or crash/power-loss tests. No supported-host security claim follows from them. Full database/host/guardian integration and controlled real-host evidence remain necessary before any tombstone deletion can be enabled.
+
+## Fresh-host registration and launch
+
+Set `launch_permits_required: true` in the root-owned host configuration only when provisioning a fresh host state directory. Startup initializes guardian authority and persists its checkpoint in the host journal. Existing legacy journals cannot be upgraded by toggling this setting, and an enabled journal cannot downgrade to legacy mode. Missing or corrupt activated state fails closed. Interrupted initial provisioning may require operator investigation; startup does not reinterpret partial state as a fresh host. Old binaries must be quiesced before provisioning.
+
+`Health` reports whether permits are required and verifies the retained authority before declaring that host healthy. The authenticated controller uses `AllocationAuthority` to inspect progress with empty `permits_json`, then register at most 32 contiguous immutable permits in a bounded JSON array. The host acknowledges only after the authority and independent host-journal checkpoint are durable. A lost reply is reconciled by inspection on the next attempt. Inspection does not grant launch or prove cleanup.
+
+[Migration 0018](../migrations/0018_allocation_registration.sql) records the required mode and acknowledged frontier in the database. The controller rejects a lower frontier, disabled mode after activation, wrong host/epoch or progress beyond issued serials. Unissued legacy allocations block registration. Progress survives controller restarts. Registration precedes Create dispatch intent; registration failure leaves that operation eligible for later admission. Create then carries the original exact-owner permit, and host admission and every guardian launch gate enforce it. Epoch advancement rejects old launches while retaining owners needed for cleanup.
+
+The fake host advertises legacy simulated behavior and does not provide durable permit authority. Ordinary legacy hosts retain their existing allocation tombstones. This integration neither removes those tombstones nor calls completion/forget automatically. Capacity reclamation still requires the full [retirement protocol](allocation-retirement.md).
+
+Controlled execution results and source hashes are recorded in [host permit registration evidence](implementation/host-permit-registration-evidence.md).

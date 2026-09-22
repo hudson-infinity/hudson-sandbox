@@ -155,6 +155,7 @@ async fn configured_controller_and_rotation_certificate_can_use_real_rpc() {
         assert_eq!(info.supervisor_epoch, 1);
         let response = client
             .create(CreateRequest {
+                launch_permit_json: Vec::new(),
                 ownership: Some(Ownership {
                     host_id: fixture.host.to_string(),
                     project_id: ProjectId::generate().to_string(),
@@ -274,6 +275,7 @@ async fn server_rejects_oversized_control_messages() {
         SupervisorClient::new(channel).max_encoding_message_size(MAX_MESSAGE_BYTES * 2);
     let error = client
         .create(CreateRequest {
+            launch_permit_json: Vec::new(),
             image_digest: "a".repeat(MAX_MESSAGE_BYTES + 1),
             ..Default::default()
         })
@@ -320,6 +322,7 @@ impl Fixture {
             claim_expires_unix_ms: unix_ms().unwrap() + 30000,
         };
         c.create(CreateRequest {
+            launch_permit_json: Vec::new(),
             ownership: Some(owner.clone()),
             image_digest: format!("sha256:{}", "a".repeat(64)),
             resources: Some(Resources {

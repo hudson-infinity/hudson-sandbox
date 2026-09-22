@@ -26,6 +26,7 @@ fn fixture() -> (FakeHost, CreateRequest) {
     })
     .unwrap();
     let request = CreateRequest {
+        launch_permit_json: Vec::new(),
         ownership: Some(Ownership {
             host_id: host.to_string(),
             project_id: ProjectId::generate().to_string(),

@@ -43,6 +43,8 @@ pub(super) struct Record {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Journal {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_authority: Option<crate::launch_authority::Checkpoint>,
     pub version: u32,
     pub host: HostId,
     pub epoch: i64,
@@ -110,6 +112,16 @@ pub(super) fn open(config: &Config) -> anyhow::Result<(File, Journal)> {
                 "missing journal with retained host state"
             );
             Journal {
+                launch_authority: if config.launch_permits_required {
+                    let authority = crate::launch_authority::AuthorityFile::initialize(
+                        config.state_root.join("a"),
+                        config.host,
+                        config.epoch,
+                    )?;
+                    Some(authority.checkpoint(config.epoch)?)
+                } else {
+                    None
+                },
                 version: 1,
                 host: config.host,
                 epoch: config.epoch,

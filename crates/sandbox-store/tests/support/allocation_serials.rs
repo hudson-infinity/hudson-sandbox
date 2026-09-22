@@ -231,3 +231,46 @@ async fn allocation_serial_batches_are_bounded_and_host_scoped(pool: PgPool) {
     assert!(other_batch.permits.is_empty());
     assert!(!other_batch.has_unissued_allocations);
 }
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn registration_checkpoint_rejects_rollback_downgrade_and_wrong_epoch(pool: PgPool) {
+    let store = Store::from_pool(pool.clone());
+    let host = super::host(&pool).await;
+    let (project, token) = project(&pool).await;
+    let claim = claim(&store, project, &token, 30).await;
+    store.reserve_create(&claim, host, 1).await.unwrap();
+    store
+        .record_allocation_registration(host, 1, true, 0)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .record_allocation_registration(host, 1, false, 0)
+            .await
+            .is_err()
+    );
+    store
+        .record_allocation_registration(host, 1, true, 1)
+        .await
+        .unwrap();
+    store
+        .record_allocation_registration(host, 1, true, 1)
+        .await
+        .unwrap();
+    for (epoch, through) in [(1, 0), (1, 2), (2, 1), (0, 1)] {
+        assert!(
+            store
+                .record_allocation_registration(host, epoch, true, through)
+                .await
+                .is_err()
+        );
+    }
+    let state: (bool, i64) = sqlx::query_as(
+        "SELECT launch_authority_required,registered_allocation_serial FROM hosts WHERE id=$1",
+    )
+    .bind(host.uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, (true, 1));
+}

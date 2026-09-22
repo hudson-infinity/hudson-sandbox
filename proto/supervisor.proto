@@ -4,6 +4,7 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc AllocationAuthority(AllocationAuthorityRequest) returns (AllocationAuthorityObservation);
   rpc RetireReleasedHistory(ReleasedHistoryRequest) returns (ReleasedHistoryObservation);
   rpc HistoryBinding(LeaseInspection) returns (HistoryBindingObservation);
   rpc RetireHistory(HistoryRequest) returns (HistoryObservation);
@@ -75,8 +76,21 @@ message OutputObservation {
   bytes plans_json = 6;
   bytes references_json = 7;
 }
+// Empty permits_json inspects durable progress; a nonempty JSON Permit array
+// registers the next bounded contiguous batch. Neither response grants cleanup.
+message AllocationAuthorityRequest {
+  string host_id = 1;
+  int64 reporting_epoch = 2;
+  bytes permits_json = 3;
+}
+message AllocationAuthorityObservation {
+  string host_id = 1;
+  int64 reporting_epoch = 2;
+  uint64 registered_through = 3;
+}
 message HealthRequest {}
 message HostInfo {
+  bool launch_permits_required = 4;
   string host_id = 1;
   int64 supervisor_epoch = 2;
   bool simulated = 3;
@@ -100,6 +114,7 @@ message Resources {
   uint64 disk_mib = 3;
 }
 message CreateRequest {
+  bytes launch_permit_json = 5;
   Ownership ownership = 1;
   string image_digest = 2;
   Resources resources = 3;

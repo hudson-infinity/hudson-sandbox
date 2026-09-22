@@ -1,5 +1,6 @@
 //! One configured host, durable create/destroy dispatch, and reconciliation over mTLS.
 //! The supervisor is trusted only after its certificate, host ID, and epoch match.
+mod allocation_authority;
 pub mod archive;
 pub mod history;
 mod recovery;
@@ -35,6 +36,8 @@ pub struct ControllerConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerError {
+    #[error(transparent)]
+    AllocationAuthority(#[from] sandbox_store::allocation_permits::Error),
     #[error("configure a positive host epoch and nonempty immutable image allowlist")]
     InvalidConfig,
     #[error("supervisor health response does not match the configured host or evidence policy")]
@@ -64,6 +67,7 @@ pub enum Tick {
 
 #[derive(Debug)]
 pub struct Controller {
+    launch_permits_required: bool,
     store: Store,
     config: ControllerConfig,
     client: SupervisorClient<Channel>,
@@ -94,6 +98,7 @@ impl Controller {
         let archive_client =
             transport::connect_archiver(&config.endpoint, config.host, ca, cert, key).await?;
         let mut controller = Self {
+            launch_permits_required: false,
             store,
             config,
             client,
@@ -119,6 +124,8 @@ impl Controller {
         {
             return Err(ControllerError::HostIdentity);
         }
+        self.launch_permits_required = health.launch_permits_required;
+        self.sync_allocation_authority().await?;
         // This only touches the existing operator-provisioned epoch. Registration
         // and epoch issuance remain separate; the RPC cannot insert arbitrary hosts.
         self.store
@@ -398,6 +405,14 @@ impl Controller {
         {
             return self.defer(claim).await;
         }
+        let launch_permit = if self.launch_permits_required {
+            match self.prepare_launch_permit(claim, &allocation).await {
+                Ok(permit) => permit,
+                Err(_) => return self.defer(claim).await,
+            }
+        } else {
+            Vec::new()
+        };
         let action = match self
             .store
             .prepare_create_dispatch(claim, &self.config.allowed_images)
@@ -420,7 +435,10 @@ impl Controller {
             Err(error) => return Err(error.into()),
         };
         let response = match action {
-            CreateAction::Start(request) => self.client.create(request).await,
+            CreateAction::Start(mut request) => {
+                request.launch_permit_json = launch_permit;
+                self.client.create(request).await
+            }
             CreateAction::Inspect(owner) => {
                 self.client
                     .inspect(InspectRequest {

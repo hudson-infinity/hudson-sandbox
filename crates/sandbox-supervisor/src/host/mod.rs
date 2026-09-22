@@ -1,5 +1,6 @@
 //! Durable, root-operated lifecycle adapter. Guest readiness and cleanup remain observations.
 mod archive;
+mod authority;
 mod commands;
 mod file_downloads;
 mod files;
@@ -48,6 +49,9 @@ pub struct Capacity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Enable only during fresh-host provisioning; persisted mode cannot downgrade.
+    #[serde(default)]
+    pub launch_permits_required: bool,
     pub host: HostId,
     /// Fresh externally issued epoch for every server start, strictly above the retained value.
     pub epoch: i64,
@@ -78,6 +82,7 @@ impl Config {
 }
 #[derive(Debug)]
 struct Inner {
+    authority: Option<crate::launch_authority::AuthorityFile>,
     config: Config,
     journal: Mutex<Journal>,
     // Never inherited by exec children; one service owns this state directory.
@@ -172,9 +177,11 @@ impl Host {
             binary.is_file() && binary.uid() == 0 && binary.mode() & 0o022 == 0,
             "guardian binary must be root-owned and not group/world writable"
         );
-        let (file, journal) = journal::open(&config)?;
+        let (file, mut journal) = journal::open(&config)?;
+        let authority = authority::open(&config, &mut journal)?;
         Ok(Self {
             inner: Arc::new(Inner {
+                authority,
                 config,
                 journal: Mutex::new(journal),
                 _lock: file,
@@ -327,7 +334,14 @@ impl Host {
         }
         deadline(request.allocation_expires_unix_ms)?;
         Ok(Manifest {
-            launch_permit: None,
+            launch_permit: if self.inner.authority.is_some() {
+                Some(
+                    serde_json::from_slice(&request.launch_permit_json)
+                        .map_err(|_| Status::invalid_argument("invalid launch permit"))?,
+                )
+            } else {
+                None
+            },
             config: c.guardian_config(image),
             start: guardian::Start {
                 owner: guardian::Owner {
@@ -491,11 +505,13 @@ impl Host {
     }
     fn create_sync(&self, request: CreateRequest) -> Result<Observation, Status> {
         let o = self.owner(request.ownership.clone())?;
+        let _authority = self.authorize_create(&o, &request)?;
         let gate = self.gate(&o)?;
         let _gate = lock(&gate)?;
         let mut record = self.fence(&o)?;
         if let Some(original) = &record.create {
             if original.ownership.as_ref().map(|o| &o.operation_id) != Some(&o.operation_id)
+                || original.launch_permit_json != request.launch_permit_json
                 || original.image_digest != request.image_digest
                 || original.resources != request.resources
                 || original.allocation_expires_unix_ms != request.allocation_expires_unix_ms
@@ -714,6 +730,16 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn allocation_authority(
+        &self,
+        request: Request<sandbox_protocol::supervisor::AllocationAuthorityRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::AllocationAuthorityObservation>, Status>
+    {
+        self.work(move |host| host.allocation_authority_sync(request.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn retire_released_history(
         &self,
         r: Request<sandbox_protocol::supervisor::ReleasedHistoryRequest>,
@@ -837,7 +863,17 @@ impl Supervisor for Host {
     async fn health(&self, _: Request<HealthRequest>) -> Result<Response<HostInfo>, Status> {
         self.work(|h| {
             drop(h.journal()?);
+            if h.inner.authority.is_some() {
+                h.allocation_authority_sync(
+                    sandbox_protocol::supervisor::AllocationAuthorityRequest {
+                        host_id: h.inner.config.host.to_string(),
+                        reporting_epoch: h.inner.config.epoch,
+                        permits_json: Vec::new(),
+                    },
+                )?;
+            }
             Ok(HostInfo {
+                launch_permits_required: h.inner.authority.is_some(),
                 host_id: h.inner.config.host.to_string(),
                 supervisor_epoch: h.inner.config.epoch,
                 simulated: false,
