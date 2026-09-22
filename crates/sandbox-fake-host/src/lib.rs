@@ -456,6 +456,15 @@ impl FakeHost {
 
 #[tonic::async_trait]
 impl Supervisor for FakeHost {
+    async fn forget_allocation(
+        &self,
+        _: Request<sandbox_protocol::supervisor::AllocationForgetRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::AllocationForgetObservation>, Status> {
+        Err(Status::unimplemented(
+            "fake host cannot forget physical allocations",
+        ))
+    }
+
     async fn retire_allocation_metadata(
         &self,
         _: Request<sandbox_protocol::supervisor::AllocationMetadataRequest>,

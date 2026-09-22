@@ -117,6 +117,45 @@ fn absent(path: &Path) -> Result<()> {
         Ok(_) => anyhow::bail!("retirement resource still present"),
     }
 }
+/// Absence under independently held root authority. This supplies no proof on
+/// its own; Closed serials must never turn it into an original-owner receipt.
+pub(crate) fn verify_absent(root: &Path, cgroup_parent: &Path, intent: &Intent) -> Result<()> {
+    intent.validate()?;
+    ensure!(!intent.simulated, "physical retirement required");
+    ensure!(
+        cgroup_parent.starts_with("/sys/fs/cgroup/")
+            && cgroup_parent != Path::new("/sys/fs/cgroup")
+            && !cgroup_parent
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+        "invalid retirement cgroup parent"
+    );
+    absent(&root.join(intent.permit.allocation.to_string()))?;
+    absent(&cgroup_parent.join(intent.permit.allocation.uuid().to_string()))?;
+    File::open(root)?.sync_all()?;
+    Ok(())
+}
+impl Plan {
+    pub(crate) fn verify_removed(
+        &self,
+        root: &Path,
+        cgroup_parent: &Path,
+        intent: &Intent,
+        manifest: Option<&Manifest>,
+    ) -> Result<()> {
+        self.validate(intent, manifest)?;
+        if let Some(m) = manifest {
+            m.validate()?;
+            ensure!(
+                m.launch_permit.as_ref() == Some(&intent.permit)
+                    && m.config.state_root == root
+                    && m.config.cgroup_parent == cgroup_parent,
+                "retirement guardian scope mismatch"
+            );
+        }
+        verify_absent(root, cgroup_parent, intent)
+    }
+}
 fn entry(path: &Path) -> Result<Entry> {
     let file = OpenOptions::new()
         .read(true)

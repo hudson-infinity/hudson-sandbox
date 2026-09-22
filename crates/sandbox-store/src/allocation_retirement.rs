@@ -14,8 +14,10 @@ use time::OffsetDateTime;
 mod completion;
 mod evidence;
 mod scheduling;
+mod forgetting;
 pub use scheduling::Candidate;
 pub use completion::Completion;
+pub use forgetting::ForgettingCompletion;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

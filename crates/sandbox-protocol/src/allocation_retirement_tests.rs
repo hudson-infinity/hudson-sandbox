@@ -161,3 +161,48 @@ fn digest_ignores_json_key_order_but_not_domain_scope() {
     let duplicate = text.replacen("{", "{\"revision\":1,", 1);
     assert!(Request::decode(duplicate.as_bytes()).is_err());
 }
+
+#[test]
+fn forgetting_has_fresh_delivery_but_keeps_historical_metadata_scope() {
+    let i = intent();
+    let historical = request(&i);
+    let mut claim = historical.clone();
+    claim.reporting_epoch = 3;
+    claim.revision = 7;
+    claim.expires_unix_ms = 5000;
+    let r = ForgetRequest {
+        version: 1,
+        claim,
+        metadata_request: historical,
+    };
+    r.validate(3, 4000).unwrap(); // Metadata claim expired; fresh claim did not.
+    assert_eq!(ForgetRequest::decode(&r.encode().unwrap()).unwrap(), r);
+    assert!(r.validate(2, 4000).is_err());
+    assert!(r.validate(3, 5000).is_err());
+    assert!(ForgetRequest::decode(&r.claim.encode().unwrap()).is_err());
+    let good = serde_json::to_value(&r).unwrap();
+    for mode in 0..7 {
+        let mut bad = good.clone();
+        match mode {
+            0 => bad["version"] = 2.into(),
+            1 => {
+                bad.as_object_mut().unwrap().remove("metadata_request");
+            }
+            2 => {
+                bad["metadata_request"]["intent"]["release_evidence_sha256"] =
+                    "cd".repeat(32).into()
+            }
+            3 => bad["metadata_request"]["revision"] = 0.into(),
+            4 => bad["claim"]["intent"]["simulated"] = true.into(),
+            5 => bad["metadata_request"]["reporting_epoch"] = 4.into(),
+            _ => bad["claim"]["revision"] = 0.into(),
+        }
+        assert!(ForgetRequest::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
+    }
+    let duplicate =
+        String::from_utf8(r.encode().unwrap())
+            .unwrap()
+            .replacen('{', "{\"version\":1,", 1);
+    assert!(ForgetRequest::decode(duplicate.as_bytes()).is_err());
+    assert!(ForgetRequest::decode(&vec![b' '; MAX_BYTES + 1]).is_err());
+}

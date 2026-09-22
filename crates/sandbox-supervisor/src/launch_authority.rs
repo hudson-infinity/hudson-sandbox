@@ -348,6 +348,70 @@ impl AuthorityFile {
     }
 }
 
+/// One root-exclusive transaction spanning completion, host-journal removal and
+/// forgetting. The caller independently proves cleanup and database completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetirementPhase {
+    Fenced,
+    Complete,
+    Closed,
+}
+pub(crate) struct RetirementGuard {
+    _lock: File,
+    store: AuthorityFile,
+    ledger: Authority,
+    epoch: i64,
+    intent: Intent,
+    pub(crate) phase: RetirementPhase,
+}
+impl AuthorityFile {
+    pub(crate) fn retirement_guard(&self, epoch: i64, intent: &Intent) -> Result<RetirementGuard> {
+        intent.validate()?;
+        ensure!(
+            !intent.simulated && intent.permit.original_epoch <= epoch,
+            "physical retirement required"
+        );
+        let lock = gate(&self.root, true)?;
+        let (current, ledger) = self.load()?;
+        ensure!(current == epoch, "stale forgetting epoch");
+        use sandbox_protocol::allocation_authority::{Error, State};
+        let phase = match ledger.state(&intent.permit) {
+            Ok(State::Fenced { retirement }) if *retirement == intent.retirement => {
+                RetirementPhase::Fenced
+            }
+            Ok(State::Complete { .. }) => {
+                ledger.completed(intent)?;
+                RetirementPhase::Complete
+            }
+            Err(Error::Closed) => RetirementPhase::Closed,
+            _ => anyhow::bail!("forgetting authority conflict"),
+        };
+        File::open(&self.root)?.sync_all()?;
+        Ok(RetirementGuard {
+            _lock: lock,
+            store: self.clone(),
+            ledger,
+            epoch,
+            intent: intent.clone(),
+            phase,
+        })
+    }
+}
+impl RetirementGuard {
+    pub(crate) fn complete(&mut self) -> Result<()> {
+        self.ledger.complete(&self.intent)?;
+        self.store.save(self.epoch, &self.ledger)?;
+        self.phase = RetirementPhase::Complete;
+        Ok(())
+    }
+    pub(crate) fn forget(&mut self) -> Result<()> {
+        self.ledger.forget(&self.intent)?;
+        self.store.save(self.epoch, &self.ledger)?;
+        self.phase = RetirementPhase::Closed;
+        Ok(())
+    }
+}
+
 /// Resolve a registered active allocation while holding the persistent gate.
 /// The caller must compare project/sandbox/generation before creating metadata
 /// and keep the guard until its journal write is durable.

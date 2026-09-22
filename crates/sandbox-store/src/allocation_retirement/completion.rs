@@ -17,7 +17,7 @@ struct Evidence {
     request: Request,
     observed_unix_ms: i64,
 }
-fn millis(value: OffsetDateTime) -> Result<i64, Error> {
+pub(super) fn millis(value: OffsetDateTime) -> Result<i64, Error> {
     i64::try_from(value.unix_timestamp_nanos() / 1_000_000).map_err(|_| Error::Evidence)
 }
 fn release_matches(a: &PgRow, intent: &Intent) -> Result<(), Error> {
@@ -51,7 +51,8 @@ pub(super) fn retained(r: &PgRow, p: &Permit, a: &PgRow) -> Result<Option<Comple
     let intent: Intent =
         serde_json::from_value(r.try_get("intent")?).map_err(|_| Error::Evidence)?;
     intent.validate().map_err(|_| Error::Evidence)?;
-    if e.version != 1
+    if completed_at >= expires_at
+        || e.version != 1
         || e.request.intent != intent
         || intent.permit != *p
         || intent.simulated
