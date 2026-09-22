@@ -4,6 +4,7 @@ mod authority;
 mod commands;
 mod file_downloads;
 mod files;
+mod forgetting;
 mod history;
 mod journal;
 mod live_output;
@@ -480,6 +481,7 @@ impl Host {
         &self,
         record: &Record,
     ) -> Result<(AllocationState, Option<Receipt>), Status> {
+        retirement::check(record)?;
         if record.stopped {
             let receipt = self.cleanup(record)?;
             return Ok((
@@ -766,6 +768,15 @@ impl Host {
 }
 #[tonic::async_trait]
 impl Supervisor for Host {
+    async fn forget_allocation(
+        &self,
+        request: Request<sandbox_protocol::supervisor::AllocationForgetRequest>,
+    ) -> Result<Response<sandbox_protocol::supervisor::AllocationForgetObservation>, Status> {
+        self.work(move |host| host.forget_allocation_sync(request.into_inner()))
+            .await
+            .map(Response::new)
+    }
+
     async fn retire_allocation_metadata(
         &self,
         request: Request<sandbox_protocol::supervisor::AllocationMetadataRequest>,

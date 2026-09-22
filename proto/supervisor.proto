@@ -4,6 +4,7 @@ import "guest.proto";
 
 // Internal only. Every call requires mTLS and a configured controller identity.
 service Supervisor {
+  rpc ForgetAllocation(AllocationForgetRequest) returns (AllocationForgetObservation);
   rpc RetireAllocationMetadata(AllocationMetadataRequest) returns (AllocationMetadataObservation);
   rpc FenceAllocation(AllocationFenceRequest) returns (AllocationFenceObservation);
   rpc AllocationAuthority(AllocationAuthorityRequest) returns (AllocationAuthorityObservation);
@@ -269,4 +270,19 @@ message AllocationMetadataRequest { bytes request_json = 1; }
 message AllocationMetadataObservation {
   AllocationMetadataRequest request = 1;
   int64 observed_unix_ms = 2;
+}
+
+// Only the controller with retained database metadata completion issues this
+// bounded ForgetRequest. Neither state below is a release/absence observation.
+message AllocationForgetRequest { bytes request_json = 1; }
+message AllocationForgetObservation {
+  AllocationForgetRequest request = 1;
+  AllocationForgetState state = 2;
+  int64 observed_unix_ms = 3;
+}
+enum AllocationForgetState {
+  ALLOCATION_FORGET_STATE_UNSPECIFIED = 0;
+  ALLOCATION_FORGET_STATE_FORGOTTEN = 1;
+  // Closed serial, original owner/scope no longer retained: denial only.
+  ALLOCATION_FORGET_STATE_RETIRED = 2;
 }

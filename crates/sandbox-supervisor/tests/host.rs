@@ -300,8 +300,32 @@ impl Drop for Fixture {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let root = self.config.state_root.join("a");
+        let authority_valid = !self.config.launch_permits_required
+            || sandbox_supervisor::launch_authority::AuthorityFile::open(
+                root.clone(),
+                self.config.host,
+                self.config.epoch,
+                0,
+            )
+            .is_ok();
+        if !authority_valid {
+            self.vm.temp.disable_cleanup(true);
+            return;
+        }
         if let Ok(entries) = fs::read_dir(root) {
             for entry in entries.flatten() {
+                // These validated root files are not allocation directories.
+                // Treating launch.lock as a missing manifest retained every
+                // registered fixture, eventually filling the controlled VM.
+                if self.config.launch_permits_required
+                    && entry.file_type().is_ok_and(|t| t.is_file())
+                    && matches!(
+                        entry.file_name().to_str(),
+                        Some("launch.lock" | "launch.required" | "launch.json" | "launch.next")
+                    )
+                {
+                    continue;
+                }
                 if let Ok(m) = guardian::read_json::<Manifest>(&entry.path().join("manifest.json"))
                 {
                     let _ = guardian::control(&m, Action::Stop);
@@ -1132,6 +1156,7 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     assert!(released);
     if !output {
         history::public_released_retirement(&pool, &store, &mut f, &image).await;
+        forgetting::public_handoff(&pool, &store, &mut f).await;
     }
     if let Some(artifacts) = &artifacts {
         f.restart().await;
@@ -2252,3 +2277,6 @@ mod allocation_retirement;
 
 #[path = "support/metadata_retirement.rs"]
 mod metadata_retirement;
+
+#[path = "support/forgetting.rs"]
+mod forgetting;

@@ -1,6 +1,6 @@
 # Bounded allocation authority model
 
-Status: implemented state model, database serial issuance and opt-in fresh-host registration with guardian enforcement. Whole-allocation deletion and legacy migration remain unfinished. [The protocol module](../crates/sandbox-protocol/src/allocation_authority.rs) and [its tests](../crates/sandbox-protocol/src/allocation_authority_tests.rs) explore the replacement authority required for whole-allocation reclamation in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Existing host/guardian tombstones remain mandatory.
+Status: implemented state model, database serial issuance and opt-in fresh-host registration with guardian enforcement. The authenticated whole-allocation forgetting handoff is implemented; automatic controller dispatch and legacy migration remain unfinished. [The protocol module](../crates/sandbox-protocol/src/allocation_authority.rs) and [its tests](../crates/sandbox-protocol/src/allocation_authority_tests.rs) explore the replacement authority required for whole-allocation reclamation in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Host/guardian tombstones remain mandatory until the exact completion and forgetting handoff succeeds.
 
 ## Serial registration and retained owners
 
@@ -56,7 +56,7 @@ Do not use a missing authority file as permission to call `Authority::new`, dele
 
 The model suite runs 4,096 newer allocation registrations/retirements while the oldest permit remains active, serializing and reloading at retirement boundaries. It also fills all 1,024 slots, confirms that fenced/completed records remain charged, frees an interior slot and admits newer work without reopening it. Other tests exercise out-of-order launches after registration, changed identities/intents, registration atomicity, serial exhaustion, malformed storage, duplicate fields and rollback below an independent frontier.
 
-These are deterministic state-machine tests on the Mac, not 4,096 microVM lifecycles or crash/power-loss tests. No supported-host security claim follows from them. Full database/host/guardian integration and controlled real-host evidence remain necessary before any tombstone deletion can be enabled.
+These are deterministic state-machine tests on the Mac, not 4,096 microVM lifecycles or crash/power-loss tests. No supported-host security claim follows from them. The [whole-allocation retirement protocol](allocation-retirement.md) now has separate controlled DB/RPC evidence for deletion and forgetting. Its automatic dispatch and sustained real-execution reuse gate remain incomplete.
 
 ## Fresh-host registration and launch
 

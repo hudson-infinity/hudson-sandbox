@@ -296,9 +296,35 @@ pub(super) fn save(config: &Config, journal: &mut Journal) -> anyhow::Result<()>
     journal.poisoned = true;
     let bytes = serde_json::to_vec(journal)?;
     anyhow::ensure!(bytes.len() as u64 <= MAX_BYTES, "host journal full");
-    let temp = config
-        .state_root
-        .join(format!("journal-{}.tmp", OperationId::generate()));
+    // One staging name bounds interrupted writes across repeated recoveries.
+    // Startup has already validated the authoritative journal under host.lock;
+    // never promote staging bytes or initialize an empty missing journal.
+    let temp = config.state_root.join("journal.next");
+    match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
+        .open(&temp)
+    {
+        Ok(file) => {
+            let m = file.metadata()?;
+            anyhow::ensure!(
+                m.is_file()
+                    && m.uid() == 0
+                    && m.mode() & 0o077 == 0
+                    && m.nlink() == 1
+                    && m.len() <= MAX_BYTES,
+                "invalid host journal staging file"
+            );
+            let original = fs::symlink_metadata(config.state_root.join("host.json"))?;
+            anyhow::ensure!(
+                original.is_file() && original.uid() == 0 && original.mode() & 0o077 == 0,
+                "missing authoritative host journal"
+            );
+            fs::remove_file(&temp)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
