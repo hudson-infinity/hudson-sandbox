@@ -158,6 +158,37 @@ async fn real_stopped_vm_can_be_fenced_without_deleting_its_cleanup_evidence() {
             .code(),
         Code::FailedPrecondition
     );
+    // Even a capture whose guest response fails owns a pending host ticket.
+    let scope = sandbox_protocol::file_downloads::ReadScope {
+        version: 1,
+        host_id: p.host,
+        host_epoch: 1,
+        project_id: p.project,
+        sandbox_id: p.sandbox,
+        allocation_id: p.allocation,
+        generation: p.generation,
+    };
+    let mut reader = transport::connect_file_reader(
+        &f.url,
+        f.config.host,
+        f.tls.ca.pem().as_bytes(),
+        f.file_reader.cert.pem().as_bytes(),
+        f.file_reader.key.serialize_pem().as_bytes(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reader
+            .capture(sandbox_protocol::supervisor::FileCaptureRequest {
+                scope_json: serde_json::to_vec(&scope).unwrap(),
+                path: "never-created.txt".into(),
+                expires_unix_ms: guardian::wall_ms() + 30000,
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unavailable
+    );
     let mut stop = owner.clone();
     stop.operation_id = OperationId::generate().to_string();
     if let Err(error) = client
@@ -175,7 +206,31 @@ async fn real_stopped_vm_can_be_fenced_without_deleting_its_cleanup_evidence() {
         );
     }
     f.released(&mut client, &stop).await;
-    request.expires_unix_ms = guardian::wall_ms() + 30000;
+    request.expires_unix_ms = guardian::wall_ms() + 120000;
+    assert_eq!(
+        client
+            .fence_allocation(wire(&request))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unavailable
+    );
+    assert!(
+        sandbox_supervisor::launch_authority::authorize(&f.config.state_root.join("a"), Some(&p))
+            .is_err()
+    );
+    // This failed handoff retains intent and cannot be treated as release.
+    assert_eq!(
+        client
+            .inspect(InspectRequest {
+                ownership: Some(owner)
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        Code::FailedPrecondition
+    );
+    tokio::time::sleep(sandbox_supervisor::file_downloads::TTL + Duration::from_millis(100)).await;
     client.fence_allocation(wire(&request)).await.unwrap();
     let journal: serde_json::Value =
         serde_json::from_slice(&fs::read(f.config.state_root.join("host.json")).unwrap()).unwrap();

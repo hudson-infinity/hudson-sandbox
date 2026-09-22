@@ -40,6 +40,17 @@ impl Registry {
     pub fn prune(&mut self, now: Instant) {
         self.tickets.retain(|_, t| t.expires > now);
     }
+    /// Pending captures and unreleased handles remain consumers until monotonic expiry.
+    pub fn pending_allocation(
+        &mut self,
+        allocation: sandbox_protocol::AllocationId,
+        now: Instant,
+    ) -> bool {
+        self.prune(now);
+        self.tickets
+            .values()
+            .any(|t| t.scope.allocation_id == allocation && !t.released)
+    }
     pub fn contains(&self, id: &OperationId) -> bool {
         self.tickets.contains_key(id)
     }

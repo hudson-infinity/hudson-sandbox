@@ -41,6 +41,8 @@ pub(super) struct Record {
     pub gate: Arc<Mutex<()>>,
     #[serde(skip, default = "file_io")]
     pub file_io: Arc<tokio::sync::Semaphore>,
+    #[serde(skip)]
+    pub readers: Arc<tokio::sync::RwLock<()>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

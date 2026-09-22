@@ -10,13 +10,12 @@ use sandbox_protocol::{
 };
 
 impl Host {
-    fn download_record(&self, scope: &ReadScope) -> Result<Manifest, Status> {
+    fn download_record<'a>(&self, j: &'a Journal, scope: &ReadScope) -> Result<&'a Record, Status> {
         if scope.host_id != self.inner.config.host || scope.host_epoch != self.inner.config.epoch {
             return Err(Status::failed_precondition(
                 "file read requires current host epoch",
             ));
         }
-        let j = self.journal()?;
         let r = j
             .records
             .get(&scope.allocation_id.to_string())
@@ -27,33 +26,45 @@ impl Host {
         if r.stopped || r.released {
             return Err(downloads::unavailable("allocation stopped"));
         }
-        r.manifest.clone().ok_or_else(downloads::missing)
+        Ok(r)
     }
     async fn download_prepare(
         &self,
         scope: ReadScope,
-    ) -> Result<(crate::guest::GuestClient, tokio::sync::OwnedSemaphorePermit), Status> {
+    ) -> Result<
+        (
+            crate::guest::GuestClient,
+            tokio::sync::OwnedSemaphorePermit,
+            readers::Pin,
+        ),
+        Status,
+    > {
         self.work(move |h| {
-            let manifest = h.download_record(&scope)?;
-            let permit = h
-                .journal()?
-                .records
-                .get(&scope.allocation_id.to_string())
-                .ok_or_else(downloads::missing)?
+            let journal = h.journal()?;
+            let record = h.download_record(&journal, &scope)?;
+            let manifest = record.manifest.clone().ok_or_else(downloads::missing)?;
+            let reader = readers::pin(record)?;
+            let permit = record
                 .file_io
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| Status::resource_exhausted("allocation file worker busy"))?;
+            drop(journal);
             let client = manifest.guest_client().map_err(downloads::unavailable)?;
-            Ok((client, permit))
+            Ok((client, permit, reader))
         })
         .await
     }
     async fn download_client(&self, scope: ReadScope) -> Result<crate::guest::GuestClient, Status> {
         self.work(move |h| {
-            h.download_record(&scope)?
-                .guest_client()
-                .map_err(downloads::unavailable)
+            let journal = h.journal()?;
+            let manifest = h
+                .download_record(&journal, &scope)?
+                .manifest
+                .clone()
+                .ok_or_else(downloads::missing)?;
+            drop(journal);
+            manifest.guest_client().map_err(downloads::unavailable)
         })
         .await
     }
@@ -73,7 +84,7 @@ impl Host {
         r: FileCaptureRequest,
     ) -> Result<FileAccessObservation, Status> {
         let scope = model::capture_request(&r, guardian::wall_ms()).map_err(downloads::invalid)?;
-        let (client, _file_io) = self.download_prepare(scope.clone()).await?;
+        let (client, _file_io, _reader) = self.download_prepare(scope.clone()).await?;
         model::capture_request(&r, guardian::wall_ms()).map_err(downloads::invalid)?;
         let id = lock(&self.inner.downloads)?.reserve(
             scope.clone(),
@@ -107,7 +118,7 @@ impl Host {
             .ok_or_else(downloads::missing)?
             .try_into()
             .map_err(downloads::invalid)?;
-        let (client, _file_io) = self.download_prepare(scope.clone()).await?;
+        let (client, _file_io, _reader) = self.download_prepare(scope.clone()).await?;
         if client.context() != &context {
             return Err(Status::failed_precondition("file read boot changed"));
         }
@@ -140,7 +151,7 @@ impl Host {
             .ok_or_else(downloads::missing)?
             .try_into()
             .map_err(downloads::invalid)?;
-        let (client, _file_io) = self.download_prepare(scope.clone()).await?;
+        let (client, _file_io, _reader) = self.download_prepare(scope.clone()).await?;
         if client.context() != &context {
             return Err(Status::failed_precondition("file read boot changed"));
         }

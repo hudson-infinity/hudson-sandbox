@@ -104,6 +104,7 @@ fn empty(request: &RetirementRequest) -> Record {
         lease_request: None,
         gate: Arc::new(Mutex::new(())),
         file_io: journal::file_io(),
+        readers: Arc::default(),
     }
 }
 impl Host {
@@ -169,6 +170,7 @@ impl Host {
         }
         record.retirement = Some(request.clone());
         record.stopped = true;
+        let readers = record.readers.clone();
         journal.records.insert(id, record);
         self.save(&mut journal)?;
         drop(journal);
@@ -190,6 +192,17 @@ impl Host {
                 request.intent.retirement,
             )
             .map_err(uncertain)?;
+        // The persisted stop closes admission. Never wait while holding the journal.
+        let _readers = readers
+            .try_write_owned()
+            .map_err(|_| Status::unavailable("allocation readers still active"))?;
+        if lock(&self.inner.downloads)?
+            .pending_allocation(request.intent.permit.allocation, Instant::now())
+        {
+            return Err(Status::unavailable(
+                "allocation capture tickets still active",
+            ));
+        }
         deadline(request.expires_unix_ms)?;
         Ok(AllocationFenceObservation {
             request: Some(wire),
@@ -230,6 +243,43 @@ mod tests {
             revision: 1,
             expires_unix_ms: 1000,
         }
+    }
+    #[tokio::test]
+    async fn reader_pins_survive_record_replacement_and_drain_only_after_worker_exit() {
+        let request = request();
+        let mut record = empty(&request);
+        record.stopped = false;
+        let reader = readers::pin(&record).unwrap();
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let (finish, done) = tokio::sync::oneshot::channel();
+        let worker = tokio::spawn(async move {
+            let _reader = reader;
+            ready.send(()).unwrap();
+            let _ = done.await;
+        });
+        started.await.unwrap();
+        // Journal updates replace cloned records; all clones must share the pins.
+        let mut frozen = record.clone();
+        frozen.retirement = Some(request);
+        frozen.stopped = true;
+        assert!(readers::pin(&frozen).is_err());
+        assert!(frozen.readers.clone().try_write_owned().is_err());
+        finish.send(()).unwrap();
+        worker.await.unwrap();
+        let drained = frozen.readers.clone().try_write_owned().unwrap();
+        assert!(readers::pin(&record).is_err());
+        drop(drained);
+        assert!(readers::pin(&frozen).is_err());
+        // Cancellation must also release the host pin; it is not proof of guest cleanup.
+        let pin = readers::pin(&record).unwrap();
+        let worker = tokio::spawn(async move {
+            let _pin = pin;
+            std::future::pending::<()>().await;
+        });
+        assert!(record.readers.clone().try_write_owned().is_err());
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert!(record.readers.clone().try_write_owned().is_ok());
     }
     #[test]
     fn pending_history_or_changed_domain_cannot_be_frozen_as_empty() {

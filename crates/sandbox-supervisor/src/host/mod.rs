@@ -8,6 +8,7 @@ mod history;
 mod journal;
 mod live_output;
 mod previous;
+mod readers;
 mod released_history;
 mod retirement;
 use crate::guardian::{self, Action, Artifact, Manifest, Receipt, State as GuardianState};
@@ -296,6 +297,7 @@ impl Host {
                 lease_request: None,
                 gate: gate.clone(),
                 file_io: journal::file_io(),
+                readers: Arc::default(),
             },
         );
         self.save(&mut j)?;

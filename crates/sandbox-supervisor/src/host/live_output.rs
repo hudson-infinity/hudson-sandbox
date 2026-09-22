@@ -6,7 +6,10 @@ use sandbox_protocol::{
     supervisor::{LiveOutputObservation, LiveOutputRequest, live_output_server::LiveOutput},
 };
 impl Host {
-    fn live_record(&self, scope: &LiveOutputScope) -> Result<(CommandRecord, Manifest), Status> {
+    fn live_record(
+        &self,
+        scope: &LiveOutputScope,
+    ) -> Result<(CommandRecord, Manifest, readers::Pin), Status> {
         if scope.owner.host_id != self.inner.config.host
             || scope.owner.host_epoch != self.inner.config.epoch
         {
@@ -40,6 +43,7 @@ impl Host {
                 .manifest
                 .clone()
                 .ok_or_else(|| Status::unavailable("guest manifest missing"))?,
+            readers::pin(record)?,
         ))
     }
     async fn live_read(&self, request: LiveOutputRequest) -> Result<LiveOutputObservation, Status> {
@@ -50,14 +54,14 @@ impl Host {
             .map_err(|_| Status::resource_exhausted("live output readers busy"))?;
         let (scope, read) = live::decode(&request, guardian::wall_ms())?;
         let scoped = scope.clone();
-        let (command, client) = self
+        let (command, client, _reader) = self
             .work(move |h| {
-                let (command, manifest) = h.live_record(&scoped)?;
+                let (command, manifest, reader) = h.live_record(&scoped)?;
                 // Journal guard is dropped before resolving the pinned guest client.
                 let client = manifest
                     .guest_client()
                     .map_err(|_| Status::unavailable("guest unavailable"))?;
-                Ok((command, client))
+                Ok((command, client, reader))
             })
             .await?;
         if client.context()
@@ -80,7 +84,7 @@ impl Host {
         live::validate_chunk(&scope, &read, &command, &chunk, &receipt)?;
         let scoped = scope.clone();
         let current = self
-            .work(move |h| h.live_record(&scoped).map(|(c, _)| c))
+            .work(move |h| h.live_record(&scoped).map(|(c, _, _)| c))
             .await?;
         current
             .validate_receipt(scope.owner.operation_id, &receipt)
