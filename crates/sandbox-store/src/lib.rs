@@ -5,6 +5,7 @@
 //! the migrations and the code that relies on them stay in one place.
 
 pub mod admission;
+pub mod allocation_permits;
 pub mod cancel;
 pub mod claims;
 pub mod compaction;

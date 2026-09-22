@@ -226,6 +226,31 @@ impl Store {
         .bind(disk)
         .execute(&mut *tx)
         .await?;
+        // The host row is already locked. Issuance and the allocation either
+        // commit together or both roll back; do not replace this with a sequence.
+        let serial: i64 = sqlx::query_scalar(
+            "UPDATE hosts SET last_allocation_serial=last_allocation_serial+1
+             WHERE id=$1 AND last_allocation_serial<9223372036854775807
+             RETURNING last_allocation_serial",
+        )
+        .bind(host_id.uuid())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(PlacementError::Capacity)?;
+        sqlx::query(
+            "INSERT INTO allocation_permits(allocation_id,host_id,serial,project_id,
+             sandbox_id,create_operation_id,generation,original_epoch)
+             VALUES($1,$2,$3,$4,$5,$6,1,$7)",
+        )
+        .bind(allocation.id.uuid())
+        .bind(host_id.uuid())
+        .bind(serial)
+        .bind(project_id)
+        .bind(sandbox_id)
+        .bind(claim.operation_id.uuid())
+        .bind(expected_epoch)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("UPDATE sandboxes SET current_allocation_id=$1,generation=1,state_revision=state_revision+1,updated_at=clock_timestamp() WHERE id=$2")
             .bind(allocation.id.uuid()).bind(sandbox_id).execute(&mut *tx).await?;
         // Check the lease again after potentially waiting for quota/host locks.
