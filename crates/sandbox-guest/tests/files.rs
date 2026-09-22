@@ -439,3 +439,212 @@ fn metadata_failure_fences_engine_before_destination_mutation() {
     assert_eq!(recovered.commit(id).unwrap().state, State::Committed);
     assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"new");
 }
+
+fn barrier(ctx: &Context, through: OperationId) -> sandbox_protocol::history::Barrier {
+    sandbox_protocol::history::Barrier {
+        version: 1,
+        context: ctx.clone(),
+        domain: sandbox_protocol::history::Domain::Files,
+        through,
+    }
+}
+#[test]
+fn history_retirement_recovers_capacity_without_republishing_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context();
+    let mut engine = Transfers::open(dir.path(), ctx.clone()).unwrap();
+    let first = upload("published", b"original");
+    fill(&mut engine, &first, b"original");
+    engine.commit(first.operation_id).unwrap();
+    fs::write(dir.path().join("published"), b"workload changed this").unwrap();
+    let mut ids = vec![first.operation_id];
+    for _ in 1..MAX_TRANSFERS {
+        let request = upload("empty", b"");
+        engine.begin(request.clone()).unwrap();
+        engine.abort(request.operation_id).unwrap();
+        ids.push(request.operation_id);
+    }
+    let next = upload("next", b"");
+    assert!(engine.begin(next.clone()).is_err());
+    let through = *ids.iter().max().unwrap();
+    let request = barrier(&ctx, through);
+    assert_eq!(engine.retire_history(request.clone()).unwrap(), request);
+    assert_eq!(
+        fs::read(dir.path().join("published")).unwrap(),
+        b"workload changed this"
+    );
+    assert!(engine.inspect(first.operation_id).unwrap().is_none());
+    assert!(engine.begin(first.clone()).is_err());
+    assert_eq!(
+        engine
+            .retire_history(barrier(&ctx, first.operation_id))
+            .unwrap(),
+        request
+    );
+    assert!(
+        serde_json::from_slice::<Context>(
+            &fs::read(dir.path().join(STATE_DIRECTORY).join("context.json")).unwrap()
+        )
+        .is_err()
+    );
+    drop(engine);
+    let mut engine = Transfers::open(dir.path(), ctx.clone()).unwrap();
+    assert_eq!(engine.history_barrier(), Some(&request));
+    assert!(engine.begin(first).is_err());
+    engine.begin(next.clone()).unwrap();
+    engine.abort(next.operation_id).unwrap();
+    engine
+        .retire_history(barrier(&ctx, next.operation_id))
+        .unwrap();
+    for _ in 0..MAX_TRANSFERS {
+        let request = upload("new", b"");
+        engine.begin(request.clone()).unwrap();
+        engine.abort(request.operation_id).unwrap();
+    }
+}
+#[test]
+fn history_reclaims_declared_bytes_but_rejects_unresolved_prefix_and_wrong_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context();
+    let mut engine = Transfers::open(dir.path(), ctx.clone()).unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..MAX_RESERVED_BYTES / MAX_FILE_BYTES {
+        let mut request = upload("large", b"");
+        request.size = MAX_FILE_BYTES;
+        engine.begin(request.clone()).unwrap();
+        engine.abort(request.operation_id).unwrap();
+        ids.push(request.operation_id);
+    }
+    let request = upload("one", b"a");
+    assert!(engine.begin(request.clone()).is_err());
+    let through = *ids.iter().max().unwrap();
+    let mut wrong = barrier(&ctx, through);
+    wrong.context.boot_id = "other".into();
+    assert!(engine.retire_history(wrong).is_err());
+    let mut wrong = barrier(&ctx, through);
+    wrong.domain = sandbox_protocol::history::Domain::Commands;
+    assert!(engine.retire_history(wrong).is_err());
+    engine.retire_history(barrier(&ctx, through)).unwrap();
+    engine.begin(request.clone()).unwrap();
+    assert!(
+        engine
+            .retire_history(barrier(&ctx, request.operation_id))
+            .is_err()
+    );
+    assert_eq!(engine.history_barrier().unwrap().through, through);
+    drop(engine);
+    let path = dir
+        .path()
+        .join(STATE_DIRECTORY)
+        .join(format!("{}.json", request.operation_id));
+    let mut receipt: Receipt = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    receipt.state = State::CommitIntent;
+    fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let mut engine = Transfers::open(dir.path(), ctx.clone()).unwrap();
+    assert_eq!(
+        engine.inspect(request.operation_id).unwrap().unwrap().state,
+        State::Unknown
+    );
+    assert!(
+        engine
+            .retire_history(barrier(&ctx, request.operation_id))
+            .is_err()
+    );
+    assert!(path.exists());
+}
+#[test]
+fn durable_barrier_recovers_partial_deletion_and_unlinks_without_following_symlinks() {
+    use sandbox_protocol::history::Binding;
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    fs::write(outside.path(), b"keep").unwrap();
+    let ctx = context();
+    let mut engine = Transfers::open(dir.path(), ctx.clone()).unwrap();
+    let first = upload("first", b"");
+    let second = upload("second", b"");
+    for r in [&first, &second] {
+        engine.begin(r.clone()).unwrap();
+        engine.abort(r.operation_id).unwrap();
+    }
+    drop(engine);
+    let state = dir.path().join(STATE_DIRECTORY);
+    let b = barrier(&ctx, first.operation_id.max(second.operation_id));
+    // Durable post-barrier/pre-delete and partial-delete crash windows.
+    fs::write(
+        state.join("context.json"),
+        serde_json::to_vec(&Binding::Retired(b.clone())).unwrap(),
+    )
+    .unwrap();
+    fs::remove_file(state.join(format!("{}.json", first.operation_id))).unwrap();
+    symlink(
+        outside.path(),
+        state.join(format!("{}.data", second.operation_id)),
+    )
+    .unwrap();
+    let mut engine = Transfers::open(dir.path(), ctx).unwrap();
+    assert_eq!(engine.history_barrier(), Some(&b));
+    assert_eq!(fs::read(outside.path()).unwrap(), b"keep");
+    assert_eq!(fs::read_dir(&state).unwrap().count(), 2);
+    assert!(engine.begin(first).is_err());
+    assert!(engine.begin(second).is_err());
+}
+#[test]
+fn failed_post_barrier_unlink_fences_the_engine_until_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context();
+    let mut engine = Transfers::open(dir.path(), ctx.clone()).unwrap();
+    let r = upload("old", b"");
+    engine.begin(r.clone()).unwrap();
+    engine.abort(r.operation_id).unwrap();
+    let path = dir
+        .path()
+        .join(STATE_DIRECTORY)
+        .join(format!("{}.json", r.operation_id));
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    let b = barrier(&ctx, r.operation_id);
+    assert!(engine.retire_history(b.clone()).is_err());
+    assert_eq!(engine.history_barrier(), Some(&b));
+    assert!(engine.begin(upload("next", b"")).is_err());
+    assert!(engine.retire_history(b.clone()).is_err());
+    drop(engine);
+    fs::remove_dir(path).unwrap();
+    let mut engine = Transfers::open(dir.path(), ctx).unwrap();
+    assert!(engine.begin(r).is_err());
+    engine.begin(upload("next", b"")).unwrap();
+}
+
+#[test]
+fn failed_barrier_write_deletes_no_file_history_and_corrupt_binding_cannot_clear_fence() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context();
+    let mut engine = Transfers::open(dir.path(), ctx.clone()).unwrap();
+    let r = upload("old", b"");
+    engine.begin(r.clone()).unwrap();
+    engine.abort(r.operation_id).unwrap();
+    let state = dir.path().join(STATE_DIRECTORY);
+    let path = state.join("context.json");
+    let context_bytes = fs::read(&path).unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(
+        engine
+            .retire_history(barrier(&ctx, r.operation_id))
+            .is_err()
+    );
+    assert!(engine.history_barrier().is_none());
+    assert!(state.join(format!("{}.json", r.operation_id)).exists());
+    assert!(engine.begin(upload("new", b"")).is_err());
+    drop(engine);
+    fs::remove_dir(&path).unwrap();
+    fs::write(&path, context_bytes).unwrap();
+    let mut engine = Transfers::open(dir.path(), ctx.clone()).unwrap();
+    engine
+        .retire_history(barrier(&ctx, r.operation_id))
+        .unwrap();
+    drop(engine);
+    let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["through"] = "invalid".into();
+    fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    assert!(Transfers::open(dir.path(), ctx).is_err());
+}

@@ -1,6 +1,6 @@
 # Operation retention and payload compaction
 
-Status: terminal response expiry, opt-in policy assignment and opt-in payload compaction are implemented. Receipt-history archival and host/guest journal reclamation remain unfinished. Response expiry changes access to the result body; compaction removes eligible request/result bodies while preserving execution outcome, retry identity, retirement evidence and resource ownership.
+Status: terminal response expiry, opt-in policy assignment and opt-in payload compaction are implemented. Receipt-history archival and coordinated host/guest journal reclamation remain unfinished. Internal [guest barriers](history-reclamation.md) are implemented but are not invoked by this worker. Response expiry changes access to the result body; compaction removes eligible request/result bodies while preserving execution outcome, retry identity, retirement evidence and resource ownership.
 
 ## Operator policy
 

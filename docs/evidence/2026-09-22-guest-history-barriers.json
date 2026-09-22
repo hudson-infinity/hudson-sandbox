@@ -1,0 +1,86 @@
+{
+  "recorded_at": "2026-09-22T02:59:08.456381+00:00",
+  "base_commit": "9114bdab01f121d9a5436f3ff805e57e0aa3e50d",
+  "scope": "Guest-local history barriers; dedicated Lima development VM, no Firecracker execution in this validation.",
+  "environment": {
+    "architecture": "aarch64",
+    "kernel": "6.8.0-134-generic",
+    "unprivileged_test_uid": 502,
+    "binary_sha256": {
+      "target/debug/sandbox-guest": "c10769894fb5b092d03ff1626dd4b3c9f9b7c1cba7c4ad806ae3dc618d571385",
+      "target/debug/deps/linux_runner-e5449bf5f64518ca": "2fbe61c034183dfdc8ed67dc39b336a6cc95d32c5d2e046299e84d5a7b621420",
+      "target/debug/deps/files-6b96ac7b01d8b860": "acdc1d0445a967d39d0efe6791eb1a020961b800c71565d89de92207f4b99916"
+    },
+    "remaining_guest_test_cgroups": []
+  },
+  "source_sha256": {
+    "crates/sandbox-protocol/src/history.rs": "d16791dc879f238150fd5b554cea077f25c3112f3279a376d2f7692f6f849f55",
+    "Cargo.lock": "86782184bd1818c3260b586bc7ed2ee5bacd2efa78df9990b1dd35b0faf5deb2",
+    "Cargo.toml": "c8a87f4dca6db0574c176bbfe362b04c6c07a6fd615b203a1f8c00eef13032e3",
+    "crates/sandbox-guest/Cargo.toml": "8d161488d89fb57773c99dc945ca11689766e65b79aadab03f06ba30c4af238d",
+    "crates/sandbox-guest/src/boot.rs": "b8393af0c36bf99fbc7aeff2426a1db69ee108deaf39e85bb597e03d861826aa",
+    "crates/sandbox-guest/src/file_service.rs": "17c1e4e79d2239f95c5d1121466663068302e764e1ccdf1c90709b8edba0da16",
+    "crates/sandbox-guest/src/file_service_tests.rs": "4283f92089f0e651c6fcd3ca801069025f80d9fcbc2d16823674fe133540ee09",
+    "crates/sandbox-guest/src/files/fs.rs": "4739cf33ae77bf10bbf689b2c57ea3404ce2ac1292bc8f42b22c548d3097829d",
+    "crates/sandbox-guest/src/files/mod.rs": "515be6dc25b5456fdab6806ff589376ed5b14bcc6e25f077322df89ada6d8920",
+    "crates/sandbox-guest/src/launcher.rs": "a2164f8b00de0126802131981ccd82d6ec902a12602a2755a54f2f64ae3ac0e9",
+    "crates/sandbox-guest/src/lib.rs": "4009087dc4a7e951e9c10b86a5d21b35a63a1731fe5f0fa3eb6e9c8abca8df39",
+    "crates/sandbox-guest/src/main.rs": "13abfd289acc37d5d160085e06ad78f2dbe5b7269a6d720b7a864f4bf0bfcd43",
+    "crates/sandbox-guest/src/model.rs": "1ab049006174b0050894188e27ef34eb470e853545e4b66f20998e07f2a05c1e",
+    "crates/sandbox-guest/src/runner.rs": "a0b90ce402bdd5698b621451b196ab808dc1fcc01341d2365554fb0ef13225b2",
+    "crates/sandbox-guest/src/server.rs": "4e306d6f9ddc9aaf57fe05dd80072200311e4bb1002b54494bf43620f10c4a22",
+    "crates/sandbox-guest/tests/files.rs": "fbf20af6c95048ca873269497f52dca4bad431ac192f2296e254236e7d627f2e",
+    "crates/sandbox-guest/tests/linux_runner.rs": "16efa3ae023e94ecd07b57876787588286dbb3e66947bbc3d8d8b0f87fbbd305",
+    "crates/sandbox-guest/tests/model.rs": "192a1a75193d17896c7e2c4c1c2895f97ea06a8cc627534517d97bc7eb38f0be",
+    "crates/sandbox-protocol/Cargo.toml": "7db09ef9359443a70decc088530be7a3cbc5d4562364379979c89b873312f2d3",
+    "crates/sandbox-protocol/build.rs": "1af4507dc670765178b3b60dda0abc31c1f86045830317da6b273fc2148d0bbb",
+    "crates/sandbox-protocol/src/api.rs": "1bc7874b7b83e5b3e3954f4f444ba594a0d1068eec95740d22e33e1d9faf938c",
+    "crates/sandbox-protocol/src/bootstrap.rs": "62de5415b91f5ed0799dab3ec16c2588335579b5494666bf0f5b23541ea0571c",
+    "crates/sandbox-protocol/src/command.rs": "123500b9eea9ae14a42b5fff3a80dba17604045eddac268d77f57c871837b943",
+    "crates/sandbox-protocol/src/file_downloads.rs": "50c2a88e6b2cd25aa0c434369218bab07f116f710020c4d59936ef4bc8bf1685",
+    "crates/sandbox-protocol/src/file_sources.rs": "ff6d164826f48fcfabc251b35f34c24255d15da210ec2cb29dc3fe5998f05160",
+    "crates/sandbox-protocol/src/file_wire.rs": "c3008147d4516eb1d3be109706fc92701b84899bee79ccc7b80eaf63c7cd278d",
+    "crates/sandbox-protocol/src/files.rs": "523242d7d713dd08334b621bff2da613a76511b0c63684b355e0a805831e4a50",
+    "crates/sandbox-protocol/src/guest_model.rs": "92cd31bec8f2c754e23ac250d54a0e718ef645efaf879a713c778e68e519906a",
+    "crates/sandbox-protocol/src/guest_wire.rs": "d1ee9e51f2b34cf48308657c1dd09b477e02a70dcd18b0b1b33d6817081cf43f",
+    "crates/sandbox-protocol/src/idempotency.rs": "1b697cb8397422b7eeb4e70fe101498e794185a3739fc5ba3c14b9b91ef605fa",
+    "crates/sandbox-protocol/src/ids.rs": "58b45ae50d0dd2929f88952185781123c19b7f196942d1bfb801fed6c03617ed",
+    "crates/sandbox-protocol/src/images.rs": "38bd09244637a15f72d4340328bdc5572074e1688f7486186ea4f9abe2ce44e6",
+    "crates/sandbox-protocol/src/lib.rs": "c0f2b69f47e3f7304ce437e1c44abe441dd2d637bea2c19e5c159d8c8fbb8844",
+    "crates/sandbox-protocol/src/live_output.rs": "fe353a9b694bdee1aa3d37dd985eedd80afe4ad7b939a14b8d2d36d61da4f3c2",
+    "crates/sandbox-protocol/src/output.rs": "4380ef16d7682ea9b6ada2302d484ee5346da51c650db31989aafb4be3fd129e",
+    "crates/sandbox-protocol/src/resources.rs": "adb401e027608c26ebcc71bd90b08383543174559dc63f33eccc233c014efcd1",
+    "crates/sandbox-protocol/src/supervisor_files.rs": "0ecd33c4338f329c590b6ef22a1702419d4276371769a1faefa429c709a8dee6",
+    "crates/sandbox-protocol/src/token.rs": "a3c3993f9296197374f67cefba4e847f1a9f3c49769099ae305f1b966718f11a",
+    "crates/sandbox-protocol/tests/api_wire.rs": "7c06ff4f12865d3d1a38c2b9b9383662982bd858532f3a97e564b25ec85bd5ef",
+    "crates/sandbox-protocol/tests/file_wire.rs": "aa6beecd2e2549b5a632d4d8d45faed568a768409ea3d69e08059f7de8ed26b7",
+    "crates/sandbox-protocol/tests/guest_wire.rs": "a2c4021f028d752bafbf9b5938f243b1990eec22881dd772d216ff3d1fe6071a",
+    "crates/sandbox-protocol/tests/support/guest_tls.rs": "92835cd0b54590edbd473d81dc6e78bbb2695e7d72fea18f42c2efc8487dd4ab",
+    "proto/guest.proto": "0cfba533677e3b4d8848f94aaf5b516d89b33fc0767aa3415f3e04b91745a656",
+    "proto/supervisor.proto": "18a8f097f17536fb1a20f4d98306ba3eee1a8236d2a328e82dc36ba58c95660c",
+    "rust-toolchain.toml": "9084f06a996ac0edec375a19761cfa5f0febfda93a25a40a4f4487fba43bb8ed"
+  },
+  "validation": {
+    "rust_tests_passed": {
+      "local_workspace": 472,
+      "linux_affected": 80,
+      "privileged_runner": 17,
+      "unprivileged_files": 21
+    },
+    "local_make_check": "passed: formatting, strict Clippy, workspace tests, OpenAPI and SDK checks, documentation",
+    "linux_affected_clippy": "passed with warnings denied",
+    "log_sha256": {
+      "local_workspace": "e91fba5413904fccb118db2f5254024284e0d5e9b0038a6055f4b584461c761c",
+      "linux_affected": "42a2a704d92792127c7fdffbc431116de955d911b6a5eeea64b15f7e8e4558b2",
+      "privileged_runner": "303ec5fecf14ee3ea9253b71bf1d6da446caf423cffff3597edce94504344260",
+      "unprivileged_files": "2e1fd8fac5f5f71aa5bb4b9b1cbe239e79b08ce1429b7ec6c933d262501edf45"
+    },
+    "test_binary_selection": "The final ordinary-user run explicitly used files-6b96ac7b01d8b860 (21 tests). Earlier 20-test runs used an older binary and are excluded."
+  },
+  "limits": [
+    "Guest-local library primitives only; no RPC, controller or cleanup worker invokes retirement. Host journals, database coordination and public capacity refunds remain unfinished under issue #79.",
+    "Crash windows are modeled with controlled filesystem states and write/unlink failures, not physical power loss.",
+    "Commands use real Linux processes and cgroup v2 in the dedicated development VM. These tests are not Firecracker isolation or supported x86_64 release evidence.",
+    "Guest acknowledgements do not authorize storage-marker deletion or prove physical erasure."
+  ]
+}

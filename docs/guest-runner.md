@@ -34,6 +34,8 @@ Output files are guest-local binary stdout/stderr streams, not UTF-8 logs or pub
 
 ## Bounds and retained state
 
+The internal [history retirement primitive](history-reclamation.md) can durably fence and prune an acknowledged terminal prefix. It has no RPC or automatic caller yet; public admission and host/database reservation accounting retain their existing limits.
+
 The current component limits are deliberately small and fixed; public configurable resource classes remain future integration work.
 
 | Resource | Bound |

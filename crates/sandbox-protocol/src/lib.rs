@@ -46,3 +46,5 @@ pub mod file_sources;
 
 /// Public HTTP wire models generated from the versioned OpenAPI contract.
 pub mod api;
+
+pub mod history;

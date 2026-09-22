@@ -768,3 +768,213 @@ async fn authenticated_file_upload_lost_commit_and_capture_keep_identity() {
     runner.shutdown().await.unwrap();
     f.assert_empty();
 }
+
+fn history_barrier(f: &Fixture, through: OperationId) -> sandbox_protocol::history::Barrier {
+    sandbox_protocol::history::Barrier {
+        version: 1,
+        context: f.context.clone(),
+        domain: sandbox_protocol::history::Domain::Commands,
+        through,
+    }
+}
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn acknowledged_history_fences_replay_after_receipt_and_output_reclamation() {
+    let f = Fixture::new();
+    let marker = tempfile::NamedTempFile::new().unwrap();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let request = f.request(&format!(
+        "printf run >> {}; printf output",
+        marker.path().display()
+    ));
+    runner.start(request.clone()).await.unwrap();
+    finished(&runner, request.operation_id).await;
+    assert_eq!(fs::read(marker.path()).unwrap(), b"run");
+    let barrier = history_barrier(&f, request.operation_id);
+    assert_eq!(
+        runner.retire_history(barrier.clone()).await.unwrap(),
+        barrier
+    );
+    assert!(runner.inspect(request.operation_id).await.is_none());
+    assert!(runner.start(request.clone()).await.is_err());
+    assert!(runner.cancel(request.operation_id).await.is_err());
+    for suffix in ["json", "stdout", "stderr", "exit"] {
+        assert!(
+            !f.state
+                .path()
+                .join(format!("{}.{suffix}", request.operation_id))
+                .exists()
+        );
+    }
+    assert_eq!(
+        runner.retire_history(barrier.clone()).await.unwrap(),
+        barrier
+    );
+    drop(runner);
+    let runner = Runner::open(f.config()).await.unwrap();
+    assert_eq!(runner.history_barrier().await, Some(barrier));
+    assert!(runner.start(request.clone()).await.is_err());
+    assert_eq!(fs::read(marker.path()).unwrap(), b"run");
+    let next = f.request("printf next");
+    runner.start(next.clone()).await.unwrap();
+    finished(&runner, next.operation_id).await;
+    assert_eq!(f.output(next.operation_id, "stdout"), b"next");
+    f.assert_empty();
+}
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn command_history_refuses_active_unknown_and_wrong_owner() {
+    let f = Fixture::new();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let request = f.request("sleep 10");
+    runner.start(request.clone()).await.unwrap();
+    let barrier = history_barrier(&f, request.operation_id);
+    assert!(runner.retire_history(barrier.clone()).await.is_err());
+    runner.cancel(request.operation_id).await.unwrap();
+    finished(&runner, request.operation_id).await;
+    let mut wrong = barrier.clone();
+    wrong.context.generation += 1;
+    assert!(runner.retire_history(wrong).await.is_err());
+    let mut wrong = barrier.clone();
+    wrong.domain = sandbox_protocol::history::Domain::Files;
+    assert!(runner.retire_history(wrong).await.is_err());
+    drop(runner);
+    let path = f
+        .state
+        .path()
+        .join(format!("{}.json", request.operation_id));
+    let mut receipt: Receipt = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    receipt.state = State::Unknown;
+    receipt.exit_code = None;
+    receipt.signal = None;
+    receipt.reason = Some("test_unknown".into());
+    fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let runner = Runner::open(f.config()).await.unwrap();
+    assert!(runner.retire_history(barrier).await.is_err());
+    assert!(path.exists());
+    assert!(runner.history_barrier().await.is_none());
+    f.assert_empty();
+}
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn command_history_recovers_a_durable_barrier_with_partially_removed_files() {
+    let f = Fixture::new();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let request = f.request("printf output");
+    runner.start(request.clone()).await.unwrap();
+    finished(&runner, request.operation_id).await;
+    drop(runner);
+    let barrier = history_barrier(&f, request.operation_id);
+    let binding = sandbox_protocol::history::Binding::Retired(barrier.clone());
+    fs::write(
+        f.state.path().join("context.json"),
+        serde_json::to_vec(&binding).unwrap(),
+    )
+    .unwrap();
+    fs::remove_file(
+        f.state
+            .path()
+            .join(format!("{}.json", request.operation_id)),
+    )
+    .unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    fs::write(outside.path(), b"keep").unwrap();
+    let path = f
+        .state
+        .path()
+        .join(format!("{}.stdout", request.operation_id));
+    fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(outside.path(), &path).unwrap();
+    let runner = Runner::open(f.config()).await.unwrap();
+    assert_eq!(runner.history_barrier().await, Some(barrier));
+    assert!(runner.start(request).await.is_err());
+    assert_eq!(fs::read(outside.path()).unwrap(), b"keep");
+    assert_eq!(fs::read_dir(f.state.path()).unwrap().count(), 2);
+    f.assert_empty();
+}
+
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn command_history_reclaims_exhausted_reservations_and_preserves_newer_active_work() {
+    let f = Fixture::new();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let mut requests = Vec::new();
+    for _ in 0..4 {
+        let mut r = f.request(":");
+        r.output_limit = MAX_OUTPUT;
+        runner.start(r.clone()).await.unwrap();
+        finished(&runner, r.operation_id).await;
+        requests.push(r);
+    }
+    let mut next = f.request("sleep 10");
+    next.output_limit = MAX_OUTPUT;
+    assert!(runner.start(next.clone()).await.is_err());
+    let through = requests.iter().map(|r| r.operation_id).max().unwrap();
+    let first = requests.iter().map(|r| r.operation_id).min().unwrap();
+    runner
+        .retire_history(history_barrier(&f, first))
+        .await
+        .unwrap();
+    runner.start(next.clone()).await.unwrap();
+    // A higher terminal prefix can retire while a newer command remains owned.
+    // Advancing the barrier must not cancel or discard that command.
+    runner
+        .retire_history(history_barrier(&f, through))
+        .await
+        .unwrap();
+    assert!(runner.inspect(next.operation_id).await.is_some());
+    runner.cancel(next.operation_id).await.unwrap();
+    finished(&runner, next.operation_id).await;
+    runner
+        .retire_history(history_barrier(&f, next.operation_id))
+        .await
+        .unwrap();
+    for request in requests {
+        assert!(runner.start(request).await.is_err());
+    }
+    drop(runner);
+    let runner = Runner::open(f.config()).await.unwrap();
+    for _ in 0..4 {
+        let mut r = f.request(":");
+        r.output_limit = MAX_OUTPUT;
+        runner.start(r.clone()).await.unwrap();
+        finished(&runner, r.operation_id).await;
+    }
+    let mut full = f.request(":");
+    full.output_limit = MAX_OUTPUT;
+    assert!(runner.start(full).await.is_err());
+    f.assert_empty();
+}
+#[tokio::test]
+#[ignore = "requires root and HUDSON_GUEST_TEST_VM=1 in a dedicated Linux development VM"]
+async fn failed_history_barrier_write_deletes_nothing_and_requires_recovery() {
+    let f = Fixture::new();
+    let runner = Runner::open(f.config()).await.unwrap();
+    let request = f.request("printf retained");
+    runner.start(request.clone()).await.unwrap();
+    finished(&runner, request.operation_id).await;
+    let context_path = f.state.path().join("context.json");
+    let context = fs::read(&context_path).unwrap();
+    fs::remove_file(&context_path).unwrap();
+    fs::create_dir(&context_path).unwrap();
+    assert!(
+        runner
+            .retire_history(history_barrier(&f, request.operation_id))
+            .await
+            .is_err()
+    );
+    assert!(runner.history_barrier().await.is_none());
+    assert_eq!(f.output(request.operation_id, "stdout"), b"retained");
+    assert!(runner.start(f.request(":")).await.is_err());
+    drop(runner);
+    fs::remove_dir(&context_path).unwrap();
+    fs::write(&context_path, context).unwrap();
+    let runner = Runner::open(f.config()).await.unwrap();
+    assert!(runner.history_barrier().await.is_none());
+    assert!(runner.inspect(request.operation_id).await.is_some());
+    runner
+        .retire_history(history_barrier(&f, request.operation_id))
+        .await
+        .unwrap();
+    f.assert_empty();
+}
