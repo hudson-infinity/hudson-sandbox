@@ -108,6 +108,7 @@ pub fn launch(manifest: Manifest) -> Result<Receipt> {
         existing.host_boot_id == boot_id()?,
         "prepared allocation belongs to another host boot"
     );
+    let authority = manifest.authorize_launch()?;
     // SAFETY: no descriptor-table separation is requested. The CLI enters here before threads.
     #[allow(unsafe_code)]
     unsafe {
@@ -119,14 +120,18 @@ pub fn launch(manifest: Manifest) -> Result<Receipt> {
         "/",
         rustix::mount::MountPropagationFlags::PRIVATE | rustix::mount::MountPropagationFlags::REC,
     )?;
-    let status = Command::new(std::env::current_exe()?)
+    let mut child = Command::new(std::env::current_exe()?)
         .arg("__guardian-init")
         .arg(manifest.directory().join("manifest.json"))
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()?;
+        .spawn()?;
+    // The child reacquires and rechecks before launching. Do not hold the
+    // global shared gate for the VM lifetime, which would block fencing.
+    drop(authority);
+    let status = child.wait()?;
     let reason = if status.code() == Some(124) {
         "lease_expired"
     } else if status.success() {
@@ -156,6 +161,7 @@ pub fn namespace_init(manifest: Manifest) -> Result<()> {
     root()?;
     ensure!(std::process::id() == 1, "guardian must be namespace init");
     manifest.validate()?;
+    let authority = manifest.authorize_launch()?;
     // Keep the flock until the kernel closes descriptors on PID-namespace init death.
     // Releasing it while unwinding an error could let recovery race still-live descendants.
     let _lock = std::mem::ManuallyDrop::new(manifest.lock()?);
@@ -294,6 +300,7 @@ pub fn namespace_init(manifest: Manifest) -> Result<()> {
     receipt.firecracker_namespace_pid = Some(vm_pid);
     receipt.state = State::Running;
     write_json(&manifest.record_path(), &receipt)?;
+    drop(authority);
     let shared = Arc::new(Mutex::new(receipt));
     let slots = Arc::new(AtomicUsize::new(0));
     loop {
@@ -364,6 +371,11 @@ fn handle(
         request.owner == manifest.start.owner,
         "wrong guardian ownership"
     );
+    let _authority = if matches!(request.action, Action::BindGuest | Action::Renew { .. }) {
+        Some(manifest.authorize_launch()?)
+    } else {
+        None
+    };
     if matches!(request.action, Action::BindGuest) {
         return bind_guest(manifest, shared, deadline);
     }

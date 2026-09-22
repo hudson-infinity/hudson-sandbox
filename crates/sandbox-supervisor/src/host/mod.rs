@@ -146,6 +146,7 @@ impl Host {
         );
         for image in config.images.values() {
             Manifest {
+                launch_permit: None,
                 config: config.guardian_config(image),
                 start: guardian::Start {
                     owner: guardian::Owner {
@@ -326,6 +327,7 @@ impl Host {
         }
         deadline(request.allocation_expires_unix_ms)?;
         Ok(Manifest {
+            launch_permit: None,
             config: c.guardian_config(image),
             start: guardian::Start {
                 owner: guardian::Owner {
