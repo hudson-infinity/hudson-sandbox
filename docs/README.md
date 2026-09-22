@@ -1,6 +1,6 @@
 # Documentation guide
 
-The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. The real Linux supervisor connects create, command execution, renewal and destroy to Firecracker. [Public execute](controller.md#command-admission-and-dispatch-ownership) has durable admission, retry fencing and result handling with local microVM evidence. Authenticated output reads, SSE streaming and an opt-in cleanup worker are implemented. Command cancellation is implemented. The guest file engine, authenticated transport, durable public uploads and project-authorized public downloads exist, while history reclamation, the UI, and an installer remain unfinished. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
+The repository is in **early implementation**. PostgreSQL-backed API routes, the HTTPS server, and the controller/fake supervisor have executable tests. The real Linux supervisor connects create, command execution, renewal and destroy to Firecracker. [Public execute](controller.md#command-admission-and-dispatch-ownership) has durable admission, retry fencing and result handling with local microVM evidence. Authenticated output reads, SSE streaming and an opt-in cleanup worker are implemented. Command cancellation is implemented. The guest file engine, authenticated transport, durable public uploads and project-authorized public downloads exist, with opt-in live/destruction history reclamation and quota recovery. Whole-allocation/storage-marker lifecycle, the UI and an installer remain unfinished. Documents distinguish implemented slices from proposed contracts. Read this index to find the authoritative home for each topic.
 
 ## Reading order and ownership
 
@@ -24,9 +24,9 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [OpenAPI and wire models](openapi.md) | Versioned implemented routes, generated wire types and conformance | How to change and validate the client contract |
 | [Output storage](output-storage.md) | Private artifact identity, archival, publication, verified reads and cleanup worker | How output is retrieved, streamed and retired with recoverable completion receipts |
 | [Operation retention](operation-retention.md) | Terminal response expiry, payload compaction and stable retries | How expired bodies are removed while preserving recovery evidence |
-| [History reclamation](history-reclamation.md) | Guest/host retirement and required database coordination | How to reclaim receipts without admitting old work again |
+| [History reclamation](history-reclamation.md) | Guest/host retirement, database coordination and remaining lifecycle limits | How to reclaim receipts without admitting old work again |
 | [Command cancellation](command-cancellation.md) | Public interruption requests, ownership, outcomes and recovery | How callers interrupt commands and reconcile their results |
-| [File transfer](file-transfer.md) | Guest workspace paths, staged uploads, receipts and captured downloads | What the file engine implements and what public transport remains |
+| [File transfer](file-transfer.md) | Guest workspace paths, staged uploads, receipts and captured downloads | How guest transfers and authenticated public file transport work |
 | [UI design](ui-design.md) | Screens, navigation, user flows, loading/error states | How Project users and Admins manage the installation |
 | [Supported configuration](compatibility.md) | Host and guest envelope, privilege layers, boot inputs | What a supported installation and a sandbox actually are |
 | [Networking](networking.md) | Egress policy, name resolution, ingress, bandwidth | What a sandbox can reach and what can reach it |

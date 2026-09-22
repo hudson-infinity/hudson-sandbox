@@ -2,11 +2,11 @@
 
 Delete this file once every question has written findings and the durable results have moved into [performance](../performance.md), [architecture](../architecture.md), or a [decision record](../decisions/README.md). See [the deletion protocol](README.md#deletion-protocol).
 
-Throwaway code. None of it is meant to merge. The output that matters is the answers, not the scaffolding.
+The unanswered questions below still gate the supported release. [Nested-aarch64 boot](../linux-development.md#verified-boot-and-its-limits), guardian and guest tests provide development findings; they do not establish the selected x86_64 limits, hostile-workload or performance claims. Record the answers and preserve useful regression tests.
 
 ## Before anything
 
-- [ ] Rent an x86_64 bare-metal host matching [supported configuration](../compatibility.md#host). Nothing below runs without it, and nothing runs on macOS.
+- [ ] Provide an x86_64 KVM host matching [supported configuration](../compatibility.md#host) for supported-envelope acceptance. Native control-plane work and nested-aarch64 runtime development already run from macOS.
 - [ ] Record the exact CPU model, RAM, disk class, kernel version, and Firecracker release in this file. Every measurement below is meaningless without them.
 - [ ] Boot one Firecracker microVM by hand, through the jailer, from a Debian rootfs.
 

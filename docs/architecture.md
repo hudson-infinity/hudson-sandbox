@@ -1,6 +1,6 @@
 # Architecture
 
-Status: selected design; implementation and verification pending. This document owns component boundaries, technology choices, deployment topology, and isolation mechanisms. [Threat model](threat-model.md) owns the adversary model those mechanisms answer to, [alternatives](alternatives.md) owns why this system is built rather than adopted, and [performance](performance.md) owns the budgets the design must meet. Read [the documentation index](README.md) for the detailed contracts.
+Status: partially implemented. The standalone API/controller, SQLx storage, real supervisor/guardian, guest execution/files and clients have development evidence. Broader platform topology and the complete supported-host release gates remain planned; implemented scope is linked from the documentation index. This document owns component boundaries, technology choices, deployment topology, and isolation mechanisms. [Threat model](threat-model.md) owns the adversary model those mechanisms answer to, [alternatives](alternatives.md) owns why this system is built rather than adopted, and [performance](performance.md) owns the budgets the design must meet. Read [the documentation index](README.md) for the detailed contracts.
 
 ## Purpose and ownership
 

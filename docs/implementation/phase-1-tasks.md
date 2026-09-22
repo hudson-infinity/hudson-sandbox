@@ -1,124 +1,72 @@
 # Phase 1 task list — temporary
 
-Delete this file once both gates below have passed. See [the deletion protocol](README.md#deletion-protocol).
+Delete this file once both gates below have passed. See [the deletion protocol](README.md#deletion-protocol). Completed implementation has moved to the owning contracts linked below; the remaining checkboxes concern missing implementation or the complete release acceptance, not a claim that no component tests exist.
 
-Scope is fixed by [roadmap](../roadmap.md#scope-discipline-for-phase-1). Nothing here adds to it. Snapshots, the UI, sessions, audit surfaces, admin routes and multiple hosts are later phases; resisting them is most of the discipline.
+Scope is fixed by [roadmap](../roadmap.md#scope-discipline-for-phase-1). Snapshots, the UI, sessions, audit surfaces, admin routes and multiple hosts remain later phases. Execution and recovery are built together, with two gates passed in order.
 
-Execution and recovery are one phase because the ownership mechanics are cheap to build in and expensive to retrofit. They are still **two gates, passed in order** — 1a is a real stopping point, and skipping it produces a system that has never been demonstrated working before it is asked to survive failure.
+## Implemented groundwork
+
+The [development guide](dev-env.md) covers the pinned workspace, local PostgreSQL/MinIO stack, hosted checks and native control-plane workflow. [Data models](../data-models.md) own the implemented SQLx migrations, constraints and typed IDs. The [API contract](../api-contract.md), [HTTPS/setup guide](../api-server.md), [OpenAPI contract](../openapi.md), [CLI](../client-cli.md) and [language clients](../language-clients.md) cover authentication, offline provisioning, admission, collections, commands, cancellation, files, output and resumable SSE.
+
+The [controller](../controller.md), [real supervisor](../real-supervisor.md), [guardian](../allocation-guardian.md), [bootstrap](../guest-bootstrap.md), [guest protocol](../guest-protocol.md) and [runner](../guest-runner.md) own implemented dispatch, ownership, watchdog, execution and recovery behavior. [History reclamation](../history-reclamation.md) owns opt-in live/destruction retirement and quota recovery. The [development evidence](../evidence/2026-09-22-released-history-accounting.json) includes real command execution, confirmed database release, host restart and retained outcomes. This is nested-aarch64 evidence, not passage of the supported x86_64 gates.
 
 ## Groundwork
 
-- [x] Cargo workspace with the crates from the [proposed layout](../architecture.md#proposed-code-layout). Only the ones this phase needs.
-- [x] Pin the Rust toolchain. `rustfmt` and `clippy` configured, clippy warnings denied in CI.
-- [x] CI jobs: fmt, clippy, tests including the schema tests against a PostgreSQL service, alongside the existing docs check.
-- [x] Local stack: PostgreSQL 16 and MinIO via compose. Seeded admin credential follows the auth work.
-- [x] Extend the integrated [create controller and fake](../controller.md) for execute, retained output, files and live streaming; see [file orchestration](../file-transfer.md#public-upload-orchestration).
-- [x] Dedicated nested aarch64 Linux/KVM development host and real boot evidence; [development guide](../linux-development.md). This does not pass the release gates.
-- [ ] Self-hosted x86_64 runner for VM tests, once a supported host exists. Fork pull requests never run on it.
-
----
+- [ ] Provide supported x86_64 KVM capacity and a reviewed privileged CI workflow. Never run untrusted fork code on that host.
+- [ ] Record complete supported-host evidence and link it from the owning contracts; keep development fixtures distinct from production images and release artifacts.
 
 # Gate 1a — it works
 
-## Storage
+## Remaining implementation and integration
 
-- [x] First migration for `projects`, `sandboxes`, `operations`, `allocations`, `hosts` — the five records this phase touches. Snapshots wait for Phase 3.
-- [x] The constraints from [data models](../data-models.md#database-rules): `UNIQUE (project_id, idempotency_key)`, `UNIQUE (sandbox_id, generation)`, one unreleased allocation per sandbox, composite keys keeping sandbox-local links in the same sandbox.
-- [x] Typed UUIDv7 IDs with prefixes attached at the API boundary.
-
-## API
-
-- [x] [OpenAPI for implemented Project routes](../openapi.md), generated Rust wire models and real router conformance. [Rust transport and the project CLI](../client-cli.md) now cover those operations; Python/TypeScript packages and distribution remain separate work.
-- [x] Project bearer token authentication, hashed storage, constant-time comparison.
-- [x] Standalone HTTPS listener and offline project provisioning with private credential delivery; [transport/setup evidence](../api-server.md).
-- [x] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).
-- [x] Project-scoped sandbox/operation lists with bounded cursor pagination; [collection read contract](../api-contract.md#implemented-collection-reads).
-- [x] `problem+json` errors with the machine-readable code list. Codes are added as routes need them.
-- [x] Create, execute, destroy, get sandbox, get operation, retained-output GET and [file PUT](../api-contract.md#implemented-file-uploads).
-- [x] Final output archival through the supervisor, independent fenced publication, and recovery of uploaded objects after destroy/restart; [scope and evidence](../output-storage.md).
-- [ ] SSE output stream with sequence cursors and resume.
-
-## Controller
-
-- [x] Extend create/destroy with allocation lease renewal and same-epoch expiry reconciliation against the fake; [maintenance evidence](../controller.md#allocation-maintenance).
-- [x] Reconcile verified previous-epoch allocation release into database ownership; [development recovery evidence](../controller.md#previous-epoch-allocation-recovery).
-- [ ] Validate watchdog/epoch fencing against the complete supported-host failure matrix.
-- [ ] Add authenticated host registration and verified image/host compatibility to the initial operator-provisioned create path.
-- [ ] Extend the implemented [create intent and evidence transactions](../controller.md#completion-and-uncertainty) to the remaining lifecycle actions.
-
-## Supervisor
-
-The separate [allocation guardian](../allocation-guardian.md) implements verified staging, real jailer/Firecracker ownership, cgroup limits, local deadlines and cleanup. Its controlled aarch64 tests are component evidence; the [real lifecycle RPC adapter](../real-supervisor.md) now connects it to create/renew/destroy. Verified previous-epoch database release now has a recovery path. Partition, network and supported-host gates remain open.
-
-- [ ] gRPC server over mTLS, private interface only, verifies the controller's certificate identity rather than merely a valid certificate.
-- [ ] Per-host certificate issuance and a small internal CA.
-- [ ] Jailer, per-VM cgroups and namespaces, Firecracker boot from our kernel plus an allowlisted rootfs.
-- [ ] Resource limits enforced by the host, not requested politely.
-- [ ] Network namespace per sandbox, nftables rules from [networking](../networking.md), host-side resolver that refuses unapproved names.
-- [ ] Supervisor epoch issued on registration; stale controllers rejected.
-- [ ] Lease watchdog that stops VMs when the host is partitioned.
-
-## Guest
-
-- [x] Allocation-scoped credentials, read-only bootstrap device, guest init and durable boot binding; [component evidence](../guest-bootstrap.md).
-- [ ] Guest image: Debian slim, our init, our guest agent, `system` and `workload` cgroups, agent in its own PID namespace.
-- [ ] Guest kernel build: modules off, lockdown on, pinned and digest-published.
-- [x] Authenticated vsock with length-prefixed protobuf shared with the supervisor; [command/receipt/output contract and evidence](../guest-protocol.md). Lifecycle boot binding is integrated; public command dispatch is integrated; public file routes are integrated; source cleanup is opt-in and history reclamation remains open.
-- [x] Guest-local spawn, process-tree cleanup, bounded output and exit/restart receipts; [component contract and evidence](../guest-runner.md). The command wire, lifecycle boot binding and local guardian watchdog are implemented; public command dispatch is integrated; the full host-fault gates remain open above.
-- [x] File write into the workspace with path and size validation; [bounded transfer](../file-transfer.md).
+- [ ] Add authenticated host registration, externally issued epochs and verified image/host compatibility to the operator-provisioned path. Preserve the existing stale-epoch and ownership fences.
+- [ ] Supply production Debian images with our init/agent and a reproducible pinned guest kernel build: modules disabled and lockdown enabled. Existing BusyBox development fixtures do not satisfy this image contract.
+- [ ] Implement the per-sandbox network namespace, host-side resolver, nftables CIDR/port policy and bandwidth controls from [networking](../networking.md). A development VM with no NIC is not this policy engine.
+- [ ] Complete supported-installation private RPC binding, per-host certificate issuance/rotation and internal CA operations. Pinned mTLS authentication already exists; certificate operations and installation policy remain work.
+- [ ] Complete whole-allocation host journal/guardian metadata lifecycle and permanent object-store marker authority fencing. Do not delete replay fences based on time, local cancellation or a release flag. Domain history retirement alone does not finish [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79).
 
 ## Passing 1a
 
-- [x] A caller with a project token runs a command in a real microVM and reads its retained output; [controlled nested aarch64 evidence](../evidence/2026-09-21-aarch64-output-read.json) only, not the complete supported-host gate.
-- [ ] A long-running process outlives the request that started it.
-- [x] A file transfers in and is readable from inside the sandbox; the MinIO-enabled [real host lifecycle](../../crates/sandbox-supervisor/tests/host.rs) uploads binary bytes, executes a command using them, downloads and verifies the result, then destroys the VM.
-- [ ] Destroy confirms allocation release in the database.
-- [ ] Limits and egress rules hold against the attempts from [spike question 1](phase-0-spikes.md#1-do-the-limits-actually-hold--gates-phase-1).
-- [ ] Tag it. This is the first thing worth showing anyone.
-
----
+- [ ] On a fresh supported host, reproduce authenticated create, command execution, a process that outlives its initiating request, file upload/download, live/retained output, cancellation, destroy and confirmed database release. These paths have development evidence; fresh supported-host acceptance remains open.
+- [ ] Exercise host-enforced CPU, memory, PID and writable-disk limits under hostile load, and all egress checks from [spike question 1](phase-0-spikes.md#1-do-the-limits-actually-hold--gates-phase-1).
+- [ ] Demonstrate the [two-sandbox product scenario](../goal.md#capabilities-and-their-validation), including one sandbox exhausting limits while the other remains usable within the documented bounds.
+- [ ] Collect the gate evidence for maintainer review before any release/tag under [the contribution process](../../CONTRIBUTING.md#releases). A passing component suite is not this gate.
 
 # Gate 1b — it does not lie
 
-Everything here is about what the system reports when something breaks. Nothing new is introduced; 1b proves the mechanics 1a already built.
+The mechanisms below have unit, database, simulated-host and controlled real-host tests. The remaining task is the complete applicable [recovery table](../lifecycle.md#destroy-and-recovery) and adversarial matrix on the supported configuration, with evidence for each boundary.
 
 ## Failure injection
 
-Work the [lifecycle recovery table](../lifecycle.md#destroy-and-recovery) row by row. For each, interrupt at the boundary and confirm the recorded outcome matches what actually happened.
-
-- [ ] Create reserved, readiness unknown — kill the controller between dispatch and confirmation.
-- [ ] Execute dispatched, result missing — kill the supervisor mid-command.
-- [ ] Destroy stopped the VM, cleanup incomplete — kill during teardown.
-- [ ] Lost acknowledgement on every one of the above: the response dies, the work did not.
-- [ ] Host partitioned: the lease watchdog stops VMs, and the controller does not start a replacement before that is confirmed.
+- [ ] Create reserved, readiness unknown: kill the controller between dispatch and confirmation.
+- [ ] Execute dispatched, result missing: kill the supervisor mid-command and preserve an honest unknown outcome.
+- [ ] Destroy stopped the VM, cleanup incomplete: kill during teardown and reconcile actual resource release.
+- [ ] Lose acknowledgements at every applicable create/execute/cancel/destroy boundary; verify the original work is reconciled without replay.
+- [ ] Partition the host: prove the independent watchdog stops workloads and the controller cannot start a replacement until release/fencing is confirmed.
+- [ ] Cover simultaneous host/process/storage failures beyond the individual development regressions; do not infer combined-fault behavior from isolated tests.
 
 ## Ownership and fencing
 
-- [ ] A stale controller claim cannot mutate current state.
-- [ ] A stale supervisor epoch is rejected after a supervisor restart.
-- [ ] A stale allocation generation cannot release or command a current VM.
-- [ ] A replacement allocation is refused until the previous incarnation is confirmed stopped or fenced.
-
-## Honest outcomes
-
-- [ ] An unprovable execution result is recorded as `unknown`, never as success or failure.
-- [ ] Reconciliation resolves `unknown` from receipts and host observation, and records how it resolved.
-- [ ] A command is never blindly re-dispatched to recover a lost response.
-- [ ] Concurrent identical idempotency keys admit exactly one operation; changed payloads under the same key conflict.
-- [ ] A guest agent that disappears mid-execution fails the sandbox and reports it, per [lifecycle](../lifecycle.md#resume).
+- [ ] Reject stale controller claims, supervisor epochs and allocation generations throughout the supported-host matrix.
+- [ ] Refuse replacement allocation until the previous incarnation is confirmed stopped or fenced.
+- [ ] Verify concurrent identical idempotency keys retain exactly one operation and changed payloads conflict across failure/recovery boundaries.
+- [ ] Preserve known outcomes and record unresolved execution as `unknown`; never blindly redispatch to recover a missing response.
+- [ ] Resolve `unknown` only from valid original receipts/host observations and retain how it resolved.
+- [ ] Validate guest-agent loss and the resulting sandbox/operation reports under the [lifecycle contract](../lifecycle.md), including when guest root interferes with agent state.
 
 ## Isolation under attack
 
-- [ ] The [networking acceptance checks](../networking.md#acceptance-checks) pass in full.
-- [ ] The applicable rows of the [threat model's required validation](../threat-model.md#required-validation) pass for the surfaces that exist — guest privilege, filesystem traversal, egress, cross-project access, hostile root against the guest agent.
+- [ ] Pass the complete [networking acceptance set](../networking.md#acceptance-checks).
+- [ ] Pass the applicable [threat-model validation](../threat-model.md#required-validation): guest privilege and hardening, filesystem traversal, egress, cross-project access, credential boundaries and hostile root against the agent. Browser/session checks belong to the later UI gate.
 
 ## Cleanup convergence
 
-- [ ] No leaked allocations, disk reservations, network namespaces, or VMs after any injected failure.
-- [ ] Capacity accounting returns to its true value once cleanup completes.
+- [ ] Confirm no leaked allocations, disk reservations, network namespaces or VMs after each injected failure.
+- [ ] Verify capacity accounting returns only after the corresponding release/consumer-retirement evidence, including repeated crashes and lost acknowledgements.
+- [ ] Demonstrate sustained reuse without exhausting retained host allocation metadata or silently removing storage replay fences.
 
 ## Passing 1b
 
 - [ ] Every applicable recovery-table row reconciles correctly under injected failure.
-- [ ] Every acceptance check this phase covers is linked from its owning document.
-- [ ] Delete this file.
+- [ ] Every acceptance check this phase covers is linked from its owning document with its actual test configuration and limitations.
+- [ ] Delete this file after moving durable findings to the owning contracts.

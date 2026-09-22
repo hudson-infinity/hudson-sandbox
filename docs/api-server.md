@@ -1,6 +1,6 @@
 # Running the HTTPS API
 
-Status: implemented for create, execute, cancel, destroy, status, collections, outputs, streams, file uploads and captured downloads. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. The [Rust client and project CLI](client-cli.md) cover these Project routes. An installer, Python/TypeScript SDKs, package publication and management API/UI remain unfinished. This setup is not a production isolation guarantee.
+Status: implemented for create, execute, cancel, destroy, status, collections, outputs, streams, file uploads and captured downloads. The [API binary](../crates/sandbox-api/src/main.rs) now accepts real HTTPS connections. The [controller](controller.md) remains a separate process. The [Rust client and project CLI](client-cli.md) cover these Project routes. [Python/TypeScript clients](language-clients.md) are implemented with conformance checks. An installer, package publication and management API/UI remain unfinished. This setup is not a production isolation guarantee.
 
 ## Transport contract
 
@@ -20,7 +20,7 @@ The HTTPS transport has fixed bounds; SSE adds its own body/session limits:
 | Whole connection, including a stalled response writer | 120 seconds |
 | Shutdown drain | Stop accepting on SIGINT/SIGTERM; finish active requests for up to 10 seconds, then close remaining connections |
 
-The [transport implementation](../crates/sandbox-api/src/server.rs) uses Rustls and [Hyper's HTTP/1 connection builder](https://docs.rs/hyper/1.11.1/hyper/server/conn/http1/struct.Builder.html). These bounds are not per-project rate limits, admission quotas, a load benchmark, or protection against every denial-of-service attack. Streaming endpoints will require a separate lifetime and revocation policy.
+The [transport implementation](../crates/sandbox-api/src/server.rs) uses Rustls and [Hyper's HTTP/1 connection builder](https://docs.rs/hyper/1.11.1/hyper/server/conn/http1/struct.Builder.html). These bounds are not per-project rate limits, admission quotas, a load benchmark, or protection against every denial-of-service attack. [Implemented SSE](api-contract.md#implemented-output-streams) has its own stream lifetime and revocation policy.
 
 A timeout, disconnect, or forced shutdown can occur after a database commit. Recover a mutation using its original idempotency key and payload; do not infer cancellation from a transport failure. JSON extraction failures return generic `400 bad_request` problems; body-limit failures return `413` problems. Protocol-level failures such as malformed HTTP headers can close the connection or use Hyper's plain protocol error response. API responses do not include raw parser input. Logs omit request headers, bodies, query strings, and database configuration; the binary deliberately does not enable wire-level debug logging from `RUST_LOG`.
 
