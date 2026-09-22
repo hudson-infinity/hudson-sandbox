@@ -10,6 +10,16 @@ The retained record is an authority, not just a log. [Normal host admission](../
 
 Guardian state has an additional entry point. [Prepare and fence-unstarted](../crates/sandbox-supervisor/src/guardian/mod.rs) use the allocation directory and its lifecycle lock. [Launch and namespace initialization](../crates/sandbox-supervisor/src/guardian/process.rs) run separately from the host RPC handler. A host-epoch check alone does not fence a delayed process carrying an old manifest. Removing a locked directory also permits another process to create a different lock inode at the same path.
 
+## Implemented guardian component
+
+The Linux [launch authority](../crates/sandbox-supervisor/src/launch_authority.rs) now persists the bounded permit ledger and current epoch outside allocation directories. A stable cross-process lock serializes authority updates with guardian prepare, launch, namespace initialization, guest binding and renewal. Fenced or stale permits deny these actions; inspection and stop remain available. Fencing does not stop a running VM or prove physical cleanup.
+
+Activation is explicit and restricted to a fresh, private root-owned allocation root. The host manifest factory still emits legacy manifests: controller-to-host permit registration, durable acknowledgement, legacy migration and automatic activation are not integrated. Quiesce older binaries before activation. An activated root rejects legacy manifests; missing, corrupt, oversized, linked or mismatched authority fails closed. Independently retained epoch/frontier bounds detect rollback below those checkpoints, not arbitrary coherent filesystem rollback.
+
+The root retains `launch.lock`, `launch.required` and `launch.json`; atomic updates use one `launch.next` staging file. The activation record binds the stable lock inode. An interrupted staging file cannot turn the root into legacy mode or replace a missing authoritative state. A failed fence may leave the previous valid grant active: callers must retain original metadata until a successful durable acknowledgement. `complete` and `forget` trust their caller to verify physical cleanup and database completion; neither performs deletion or establishes those proofs.
+
+Controlled development-VM validation is recorded in [guardian authority evidence](implementation/guardian-authority-evidence.md). This component does not complete the whole-allocation retirement protocol or authorize production tombstone deletion.
+
 ## Required replacement authority
 
 Before any tombstone can disappear, a durable authority outside its directory must deny its original launch identity. The authority must cover host RPC admission, guardian prepare, launch, namespace initialization and recovery paths. A check followed by an unlocked launch is insufficient: retirement and the final launch decision must serialize across processes. The lock that provides this serialization must survive allocation-directory deletion.

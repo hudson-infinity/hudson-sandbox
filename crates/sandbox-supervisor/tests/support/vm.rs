@@ -79,6 +79,7 @@ impl Fixture {
         );
         let artifacts = Path::new("/tmp/hudson-fc-artifacts");
         let manifest = Manifest {
+            launch_permit: None,
             config: Config {
                 state_root: root.join("s"),
                 cgroup_parent: PathBuf::from("/sys/fs/cgroup/hudson-guardians-tests"),

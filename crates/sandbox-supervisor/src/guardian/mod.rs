@@ -54,6 +54,8 @@ pub struct Start {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_permit: Option<sandbox_protocol::allocation_authority::Permit>,
     pub config: Config,
     pub start: Start,
 }
@@ -185,6 +187,22 @@ fn private_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 impl Manifest {
+    fn authorize_launch(&self) -> Result<crate::launch_authority::LaunchGuard> {
+        if let Some(p) = &self.launch_permit {
+            let o = &self.start.owner;
+            ensure!(
+                p.host == o.host
+                    && p.project == o.project
+                    && p.sandbox == o.sandbox
+                    && p.allocation == o.allocation
+                    && p.create_operation == o.create_operation
+                    && p.generation == o.generation
+                    && p.original_epoch == o.epoch,
+                "manifest launch permit ownership mismatch"
+            );
+        }
+        crate::launch_authority::authorize(&self.config.state_root, self.launch_permit.as_ref())
+    }
     pub fn directory(&self) -> PathBuf {
         self.config
             .state_root
@@ -304,6 +322,7 @@ impl Manifest {
     /// Stage once under ownership. A returned existing receipt never causes a second launch.
     pub fn prepare(&self) -> Result<Receipt> {
         self.validate()?;
+        let _authority = self.authorize_launch()?;
         private_dir(&self.config.state_root)?;
         private_dir(&self.directory())?;
         let _lock = self.lock()?;

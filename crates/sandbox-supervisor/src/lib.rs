@@ -18,3 +18,6 @@ pub mod host;
 pub mod live_output;
 
 pub mod file_downloads;
+
+#[cfg(target_os = "linux")]
+pub mod launch_authority;
