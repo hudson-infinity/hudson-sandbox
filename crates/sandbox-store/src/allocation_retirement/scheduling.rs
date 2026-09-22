@@ -54,11 +54,21 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        let intent: Option<Intent> = intent
+            .map(|v| serde_json::from_value(v).map_err(|_| Error::Evidence))
+            .transpose()?;
+        if let Some(intent) = &intent {
+            intent.validate().map_err(|_| Error::Evidence)?;
+            if intent.permit.allocation.uuid() != id
+                || intent.permit.host != host
+                || intent.simulated
+            {
+                return Err(Error::Evidence);
+            }
+        }
         Ok(Some(Candidate {
             allocation: AllocationId::from_uuid(id),
-            intent: intent
-                .map(|v| serde_json::from_value(v).map_err(|_| Error::Evidence))
-                .transpose()?,
+            intent,
         }))
     }
 }

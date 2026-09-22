@@ -693,16 +693,21 @@ async fn http(
 #[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
 #[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1, local PostgreSQL and aarch64 KVM artifacts"]
 async fn authenticated_api_controller_creates_renews_and_destroys_real_vm(pool: sqlx::PgPool) {
-    api_lifecycle(pool, false).await;
+    api_lifecycle(pool, false, false).await;
+}
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+#[ignore = "requires root, HUDSON_GUARDIAN_TEST_VM=1, local PostgreSQL and aarch64 KVM artifacts"]
+async fn authenticated_controller_automatically_retires_real_allocation(pool: sqlx::PgPool) {
+    api_lifecycle(pool, false, true).await;
 }
 #[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
 #[ignore = "requires root, KVM artifacts, PostgreSQL and HUDSON_TEST_S3_* MinIO"]
 async fn real_output_minio_archives_binary_bytes_and_reconciles_after_epoch_restart(
     pool: sqlx::PgPool,
 ) {
-    api_lifecycle(pool, true).await;
+    api_lifecycle(pool, true, false).await;
 }
-async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
+async fn api_lifecycle(pool: sqlx::PgPool, output: bool, automatic_retirement: bool) {
     use sandbox_protocol::{ProjectId, ProjectToken};
     use serde_json::{Value, json};
     let mut f = Fixture::configured_permits(true, output, true).await;
@@ -1156,7 +1161,11 @@ async fn api_lifecycle(pool: sqlx::PgPool, output: bool) {
     assert!(released);
     if !output {
         history::public_released_retirement(&pool, &store, &mut f, &image).await;
-        forgetting::public_handoff(&pool, &store, &mut f).await;
+        if automatic_retirement {
+            forgetting::automatic_handoff(&pool, &store, &mut f, &image).await;
+        } else {
+            forgetting::public_handoff(&pool, &store, &mut f, &image).await;
+        }
     }
     if let Some(artifacts) = &artifacts {
         f.restart().await;

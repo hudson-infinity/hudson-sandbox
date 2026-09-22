@@ -1,6 +1,6 @@
 # Bounded allocation authority model
 
-Status: implemented state model, database serial issuance and opt-in fresh-host registration with guardian enforcement. The authenticated whole-allocation forgetting handoff is implemented; automatic controller dispatch and legacy migration remain unfinished. [The protocol module](../crates/sandbox-protocol/src/allocation_authority.rs) and [its tests](../crates/sandbox-protocol/src/allocation_authority_tests.rs) explore the replacement authority required for whole-allocation reclamation in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Host/guardian tombstones remain mandatory until the exact completion and forgetting handoff succeeds.
+Status: implemented state model, database serial issuance and opt-in fresh-host registration with guardian enforcement. The authenticated whole-allocation forgetting handoff is implemented; opt-in controller dispatch is implemented, while legacy migration remains unfinished. [The protocol module](../crates/sandbox-protocol/src/allocation_authority.rs) and [its tests](../crates/sandbox-protocol/src/allocation_authority_tests.rs) explore the replacement authority required for whole-allocation reclamation in [issue #79](https://github.com/hudson-infinity/hudson-sandbox/issues/79). Host/guardian tombstones remain mandatory until the exact completion and forgetting handoff succeeds.
 
 ## Serial registration and retained owners
 

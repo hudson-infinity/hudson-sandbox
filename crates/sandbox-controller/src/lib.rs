@@ -3,8 +3,8 @@
 mod allocation_authority;
 pub mod archive;
 pub mod history;
-pub mod retirement;
 mod recovery;
+pub mod retirement;
 mod uploads;
 
 use sandbox_protocol::{

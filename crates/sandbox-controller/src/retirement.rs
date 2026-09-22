@@ -3,8 +3,7 @@
 //! each stage of the handoff.
 use crate::{Controller, ControllerConfig};
 use sandbox_protocol::supervisor::{
-    AllocationForgetRequest, AllocationMetadataRequest,
-    supervisor_client::SupervisorClient,
+    AllocationForgetRequest, AllocationMetadataRequest, supervisor_client::SupervisorClient,
 };
 use sandbox_store::{Store, allocation_retirement::Candidate};
 use std::time::Duration;
@@ -58,9 +57,9 @@ impl Retirer {
             return Ok(RetirementTick::Idle);
         };
         match self.process(candidate).await {
-            Err(RetirementError::Store(sandbox_store::allocation_retirement::Error::Ineligible)) => {
-                Ok(RetirementTick::Deferred)
-            }
+            Err(RetirementError::Store(
+                sandbox_store::allocation_retirement::Error::Ineligible,
+            )) => Ok(RetirementTick::Deferred),
             result => result,
         }
     }
@@ -68,42 +67,81 @@ impl Retirer {
     async fn process(&mut self, candidate: Candidate) -> Result<RetirementTick, RetirementError> {
         let mut metadata = None;
         if let Some(intent) = &candidate.intent {
-            if self.store.allocation_forgetting_completion(intent).await?.is_some() {
+            if self
+                .store
+                .allocation_forgetting_completion(intent)
+                .await?
+                .is_some()
+            {
                 return Ok(RetirementTick::Completed);
             }
             metadata = self.store.allocation_retirement_completion(intent).await?;
         }
-        if metadata.is_none() {
-            let Some(request) = self.store.prepare_allocation_retirement(
-                candidate.allocation, self.config.host, self.config.epoch, 120, false,
-            ).await? else {
+        let metadata = if let Some(metadata) = metadata {
+            metadata
+        } else {
+            let Some(request) = self
+                .store
+                .prepare_allocation_retirement(
+                    candidate.allocation,
+                    self.config.host,
+                    self.config.epoch,
+                    120,
+                    false,
+                )
+                .await?
+            else {
                 return Ok(RetirementTick::Deferred);
             };
             let observed = tokio::time::timeout(
                 Duration::from_secs(30),
-                self.client.retire_allocation_metadata(AllocationMetadataRequest {
-                    request_json: request.encode().map_err(|_| RetirementError::Encoding)?,
-                }),
-            ).await.map_err(|_| RetirementError::Rpc)?.map_err(|_| RetirementError::Rpc)?.into_inner();
-            metadata = Some(match self.store.complete_allocation_retirement(&request, &observed).await {
+                self.client
+                    .retire_allocation_metadata(AllocationMetadataRequest {
+                        request_json: request.encode().map_err(|_| RetirementError::Encoding)?,
+                    }),
+            )
+            .await
+            .map_err(|_| RetirementError::Rpc)?
+            .map_err(|_| RetirementError::Rpc)?
+            .into_inner();
+            match self
+                .store
+                .complete_allocation_retirement(&request, &observed)
+                .await
+            {
                 Ok(completion) => completion,
                 Err(error) => {
                     // An uncertain database acknowledgement must be resolved by
                     // retained proof before another host request is considered.
-                    match self.store.allocation_retirement_completion(&request.intent).await? {
+                    match self
+                        .store
+                        .allocation_retirement_completion(&request.intent)
+                        .await?
+                    {
                         Some(completion) => completion,
                         None => return Err(error.into()),
                     }
                 }
-            });
-        }
-        let metadata = metadata.expect("metadata is established before forgetting");
-        if self.store.allocation_forgetting_completion(&metadata.request.intent).await?.is_some() {
+            }
+        };
+        if self
+            .store
+            .allocation_forgetting_completion(&metadata.request.intent)
+            .await?
+            .is_some()
+        {
             return Ok(RetirementTick::Completed);
         }
-        let Some(request) = self.store.prepare_allocation_forgetting(
-            candidate.allocation, self.config.host, self.config.epoch, 120,
-        ).await? else {
+        let Some(request) = self
+            .store
+            .prepare_allocation_forgetting(
+                candidate.allocation,
+                self.config.host,
+                self.config.epoch,
+                120,
+            )
+            .await?
+        else {
             return Ok(RetirementTick::Deferred);
         };
         let observed = tokio::time::timeout(
@@ -111,11 +149,22 @@ impl Retirer {
             self.client.forget_allocation(AllocationForgetRequest {
                 request_json: request.encode().map_err(|_| RetirementError::Encoding)?,
             }),
-        ).await.map_err(|_| RetirementError::Rpc)?.map_err(|_| RetirementError::Rpc)?.into_inner();
-        if let Err(error) = self.store.complete_allocation_forgetting(&request, &observed).await {
-            if self.store.allocation_forgetting_completion(&request.claim.intent).await?.is_none() {
-                return Err(error.into());
-            }
+        )
+        .await
+        .map_err(|_| RetirementError::Rpc)?
+        .map_err(|_| RetirementError::Rpc)?
+        .into_inner();
+        if let Err(error) = self
+            .store
+            .complete_allocation_forgetting(&request, &observed)
+            .await
+            && self
+                .store
+                .allocation_forgetting_completion(&request.claim.intent)
+                .await?
+                .is_none()
+        {
+            return Err(error.into());
         }
         Ok(RetirementTick::Completed)
     }
