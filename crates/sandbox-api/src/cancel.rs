@@ -8,20 +8,17 @@ use axum::{
     response::Response,
 };
 use sandbox_protocol::OperationId;
+pub use sandbox_protocol::api::CancelRequest;
 use sandbox_store::cancel::{CancelAdmission, CancelCommand};
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CancelRequest {}
 
 async fn cancel(
     State(state): State<AppState>,
     caller: Authenticated,
-    Path(id): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     RequestKey(key): RequestKey,
     request: Result<Json<CancelRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Problem> {
+    let Path(id) = path.map_err(|_| Problem::BadRequest("invalid operation id"))?;
     let Json(_) = request.map_err(Problem::from_json)?;
     let target: OperationId = id
         .parse()

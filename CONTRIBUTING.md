@@ -1,6 +1,6 @@
 # Contributing to Hudson Sandbox
 
-Hudson Sandbox is being designed in public by Hudson Labs. Start with the [README](README.md) and [documentation guide](docs/README.md). The runtime is not implemented yet; documentation checks work today, while VM integration tests and installation commands will arrive with the code.
+Hudson Sandbox is being designed in public by Hudson Labs. Start with the [README](README.md) and [documentation guide](docs/README.md). The runtime is partially implemented; the [development guide](docs/implementation/dev-env.md) distinguishes local checks, controlled VM evidence and unfinished release gates.
 
 The project is released under [Apache-2.0](LICENSE); contributions are accepted under the same terms, as its section 5 provides. No CLA or commit-signoff requirement is currently configured.
 
@@ -30,10 +30,11 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `ci`, and `chore`; a
 
 ## Checks available today
 
-From the repository root, with Python 3.10 or newer:
+From the repository root, with Python 3.10 or newer, the pinned Rust toolchain, protoc and the development PostgreSQL service:
 
 ```sh
-python3 scripts/check_docs.py
+make api-setup
+make check
 git diff --check
 ```
 
@@ -41,7 +42,7 @@ The `docs-check` GitHub Actions job checks repository Markdown for local inline 
 
 Keep the job name stable because branch protection requires it. CI runs on every PR to `main` and on pushes to `main`, including fork PRs with read-only permissions and no repository secrets. GitHub may require maintainer approval before a first-time contributor's workflow runs. Use GitHub-hosted runners for untrusted PR checks. Do not run fork code on privileged sandbox hosts or introduce `pull_request_target` execution of contributor code.
 
-As runtime code lands, add formatting, linting, unit/integration checks, and the applicable [roadmap gates](docs/roadmap.md). The Rust toolchain, `cargo fmt`, `cargo clippy`, and unit-test jobs belong to [Phase 1](docs/roadmap.md#scope-discipline-for-phase-1) rather than a later cleanup. Real Firecracker tests need a controlled Linux/KVM environment. A docs-only PR does not need a VM test; a change to snapshot correctness does.
+The Rust job runs formatting, strict Clippy, PostgreSQL tests, explicit MinIO tests, and [OpenAPI generation/conformance](docs/openapi.md). Keep both hosted jobs passing on the final PR head. Broader [roadmap gates](docs/roadmap.md) remain separate. Real Firecracker tests need a controlled Linux/KVM environment. A docs-only PR does not need a VM test; a change to snapshot correctness does.
 
 ## Review and branch rules
 

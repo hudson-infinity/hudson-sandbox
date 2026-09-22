@@ -11,7 +11,7 @@
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use http::{StatusCode, header};
-use serde::Serialize;
+use sandbox_protocol::api::ProblemBody;
 
 /// A problem the caller can act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,30 +145,19 @@ impl Problem {
     }
 }
 
-/// The wire shape. `type` is omitted until the documentation URLs exist;
-/// RFC 9457 makes it optional and defaulting it to `about:blank` is honest.
-#[derive(Debug, Serialize)]
-struct Body {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    operation_id: Option<String>,
-    title: &'static str,
-    status: u16,
-    code: &'static str,
-}
-
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         let status = self.status();
-        let body = Json(Body {
+        let body = Json(ProblemBody {
             operation_id: match self {
                 Self::TransitionInProgress(id)
                 | Self::CommandInProgress(id)
                 | Self::ResponseExpired(id) => Some(id.to_string()),
                 _ => None,
             },
-            title: self.title(),
+            title: self.title().into(),
             status: status.as_u16(),
-            code: self.code(),
+            code: self.code().into(),
         });
 
         let mut response = (status, body).into_response();

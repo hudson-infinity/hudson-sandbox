@@ -28,7 +28,7 @@ Execution and recovery are one phase because the ownership mechanics are cheap t
 
 ## API
 
-- [ ] OpenAPI document for this phase's routes only. Generate types from it.
+- [x] [OpenAPI for implemented Project routes](../openapi.md), generated Rust wire models and real router conformance. SDK transports and client packages remain separate work.
 - [x] Project bearer token authentication, hashed storage, constant-time comparison.
 - [x] Standalone HTTPS listener and offline project provisioning with private credential delivery; [transport/setup evidence](../api-server.md).
 - [x] Transactional admission with idempotency keys and request digests, per [API contract](../api-contract.md#retries-and-admission).

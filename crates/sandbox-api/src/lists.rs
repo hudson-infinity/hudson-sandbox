@@ -29,11 +29,6 @@ pub struct OperationQuery {
     cursor: Option<String>,
     sandbox_id: Option<SandboxId>,
 }
-#[derive(Debug, Serialize)]
-struct Collection<T> {
-    items: Vec<T>,
-    next_cursor: Option<String>,
-}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
@@ -146,7 +141,10 @@ pub async fn sandboxes(
         .into_iter()
         .map(sandbox_body_for)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(no_store(Json(Collection { items, next_cursor })))
+    Ok(no_store(Json(sandbox_protocol::api::SandboxList {
+        items,
+        next_cursor,
+    })))
 }
 pub async fn operations(
     State(state): State<AppState>,
@@ -193,7 +191,10 @@ pub async fn operations(
         .into_iter()
         .map(body_for)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(no_store(Json(Collection { items, next_cursor })))
+    Ok(no_store(Json(sandbox_protocol::api::OperationList {
+        items,
+        next_cursor,
+    })))
 }
 pub fn routes() -> axum::Router<AppState> {
     axum::Router::new()

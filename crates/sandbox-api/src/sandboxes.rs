@@ -5,9 +5,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, http::header};
 use sandbox_protocol::RequestDigest;
+pub use sandbox_protocol::api::{AdmittedResponse, CreateRequest, RequestedResources};
 use sandbox_protocol::images::valid_image_digest;
 use sandbox_store::admission::{Admission, CreateSandbox, Resources};
-use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::auth::Authenticated;
@@ -15,42 +15,6 @@ use crate::headers::RequestKey;
 use crate::problem::Problem;
 
 use sandbox_protocol::resources::{MAX_DISK_MIB, MAX_MEMORY_MIB, MAX_VCPU};
-
-/// What a caller asks for.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CreateRequest {
-    /// An allowlisted immutable image.
-    pub image_digest: String,
-    /// Optional display name. Never a lookup key.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Requested size.
-    pub resources: RequestedResources,
-    /// The caller's own correlation value. Not ownership, not an
-    /// idempotency key.
-    #[serde(default)]
-    pub correlation_id: Option<String>,
-}
-
-/// Requested sandbox size.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-pub struct RequestedResources {
-    /// Virtual CPUs.
-    pub vcpu: i32,
-    /// Memory in MiB.
-    pub memory_mib: i64,
-    /// Writable disk in MiB.
-    pub disk_mib: i64,
-}
-
-/// The handle returned by an admitted mutation.
-#[derive(Debug, Clone, Serialize)]
-pub struct AdmittedResponse {
-    sandbox_id: String,
-    operation_id: String,
-    status: String,
-    status_url: String,
-}
 
 /// Check what the service can answer for without touching the database.
 fn validate(request: &CreateRequest) -> Result<Resources, Problem> {

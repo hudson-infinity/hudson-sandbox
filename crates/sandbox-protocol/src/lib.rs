@@ -43,3 +43,6 @@ pub mod supervisor_files;
 
 pub mod file_downloads;
 pub mod file_sources;
+
+/// Public HTTP wire models generated from the versioned OpenAPI contract.
+pub mod api;

@@ -19,6 +19,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [Linux development](linux-development.md) | Nested Linux/KVM setup and real boot evidence | How to develop the guest and real supervisor |
 | [API server](api-server.md) | HTTPS transport, offline provisioning, and runnable local setup | How to start and call the implemented API |
 | [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |
+| [OpenAPI and wire models](openapi.md) | Versioned implemented routes, generated wire types and conformance | How to change and validate the client contract |
 | [Output storage](output-storage.md) | Private artifact identity, archival, publication, verified reads and cleanup worker | How output is retrieved, streamed and retired with recoverable completion receipts |
 | [Operation retention](operation-retention.md) | Terminal response expiry, payload compaction and stable retries | How expired bodies are removed while preserving recovery evidence |
 | [Command cancellation](command-cancellation.md) | Public interruption requests, ownership, outcomes and recovery | How callers interrupt commands and reconcile their results |
@@ -52,7 +53,7 @@ If a note and a contract disagree, the contract is right.
 - Give each rule one authoritative home from the table. Other documents summarize and link rather than copying exact limits, phases, or permission matrices.
 - Distinguish selected design, unresolved proposals, implemented behavior, and verified behavior. Do not mark a contract implemented without the code and applicable evidence.
 - Each detailed contract has acceptance checks and open decisions. Add links to real test files/CI evidence as implementation lands; do not link to hypothetical test paths.
-- Update the owning document with a change, then update affected links/examples and the delivery gate. Keep API examples consistent with OpenAPI once that specification exists.
+- Update the owning document with a change, then update affected links/examples and the delivery gate. Keep API examples and generated wire types consistent with [OpenAPI](../api/openapi.json).
 - Record major new tradeoffs in [decisions](decisions/README.md) when they are made. Mark superseded decisions rather than maintaining two contradictory current contracts.
 - Keep the root README short. Add runnable development/deployment/operations guides when the underlying commands and procedures work, not as empty placeholders.
 

@@ -7,24 +7,18 @@ use axum::{
     extract::{Path, State},
     response::Response,
 };
+pub use sandbox_protocol::api::DestroyRequest;
 use sandbox_protocol::{RequestDigest, SandboxId};
 use sandbox_store::destroy::{DestroyAdmission, DestroySandbox};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct DestroyRequest {
-    #[serde(default)]
-    correlation_id: Option<String>,
-}
 
 pub async fn destroy(
     State(state): State<AppState>,
     caller: Authenticated,
-    Path(id): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     RequestKey(key): RequestKey,
     request: Result<Json<DestroyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Problem> {
+    let Path(id) = path.map_err(|_| Problem::BadRequest("invalid sandbox id"))?;
     let Json(request) = request.map_err(Problem::from_json)?;
     let sandbox: SandboxId = id
         .parse()
