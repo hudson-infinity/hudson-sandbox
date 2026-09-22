@@ -818,6 +818,13 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
             "succeeded",
         )
         .await;
+        let allocation: sqlx::types::Uuid = sqlx::query_scalar(
+            "SELECT id FROM allocations WHERE sandbox_id=$1 AND status='released'",
+        )
+        .bind(sandbox.parse::<SandboxId>().unwrap().uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         sqlx::query("UPDATE operations SET response_expires_at=clock_timestamp()-interval '1 second' WHERE sandbox_id=$1 AND kind='execute' AND payload_compacted_at IS NULL")
             .bind(sandbox.parse::<SandboxId>().unwrap().uuid())
             .execute(&pool)
@@ -830,7 +837,10 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
                 sandbox_store::compaction::Compaction::Idle => break,
             }
         }
-        let until = Instant::now() + Duration::from_secs(60);
+        // A real forgetting claim is valid for 120 seconds. A guardian can still
+        // be releasing its lifecycle lock after destroy has recorded a durable
+        // release, so allow the bounded reconciler to use that protocol window.
+        let until = Instant::now() + Duration::from_secs(110);
         let mut last_retirement_rpc = None;
         loop {
             for _ in 0..4 {
@@ -840,7 +850,18 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
                 }
             }
             match retire.tick().await {
-                Ok(sandbox_controller::retirement::RetirementTick::Completed) => break,
+                Ok(sandbox_controller::retirement::RetirementTick::Completed)
+                    if sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS(SELECT 1 FROM allocation_retirements WHERE allocation_id=$1 AND forget_completion IS NOT NULL)",
+                    )
+                    .bind(allocation)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap() =>
+                {
+                    break;
+                }
+                Ok(sandbox_controller::retirement::RetirementTick::Completed) => {}
                 Ok(
                     sandbox_controller::retirement::RetirementTick::Idle
                     | sandbox_controller::retirement::RetirementTick::Deferred,
