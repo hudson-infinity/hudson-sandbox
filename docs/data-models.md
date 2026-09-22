@@ -297,6 +297,9 @@ Each record holds the initiating token hash, normalized source plan/reference, d
 
 [Migration 0016](../migrations/0016_released_history.sql) adds `released_allocation_history`, independent destruction claims with original scope, current reporting epoch, reserved/completed prefixes and exact request/completion evidence. The existing live proof view is retained separately; `completed_allocation_history` chooses one greatest verified prefix per allocation/domain across both proof types. A release timestamp schedules verification and cannot authorize a refund. Original operation and idempotency metadata remain retained.
 
+[Migration 0019](../migrations/0019_allocation_retirement_preparation.sql) adds `allocation_retirements`, keyed by issued allocation permit. It retains the versioned immutable retirement intent, retry-stable retirement ID, reporting epoch, claim revision, lease and preparation timestamp. The allocation lock freezes admission and consumer scope before this row is inserted. These rows are preparation evidence only, with no physical-deletion or completion flag; the [whole-allocation retirement contract](allocation-retirement.md#database-preparation-component) owns eligibility and the unfinished host handoffs.
+
+
 ## Allocation admission serials
 
 [Migration 0017](../migrations/0017_allocation_serials.sql) retains immutable allocation/create permit identities and a transactional host-local serial counter. New [reservations](../crates/sandbox-store/src/placement.rs) issue the serial under the existing host lock; retries reuse their original record and rollbacks consume no serial. [Authority coordination](allocation-authority.md#transactional-database-issuance) owns bounded batch reads, legacy-owner migration limits and the still-unimplemented host registration/guardian enforcement. These rows do not establish cleanup or authorize tombstone deletion.

@@ -4,7 +4,7 @@ use serde_json::Value;
 use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 
-pub(super) async fn eligible(
+pub(crate) async fn eligible(
     db: &mut PgConnection,
     row: &PgRow,
     a: &PgRow,

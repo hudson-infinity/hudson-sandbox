@@ -6,6 +6,7 @@
 
 pub mod admission;
 pub mod allocation_permits;
+pub mod allocation_retirement;
 pub mod cancel;
 pub mod claims;
 pub mod compaction;

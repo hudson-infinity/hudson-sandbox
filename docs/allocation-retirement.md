@@ -44,13 +44,25 @@ Host receipt deletion does not delete project-lifetime operation identities. Sto
 
 ## Frozen request vocabulary
 
-The shared [allocation retirement types](../crates/sandbox-protocol/src/allocation_retirement.rs) define a bounded version-1 intent and a separate renewable request envelope. This is protocol vocabulary only: no database preparation, host retirement RPC or metadata deletion consumes it yet.
+The shared [allocation retirement types](../crates/sandbox-protocol/src/allocation_retirement.rs) define a bounded version-1 intent and a separate renewable request envelope. The database preparation path below now persists this intent. No host retirement RPC or metadata deletion consumes it yet.
 
 The immutable intent binds a retry-stable retirement ID to the complete allocation permit, explicit command and file closures, a lowercase SHA-256 digest of retained release evidence, and whether the evidence is simulated. Each domain is explicitly `empty` or `retired` through an operation ID. These are proposed scopes requiring independent verification; an empty scope never substitutes for host acknowledgement. The release digest identifies evidence and does not prove cleanup.
 
 The envelope carries reporting epoch, claim revision and expiry. Validation compares the entire intent against independently retained scope and checks the receiver's epoch, minimum retained revision and clock. A newer claim cannot change ownership, closures or simulation status. The database must separately require its exact current claim and deadline when accepting completion. Parsing alone does not establish those facts or authenticate a caller.
 
 Both decoders reject payloads over 8 KiB, unknown fields, duplicate fields, unsupported versions and invalid identities. The intent digest uses its typed JSON encoding; it is a stable scope identifier, not a signature. Tests cover scope changes for every immutable field, renewal across reporting epochs, stale/expired claims, missing domains and ambiguous or oversized encodings.
+
+## Database preparation component
+
+Migration 0019 adds `allocation_retirements`, retaining one immutable scope and renewable claim per allocation. `Store::prepare_allocation_retirement` locks the allocation using the same lock as command/file admission. It requires an exact issued permit acknowledged by a permit-enabled host at the reporting epoch, a released allocation, original terminal create/release operations and the retained release receipt. A pre-dispatch rejection is accepted only for the original create with zero dispatch attempts and retained rejection evidence. This is a scheduling prerequisite; the host must still independently verify actual cleanup.
+
+Preparation rejects unfinished lifecycle work, unknown command/file outcomes, active maintenance/history claims, output claims and unfinished output/source retirement. Lifecycle operations are conservatively scoped to the sandbox because the current schema does not pin create/destroy rows to allocations. Existing history validators check original outcomes and consumer evidence in batches of 32; preparation requires verified completion through each domain's actual final admitted operation. An empty domain is explicitly frozen empty, awaiting independent host verification. An expired live-history request may be superseded only when a verified completion covers its reserved prefix.
+
+A held preparation claim returns no work. After expiry, preparation revalidates the original scope and keeps the same retirement identity while incrementing its claim revision; a changed owner, release receipt or domain cannot replace the stored intent. All leases use database time. Allowing simulation marks the frozen intent simulated even if a particular input receipt is physical, so a later retry cannot silently upgrade a simulation-enabled preparation.
+
+The retained freeze rejects further command/file IDs under the allocation lock and stops new released-history claims. Original project-lifetime operation keys, digests and retained outcomes are untouched. Database rows remain retained; this component neither refunds host receipt capacity nor deletes anything. It does not inspect host-local download pins or physical files: those remain mandatory host-side completion checks. There is no periodic preparation worker, authenticated host retirement RPC, deletion acknowledgement or forgetting integration yet.
+
+Database tests use synthetic release/history receipts, not isolation evidence. They exercise concurrent claims, retry stability across epochs, changed evidence, explicit empty scopes, pending outcomes and consumers, malformed completion, simulation policy, and admission rejection after freezing. Existing store migration and history suites remain required alongside these tests.
 
 ## Durable sequence
 
