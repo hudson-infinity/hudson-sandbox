@@ -42,6 +42,16 @@ The database owns preparation under the allocation lock. It freezes the exact or
 
 Host receipt deletion does not delete project-lifetime operation identities. Storage-marker deletion is a separate protocol: a delayed object-store PUT is not fenced by a host epoch or guardian launch fence.
 
+## Frozen request vocabulary
+
+The shared [allocation retirement types](../crates/sandbox-protocol/src/allocation_retirement.rs) define a bounded version-1 intent and a separate renewable request envelope. This is protocol vocabulary only: no database preparation, host retirement RPC or metadata deletion consumes it yet.
+
+The immutable intent binds a retry-stable retirement ID to the complete allocation permit, explicit command and file closures, a lowercase SHA-256 digest of retained release evidence, and whether the evidence is simulated. Each domain is explicitly `empty` or `retired` through an operation ID. These are proposed scopes requiring independent verification; an empty scope never substitutes for host acknowledgement. The release digest identifies evidence and does not prove cleanup.
+
+The envelope carries reporting epoch, claim revision and expiry. Validation compares the entire intent against independently retained scope and checks the receiver's epoch, minimum retained revision and clock. A newer claim cannot change ownership, closures or simulation status. The database must separately require its exact current claim and deadline when accepting completion. Parsing alone does not establish those facts or authenticate a caller.
+
+Both decoders reject payloads over 8 KiB, unknown fields, duplicate fields, unsupported versions and invalid identities. The intent digest uses its typed JSON encoding; it is a stable scope identifier, not a signature. Tests cover scope changes for every immutable field, renewal across reporting epochs, stale/expired claims, missing domains and ambiguous or oversized encodings.
+
 ## Durable sequence
 
 The eventual implementation must provide the following ordering, with bounded retained intent and an exact authenticated acknowledgement at each handoff:
