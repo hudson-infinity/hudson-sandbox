@@ -92,7 +92,7 @@ impl SourceStore {
                 )
                 .await;
             let uncertain = crate::uncertain_put(&result);
-            self.fetch(plan, None)
+            crate::confirm_upload(|| self.fetch(plan, None))
                 .await
                 .map(|(reference, _)| reference)
                 .map_err(|error| crate::upload_error(error, uncertain))
