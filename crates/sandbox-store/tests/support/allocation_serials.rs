@@ -122,6 +122,15 @@ async fn allocation_serial_reads_reject_gaps_and_changed_owner(pool: PgPool) {
         .await
         .unwrap();
     assert!(store.allocation_permits_after(host, 0).await.is_err());
+    // Even when the requested batch is empty, an invalid retained identity
+    // must not make the host look ready for authority activation.
+    assert!(
+        store
+            .allocation_permits_after(host, 1)
+            .await
+            .unwrap()
+            .has_unissued_allocations
+    );
     sqlx::query("UPDATE allocation_permits SET original_epoch=1")
         .execute(&pool)
         .await

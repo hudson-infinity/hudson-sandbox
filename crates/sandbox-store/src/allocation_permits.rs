@@ -19,7 +19,7 @@ pub enum Error {
 pub struct PermitBatch {
     pub issued_through: u64,
     pub permits: Vec<Permit>,
-    /// Legacy owners must be migrated before enabling the new host authority.
+    /// Missing or inconsistent permits block activation of the new host authority.
     pub has_unissued_allocations: bool,
 }
 
@@ -83,7 +83,13 @@ impl Store {
         }
         let legacy: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM allocations a WHERE a.host_id=$1
-             AND NOT EXISTS(SELECT 1 FROM allocation_permits p WHERE p.allocation_id=a.id))",
+             AND NOT EXISTS(SELECT 1 FROM allocation_permits p
+               JOIN operations o ON o.id=p.create_operation_id
+               WHERE p.allocation_id=a.id AND p.host_id=a.host_id
+               AND p.project_id=a.project_id AND p.sandbox_id=a.sandbox_id
+               AND p.generation=a.generation AND p.original_epoch=a.supervisor_epoch
+               AND o.kind='create' AND o.project_id=a.project_id
+               AND o.sandbox_id=a.sandbox_id))",
         )
         .bind(host.uuid())
         .fetch_one(&mut *tx)
