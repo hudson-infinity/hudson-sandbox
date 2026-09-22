@@ -1,6 +1,6 @@
 # Supported configuration
 
-Status: selected envelope; nothing verified on hardware. This document owns what a supported installation looks like and what a sandbox may contain. [Product goal](goal.md) requires this envelope to be published; [roadmap](roadmap.md#feasibility-spikes-phase-0) owns when each row is confirmed on a real host.
+Status: selected release envelope, not yet validated as a complete supported configuration. [Nested-aarch64 development evidence](linux-development.md#verified-boot-and-its-limits) exists; it does not certify the x86_64 envelope below. This document owns what a supported installation looks like and what a sandbox may contain. [Product goal](goal.md) requires this envelope to be published; [roadmap](roadmap.md#feasibility-spikes-phase-0) owns when each row is confirmed on a real host.
 
 "Run anything" means anything inside the envelope below. Widening it later is cheap. Narrowing it after a release is not, so the first release claims one configuration and says so.
 
@@ -13,7 +13,7 @@ Status: selected envelope; nothing verified on hardware. This document owns what
 | Virtualization | KVM, `/dev/kvm` present | Bare metal, or a cloud instance with nested virtualization actually enabled |
 | cgroups | v2 | The freezer semantics the pause design depends on |
 
-arm64 is deferred, not rejected. It doubles the test matrix and the image build pipeline, and there is no second architecture's worth of demand yet.
+arm64 release support is deferred, not rejected. The nested-aarch64 environment is currently a development/test configuration. It doubles the test matrix and the image build pipeline, and there is no second architecture's worth of demand yet.
 
 A host outside this envelope is not refused by the software — we simply make no claim about it, and the isolation and snapshot evidence does not transfer.
 
@@ -55,7 +55,7 @@ Adding a supported configuration is a minor release. Removing one is a breaking 
 
 ## Acceptance checks
 
-No hardware has been tested. Confirm:
+The selected supported configuration has not passed the complete acceptance set. Confirm:
 
 1. A clean Ubuntu 24.04 host with `/dev/kvm` runs the full create, execute, destroy path with no manual kernel work.
 2. The guest kernel refuses module loading and lockdown is active, verified from inside a sandbox as root.
@@ -65,4 +65,4 @@ No hardware has been tested. Confirm:
 
 ## Open decisions
 
-The exact guest kernel version and configuration, pending the [Phase 0 spikes](roadmap.md#feasibility-spikes-phase-0). The Firecracker release to pin. Whether a second image variant with a preinstalled language toolchain ships at launch. When arm64 enters the envelope.
+The exact guest kernel version and configuration, pending the [Phase 0 spikes](roadmap.md#feasibility-spikes-phase-0). The production Firecracker release to qualify and pin; development experiments already record exact versions/digests. Whether a second image variant with a preinstalled language toolchain ships at launch. When arm64 enters the envelope.
