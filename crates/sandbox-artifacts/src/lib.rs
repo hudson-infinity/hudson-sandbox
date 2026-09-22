@@ -41,7 +41,8 @@ pub enum Error {
     #[error("artifact transfer capacity exhausted")]
     Busy,
     /// May mean a write succeeded but its acknowledgement was lost. Reconcile
-    /// by calling upload again with the SAME persisted plan and bytes.
+    /// with a read of the SAME persisted plan; uncertainty is not permission to
+    /// issue a new upload identity or release its reservation.
     #[error("artifact storage unavailable; outcome may be uncertain")]
     Unavailable,
 }
@@ -89,6 +90,23 @@ fn storage_error(error: object_store::Error) -> Error {
             Error::Corrupt
         }
         _ => Error::Unavailable,
+    }
+}
+// Even an uncertain PUT can have committed. Perform one verified read, never
+// another PUT; a missing read cannot resolve a request that may still commit.
+fn uncertain_put(result: &object_store::Result<object_store::PutResult>) -> bool {
+    !matches!(
+        result,
+        Ok(_)
+            | Err(object_store::Error::AlreadyExists { .. }
+                | object_store::Error::Precondition { .. })
+    )
+}
+fn upload_error(error: Error, uncertain: bool) -> Error {
+    match error {
+        Error::Corrupt => Error::Conflict,
+        Error::Missing if uncertain => Error::Unavailable,
+        other => other,
     }
 }
 fn check_owner(plan: &OutputPlan, expected: &OutputOwner, now: i64) -> Result<(), Error> {
@@ -164,24 +182,14 @@ impl ArtifactStore {
                     },
                 )
                 .await;
-            match result {
-                Ok(_) => {}
-                Err(
-                    object_store::Error::AlreadyExists { .. }
-                    | object_store::Error::Precondition { .. },
-                ) => {}
-                Err(error) => return Err(storage_error(error)),
-            }
+            let uncertain = uncertain_put(&result);
             // Do not infer success from AlreadyExists or an ETag (not a content
             // digest). Verify the complete object and bound metadata, including
             // after a successful PUT. Lost acknowledgements take this same path.
-            let (reference, _) = self.fetch(plan, None).await.map_err(|error| {
-                if error == Error::Corrupt {
-                    Error::Conflict
-                } else {
-                    error
-                }
-            })?;
+            let (reference, _) = self
+                .fetch(plan, None)
+                .await
+                .map_err(|error| upload_error(error, uncertain))?;
             Ok(reference)
         })
         .await
@@ -279,3 +287,6 @@ impl ArtifactStore {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod uncertain_tests;

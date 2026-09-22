@@ -91,24 +91,11 @@ impl SourceStore {
                     },
                 )
                 .await;
-            match result {
-                Ok(_)
-                | Err(
-                    object_store::Error::AlreadyExists { .. }
-                    | object_store::Error::Precondition { .. },
-                ) => {}
-                Err(error) => return Err(storage_error(error)),
-            }
+            let uncertain = crate::uncertain_put(&result);
             self.fetch(plan, None)
                 .await
                 .map(|(reference, _)| reference)
-                .map_err(|error| {
-                    if error == Error::Corrupt {
-                        Error::Conflict
-                    } else {
-                        error
-                    }
-                })
+                .map_err(|error| crate::upload_error(error, uncertain))
         })
         .await
         .map_err(|_| Error::Unavailable)?
