@@ -37,7 +37,7 @@ pub(super) fn validate_retained(
     checkpoint: Option<&crate::launch_authority::Checkpoint>,
     record: &Record,
 ) -> anyhow::Result<()> {
-    if let Some(saved) = &record.metadata_retirement {
+    if record.retirement.is_some() || record.metadata_retirement.is_some() {
         let request = record
             .retirement
             .as_ref()
@@ -58,7 +58,33 @@ pub(super) fn validate_retained(
             retained.epoch <= config.epoch && config.launch_permits_required,
             "deletion authority epoch or mode mismatch"
         );
-        let session = Session::open(
+        let Some(saved) = &record.metadata_retirement else {
+            // A persisted preparation can precede a failed root fence, but
+            // cannot adopt Complete/Closed without its removed metadata plan.
+            crate::launch_authority::authorize_retirement(
+                &root,
+                config.host,
+                retained.epoch,
+                checkpoint.registered_through,
+                &request.intent,
+            )?;
+            return Ok(());
+        };
+        if saved.removed {
+            let guard = authority.retirement_guard(retained.epoch, &request.intent)?;
+            anyhow::ensure!(
+                guard.phase != crate::launch_authority::RetirementPhase::Closed,
+                "host record survived root forgetting"
+            );
+            saved.plan.verify_removed(
+                &root,
+                &config.cgroup_parent,
+                &request.intent,
+                record.manifest.as_ref(),
+            )?;
+            return Ok(());
+        }
+        let _session = Session::open(
             &root,
             &config.cgroup_parent,
             retained.epoch,
@@ -67,10 +93,6 @@ pub(super) fn validate_retained(
             record.manifest.as_ref(),
             Some(&saved.plan),
         )?;
-        anyhow::ensure!(
-            !saved.removed || session.is_removed(),
-            "completed deletion directory reappeared"
-        );
     }
     Ok(())
 }
@@ -166,4 +188,27 @@ impl Host {
             observed_unix_ms: guardian::wall_ms(),
         })
     }
+}
+
+pub(super) fn verify_forgetting(
+    config: &Config,
+    record: &Record,
+    request: &sandbox_protocol::allocation_retirement::ForgetRequest,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        record.retirement.as_ref() == Some(&request.metadata_request),
+        "historical metadata claim changed"
+    );
+    super::retirement::validate_retained(record, config.epoch)?;
+    let saved = record
+        .metadata_retirement
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("metadata completion missing"))?;
+    anyhow::ensure!(saved.removed, "metadata removal is incomplete");
+    saved.plan.verify_removed(
+        &config.state_root.join("a"),
+        &config.cgroup_parent,
+        &request.claim.intent,
+        record.manifest.as_ref(),
+    )
 }

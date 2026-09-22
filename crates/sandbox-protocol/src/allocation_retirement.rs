@@ -146,3 +146,54 @@ impl Request {
 #[cfg(test)]
 #[path = "allocation_retirement_tests.rs"]
 mod tests;
+
+/// A fresh forgetting claim plus the historical metadata request whose database
+/// completion the authenticated controller has retained. The envelope is not an
+/// independent database receipt; the issuer must check that completion first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgetRequest {
+    pub version: u32,
+    pub claim: Request,
+    pub metadata_request: Request,
+}
+impl ForgetRequest {
+    fn shape(&self) -> Result<(), Error> {
+        self.claim.intent.validate()?;
+        self.metadata_request.intent.validate()?;
+        if self.version != 1
+            || self.claim.intent.simulated
+            || self.claim.intent != self.metadata_request.intent
+            || self.metadata_request.revision <= 0
+            || self.metadata_request.expires_unix_ms <= 0
+            || self.metadata_request.reporting_epoch < self.claim.intent.permit.original_epoch
+            || self.metadata_request.reporting_epoch > self.claim.reporting_epoch
+            || self.claim.revision <= 0
+            || self.claim.expires_unix_ms <= 0
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+    pub fn validate(&self, epoch: i64, now: i64) -> Result<(), Error> {
+        self.shape()?;
+        self.claim
+            .validate(&self.metadata_request.intent, epoch, 1, now)
+    }
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        self.shape()?;
+        let bytes = serde_json::to_vec(self).map_err(|_| Error::Invalid)?;
+        if bytes.len() > MAX_BYTES {
+            return Err(Error::Invalid);
+        }
+        Ok(bytes)
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > MAX_BYTES {
+            return Err(Error::Invalid);
+        }
+        let r: Self = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+        r.shape()?;
+        Ok(r)
+    }
+}

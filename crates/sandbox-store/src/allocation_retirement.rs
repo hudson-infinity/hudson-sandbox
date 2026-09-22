@@ -13,7 +13,9 @@ use sqlx::{PgConnection, Row, postgres::PgRow};
 use time::OffsetDateTime;
 mod completion;
 mod evidence;
+mod forgetting;
 pub use completion::Completion;
+pub use forgetting::ForgettingCompletion;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

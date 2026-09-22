@@ -6,7 +6,7 @@ use sandbox_protocol::{
     supervisor::{AllocationMetadataObservation, AllocationMetadataRequest},
 };
 use serde_json::Value;
-fn observation(r: &Request) -> AllocationMetadataObservation {
+pub(super) fn observation(r: &Request) -> AllocationMetadataObservation {
     AllocationMetadataObservation {
         request: Some(AllocationMetadataRequest {
             request_json: r.encode().unwrap(),
@@ -18,7 +18,7 @@ async fn pending(pool: &PgPool) -> bool {
     sqlx::query_scalar("SELECT metadata_completion IS NULL AND metadata_completed_at IS NULL FROM allocation_retirements")
         .fetch_one(pool).await.unwrap()
 }
-async fn blocked(pool: &PgPool, pattern: &str) {
+pub(super) async fn blocked(pool: &PgPool, pattern: &str) {
     let until = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         let yes: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query LIKE $1 AND cardinality(pg_blocking_pids(pid))>0)")
@@ -545,7 +545,9 @@ async fn completion_upgrade_preserves_prepared_claim_without_inventing_acknowled
     let pool = reconnect_after_upgrade(&pool).await;
     f.store = Store::from_pool(pool.clone());
     let after:Value=sqlx::query_scalar("SELECT to_jsonb(r)-'metadata_completion'-'metadata_completed_at'-'metadata_claim_expires_at' FROM allocation_retirements r").fetch_one(&pool).await.unwrap();
-    assert_eq!(before, after);
+    for (key, value) in before.as_object().unwrap() {
+        assert_eq!(&after[key], value, "preserved pre-upgrade field {key}");
+    }
     assert!(pending(&pool).await);
     assert!(
         f.store
