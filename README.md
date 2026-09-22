@@ -4,7 +4,7 @@
 
 Hudson Sandbox is a project from **Hudson Labs** building a general-purpose secure runtime for untrusted Linux workloads. Run scripts, applications, build jobs, automation, and services with controlled resources, controlled connectivity, and a reliable lifecycle. AI agents are one possible client.
 
-**Status: early implementation.** PostgreSQL admission, authentication, status handlers, and the [create/destroy controller](docs/controller.md) have tests through an authenticated fake supervisor. The fake runs no customer code. The [HTTPS API and offline project provisioning](docs/api-server.md) now run as a standalone process. The [real Linux supervisor](docs/real-supervisor.md) now has controlled aarch64 evidence for API-created VM readiness, lease renewal and verified destruction. Public execute admission and status now connect to guest commands. Authenticated output reads, SSE streaming and an opt-in [output cleanup worker](docs/output-storage.md#cleanup-worker) are implemented. Command cancellation, [file uploads](docs/api-contract.md#implemented-file-uploads) and [captured downloads](docs/api-contract.md#implemented-file-downloads) are implemented; the [Rust client and project CLI](docs/client-cli.md) now cover the implemented API. History reclamation, Python/TypeScript SDKs, management UI, and installer remain unfinished. There are no validated isolation or performance guarantees, or a workload quickstart yet.
+**Status: early implementation.** PostgreSQL admission, authentication, status handlers, and the [create/destroy controller](docs/controller.md) have tests through an authenticated fake supervisor. The fake runs no customer code. The [HTTPS API and offline project provisioning](docs/api-server.md) now run as a standalone process. The [real Linux supervisor](docs/real-supervisor.md) now has controlled aarch64 evidence for API-created VM readiness, lease renewal and verified destruction. Public execute admission and status now connect to guest commands. Authenticated output reads, SSE streaming and an opt-in [output cleanup worker](docs/output-storage.md#cleanup-worker) are implemented. Command cancellation, [file uploads](docs/api-contract.md#implemented-file-uploads) and [captured downloads](docs/api-contract.md#implemented-file-downloads) are implemented; the [Rust client and project CLI](docs/client-cli.md) and [Python/TypeScript clients](docs/language-clients.md) cover the implemented API. History reclamation, package publication, management UI, and installer remain unfinished. There are no validated isolation or performance guarantees, or a workload quickstart yet.
 
 ## What we are building
 
@@ -26,7 +26,7 @@ The selected stack is **Rust, Firecracker/Linux KVM, PostgreSQL with SQLx, and S
 
 ## Ways to use it
 
-The **HTTP API** is the foundation. Planned **SDKs** provide convenient language functions, the **CLI** serves people, scripts, and agents with shell access, and the **management UI** serves Project users and Admins. Each uses the API; sandbox execution stays on the server.
+The **HTTP API** is the foundation. **SDKs** provide convenient language functions, the **CLI** serves people, scripts, and agents with shell access, and the **management UI** serves Project users and Admins. Each uses the API; sandbox execution stays on the server.
 
 ```text
 Application → SDK ──┐
@@ -34,7 +34,7 @@ Agent/human → CLI ──┼──→ Sandbox API → Controller → Firecracke
 Browser UI ────────┘
 ```
 
-Output streaming and file transfers are API capabilities. We are not adding MCP for now; [decision 0002](docs/decisions/0002-no-mcp-server-initially.md) records why and what would change it. See [client interfaces](docs/architecture.md#client-interfaces-and-agent-integration) for the agent flow and [client behavior](docs/api-contract.md#sdk-and-cli-behavior) for retries and results. These interfaces are planned, not available packages or commands yet.
+Output streaming and file transfers are API capabilities. We are not adding MCP for now; [decision 0002](docs/decisions/0002-no-mcp-server-initially.md) records why and what would change it. See [client interfaces](docs/architecture.md#client-interfaces-and-agent-integration) for the agent flow and [client behavior](docs/api-contract.md#sdk-and-cli-behavior) for retries and results. The CLI and SDKs build from source; packages are unpublished and the management UI remains planned.
 
 ## Follow the build
 

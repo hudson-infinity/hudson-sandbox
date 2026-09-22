@@ -10,7 +10,7 @@ Admin sandbox mutations explicitly select a target project and call the same adm
 
 ## SDK and CLI behavior
 
-[Architecture](architecture.md#client-interfaces-and-agent-integration) defines the interface boundaries. SDKs and the CLI call the HTTP API; they do not contact PostgreSQL, host control sockets, or Firecracker. The [Rust client and project CLI](client-cli.md) implement the existing Project routes. Python/TypeScript packages, publication and installers remain unfinished.
+[Architecture](architecture.md#client-interfaces-and-agent-integration) defines the interface boundaries. SDKs and the CLI call the HTTP API; they do not contact PostgreSQL, host control sockets, or Firecracker. The [Rust client and project CLI](client-cli.md) implement the existing Project routes. [Python/TypeScript clients](language-clients.md) cover the same routes with shared conformance. Package publication and installers remain unfinished.
 
 The first release ships the CLI and three SDKs — Python, TypeScript, and Rust. Models and the request layer are generated from the same OpenAPI document for all three; only the retry, wait, and stream-reconnect behavior below is written by hand. The Rust SDK is the client crate the CLI already depends on, published rather than written twice. One conformance suite, defined as data, runs against all three in CI so they stay genuinely equivalent rather than nominally equivalent, and all three carry the same version as the API they target.
 

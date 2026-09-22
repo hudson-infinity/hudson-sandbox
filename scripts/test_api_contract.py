@@ -5,6 +5,7 @@ from pathlib import Path
 import unittest
 from jsonschema import ValidationError
 from generate_api import render, rust_type, render_requests
+from generate_clients import profiles, render_python, render_typescript
 from check_api import check_schema, check_profile, check_exchange, check_registered_routes
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,33 @@ SPEC = json.loads((ROOT/'api/openapi.json').read_text())
 
 
 class ContractTests(unittest.TestCase):
+    def test_language_generation_preserves_widths_defaults_and_changed_routes(self):
+        spec = copy.deepcopy(SPEC)
+        shape = profiles(spec)
+        wide = shape['OutputStats']['fields']['seen']['type']
+        self.assertEqual(wide, {'kind': 'integer', 'wide': True, 'min': '0', 'max': '18446744073709551615'})
+        self.assertEqual(shape['CommandInput']['fields']['output_limit']['default'], 1048576)
+        self.assertTrue(shape['SandboxList']['fields']['next_cursor']['required'])
+        self.assertTrue(shape['SandboxList']['fields']['next_cursor']['nullable'])
+        route = spec['paths'].pop('/v1/sandboxes/{sandbox_id}/execute')
+        spec['paths']['/v1/sandboxes/{sandbox_id}/future-execute'] = route
+        py_models, py_requests = render_python(spec, shape)
+        ts_models, ts_requests = render_typescript(spec, shape)
+        self.assertIn("'future-execute'", py_requests)
+        self.assertIn('"future-execute"', ts_requests)
+        self.assertIn('seen: int', py_models)
+        self.assertIn('seen: bigint', ts_models)
+        self.assertIn('options: RequestOptions', ts_requests)
+        self.assertEqual((py_models, py_requests), render_python(spec, shape))
+        self.assertEqual((ts_models, ts_requests), render_typescript(spec, shape))
+
+    def test_shared_client_cases_cover_every_operation(self):
+        cases = json.loads((ROOT/'api/conformance/clients.json').read_text())
+        covered = {case['action'] for case in cases if 'ok' in case['expected']}
+        declared = {op['operationId'] for methods in SPEC['paths'].values() for op in methods.values()}
+        self.assertFalse(declared-covered)
+        self.assertEqual(len({case['name'] for case in cases}), len(cases))
+
     def test_generated_requests_follow_the_contract_and_fail_on_unknown_media(self):
         spec = copy.deepcopy(SPEC)
         route = spec['paths'].pop('/v1/sandboxes/{sandbox_id}/execute')

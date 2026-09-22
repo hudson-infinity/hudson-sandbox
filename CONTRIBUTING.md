@@ -30,10 +30,11 @@ Common types are `feat`, `fix`, `docs`, `test`, `refactor`, `ci`, and `chore`; a
 
 ## Checks available today
 
-From the repository root, with Python 3.10 or newer, the pinned Rust toolchain, protoc and the development PostgreSQL service:
+From the repository root, with Python 3.11 or newer, Node 24.9.0 or newer, the pinned Rust toolchain, protoc and the development PostgreSQL service:
 
 ```sh
 make api-setup
+make sdk-setup
 make check
 git diff --check
 ```

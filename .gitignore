@@ -9,3 +9,12 @@ target/
 
 # Isolated OpenAPI validation tools
 .venv-openapi/
+
+# SDK development/build output
+.venv-sdk/
+node_modules/
+sdk/typescript/dist/
+sdk/python/dist/
+sdk/python/build/
+*.egg-info/
+*.tgz

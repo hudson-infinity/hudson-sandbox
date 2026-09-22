@@ -20,6 +20,7 @@ The repository is in **early implementation**. PostgreSQL-backed API routes, the
 | [API server](api-server.md) | HTTPS transport, offline provisioning, and runnable local setup | How to start and call the implemented API |
 | [API contract](api-contract.md) | Admission, SDK/CLI behavior, request retries, response/errors, files, streaming semantics | How clients interact with the service |
 | [Rust client and project CLI](client-cli.md) | Private configuration, stable keys, commands, files, streams and exit codes | How to use the implemented Project API |
+| [Python and TypeScript clients](language-clients.md) | Language APIs, integer precision, streams, files and package validation | How to call the Project API from Python or Node |
 | [OpenAPI and wire models](openapi.md) | Versioned implemented routes, generated wire types and conformance | How to change and validate the client contract |
 | [Output storage](output-storage.md) | Private artifact identity, archival, publication, verified reads and cleanup worker | How output is retrieved, streamed and retired with recoverable completion receipts |
 | [Operation retention](operation-retention.md) | Terminal response expiry, payload compaction and stable retries | How expired bodies are removed while preserving recovery evidence |
