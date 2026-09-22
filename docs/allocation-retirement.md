@@ -170,3 +170,5 @@ Reader closure validation is recorded separately in [reader-drain evidence](evid
 [Completion-scope evidence](evidence/2026-09-22-retirement-completion-scope.json) records exact-scope restart checks, persistent-lock exclusion, real guardian/host admission regression tests and their limits.
 
 [Allocation-forgetting evidence](evidence/2026-09-22-allocation-forgetting.json) records the combined handoff, full host regressions, initial configuration/disk failures and final verification limits.
+
+[Controller worker evidence](evidence/2026-09-22-allocation-retirement-worker.json) records the isolated full check, database scheduling tests, real lost-reply recovery, periodic CLI execution and shutdown, source/binary hashes, initial failures and remaining release limits.
