@@ -165,7 +165,7 @@ impl Host {
                 record.metadata_retirement.as_ref().map(|s| &s.plan),
             ) {
                 Ok(session) => break session,
-                Err(error) if crate::guardian::retirement::is_lock_contended(&error) => {
+                Err(error) if crate::launch_authority::is_lock_contended(&error) => {
                     // The stop RPC can return before the detached guardian wrapper
                     // releases its shared launch lock and lifecycle lock. Retry
                     // only nonblocking flock contention, within the signed claim.

@@ -21,6 +21,14 @@ const STATE: &str = "launch.json";
 const NEXT: &str = "launch.next";
 const MAX_BYTES: u64 = (sandbox_protocol::allocation_authority::MAX_BYTES * 2 + 4096) as u64;
 
+#[derive(Debug, thiserror::Error)]
+#[error("launch authority lock is busy")]
+pub(crate) struct LockContended;
+
+pub(crate) fn is_lock_contended(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<LockContended>())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Required {
@@ -118,14 +126,18 @@ fn gate(root: &Path, exclusive: bool) -> Result<File> {
         .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
         .open(root.join(LOCK))?;
     private_file(&file)?;
-    rustix::fs::flock(
+    match rustix::fs::flock(
         &file,
         if exclusive {
             rustix::fs::FlockOperation::NonBlockingLockExclusive
         } else {
             rustix::fs::FlockOperation::NonBlockingLockShared
         },
-    )?;
+    ) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::WOULDBLOCK) => return Err(LockContended.into()),
+        Err(error) => return Err(error.into()),
+    }
     let retained = fs::symlink_metadata(root.join(LOCK))?;
     let held = file.metadata()?;
     ensure!(

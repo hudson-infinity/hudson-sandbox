@@ -6,17 +6,6 @@ use std::collections::BTreeMap;
 
 /// Nonblocking flock contention is a transient lifecycle state, not evidence
 /// that the retirement request is invalid. Callers may retry only this error.
-pub(crate) fn is_lock_contended(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<rustix::io::Errno>()
-            .is_some_and(|errno| *errno == rustix::io::Errno::WOULDBLOCK)
-            || cause
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
-    })
-}
-
 const NAMES: [&str; 3] = ["receipt.json", "manifest.json", "lifecycle.lock"];
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -293,7 +282,16 @@ impl Session {
                         identity.len == 0 && Identity::of(&file.metadata()?) == identity.identity,
                         "invalid lifecycle identity"
                     );
-                    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
+                    match rustix::fs::flock(
+                        &file,
+                        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+                    ) {
+                        Ok(()) => {}
+                        Err(rustix::io::Errno::WOULDBLOCK) => {
+                            return Err(crate::launch_authority::LockContended.into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                     lifecycle = Some(file);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound && saved.is_some() => {}
