@@ -2,7 +2,7 @@
 use super::*;
 use crate::launch_authority::AuthorityFile;
 use sandbox_protocol::{allocation_authority::Permit, allocation_retirement::DomainClosure};
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 
 fn fixture() -> (tempfile::TempDir, AuthorityFile, Manifest, Intent) {
     assert_eq!(std::env::var("HUDSON_GUARDIAN_TEST_VM").as_deref(), Ok("1"));
@@ -150,6 +150,14 @@ fn deletion_rejects_live_locks_unowned_entries_missing_evidence_and_scope_change
     let session = open(&m, &intent, None).unwrap();
     let plan = session.plan.clone();
     drop(session);
+    let mut legacy_value = serde_json::to_value(&plan).unwrap();
+    legacy_value["version"] = 1.into();
+    legacy_value["metadata"]
+        .as_object_mut()
+        .unwrap()
+        .remove("staged");
+    let legacy: Plan = serde_json::from_value(legacy_value).unwrap();
+    assert!(open(&m, &intent, Some(&legacy)).is_ok());
     let mut corrupt = plan.clone();
     if let Metadata::Stopped { receipt, .. } = &mut corrupt.metadata {
         receipt.reason = Some("changed_after_removal".into());
@@ -179,6 +187,102 @@ fn deletion_rejects_live_locks_unowned_entries_missing_evidence_and_scope_change
     fs::remove_file(receipt).unwrap();
     assert!(open(&m, &intent, None).is_err()); // Missing alone is never cleanup.
     assert!(open(&m, &intent, Some(&plan)).is_ok()); // Retained deletion intent permits partial removal.
+}
+
+#[test]
+#[ignore = "requires root in the dedicated HUDSON_GUARDIAN_TEST_VM"]
+fn retirement_reconciles_bounded_owned_atomic_write_stages() {
+    let (temp, authority, m, intent) = fixture();
+    m.fence_unstarted().unwrap();
+    authority
+        .fence(1, &intent.permit, intent.retirement)
+        .unwrap();
+    let staged_names: Vec<_> = [b"partial receipt".as_slice(), b"partial manifest"]
+        .into_iter()
+        .map(|bytes| {
+            let name = format!("{}.tmp", OperationId::generate());
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(m.directory().join(&name))
+                .unwrap();
+            file.write_all(bytes).unwrap();
+            file.sync_all().unwrap();
+            name
+        })
+        .collect();
+
+    let mut session = open(&m, &intent, None).unwrap();
+    let plan = session.plan.clone();
+    assert_eq!(plan.version, 2);
+    match &plan.metadata {
+        Metadata::Stopped { staged, .. } => {
+            assert_eq!(staged.len(), staged_names.len());
+            assert!(staged_names.iter().all(|name| staged.contains_key(name)));
+        }
+        Metadata::Absent {} => panic!("stopped guardian must retain its staged inventory"),
+    }
+    let plan_path = temp.path().join("retained-plan.json");
+    write_json(&plan_path, &plan).unwrap();
+    assert!(!session.remove_next().unwrap());
+    drop(session);
+
+    let mut removed = false;
+    for _ in 0..8 {
+        let retained: Plan = read_json(&plan_path).unwrap();
+        let mut resumed = open(&m, &intent, Some(&retained)).unwrap();
+        if resumed.remove_next().unwrap() {
+            removed = true;
+            break;
+        }
+    }
+    assert!(removed);
+    assert!(!m.directory().exists());
+    assert!(
+        authority.retirement_guard(1, &intent).unwrap().phase
+            != crate::launch_authority::RetirementPhase::Closed
+    );
+}
+
+#[test]
+#[ignore = "requires root in the dedicated HUDSON_GUARDIAN_TEST_VM"]
+fn retirement_bounds_owned_atomic_write_stages_and_keeps_unknown_metadata() {
+    let (_temp, authority, m, intent) = fixture();
+    m.fence_unstarted().unwrap();
+    authority
+        .fence(1, &intent.permit, intent.retirement)
+        .unwrap();
+    for _ in 0..=MAX_STAGED_FILES {
+        let path = m
+            .directory()
+            .join(format!("{}.tmp", OperationId::generate()));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .unwrap();
+        file.write_all(b"stage").unwrap();
+        file.sync_all().unwrap();
+    }
+    assert!(open(&m, &intent, None).is_err());
+    assert_eq!(
+        fs::read_dir(m.directory()).unwrap().count(),
+        NAMES.len() + MAX_STAGED_FILES + 1
+    );
+    for item in fs::read_dir(m.directory()).unwrap() {
+        let item = item.unwrap();
+        let name = item.file_name().into_string().unwrap();
+        if is_staging_name(&name) {
+            fs::remove_file(item.path()).unwrap();
+        }
+    }
+    let unexpected = m.directory().join("notes.tmp");
+    fs::write(&unexpected, b"preserve").unwrap();
+    fs::set_permissions(&unexpected, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(open(&m, &intent, None).is_err());
+    assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");
 }
 #[test]
 #[ignore = "requires root in the dedicated HUDSON_GUARDIAN_TEST_VM"]

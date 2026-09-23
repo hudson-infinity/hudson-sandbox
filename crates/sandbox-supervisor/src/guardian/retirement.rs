@@ -1,10 +1,14 @@
-//! Recoverable removal of a stopped guardian's three owned metadata files.
-//! The caller MUST durably retain Plan before calling remove. Never recursive.
+//! Recoverable removal of stopped guardian metadata and abandoned atomic-write
+//! stages. The caller MUST durably retain Plan before calling remove. Never recursive.
 use super::*;
 use sandbox_protocol::allocation_retirement::Intent;
 use std::collections::BTreeMap;
 
+/// Nonblocking flock contention is a transient lifecycle state, not evidence
+/// that the retirement request is invalid. Callers may retry only this error.
 const NAMES: [&str; 3] = ["receipt.json", "manifest.json", "lifecycle.lock"];
+const MAX_STAGED_FILES: usize = 16;
+const MAX_STAGED_BYTES: u64 = 1 << 20;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Identity {
@@ -34,6 +38,8 @@ enum Metadata {
         directory: Identity,
         receipt: Box<Receipt>,
         files: BTreeMap<String, Entry>,
+        #[serde(default)]
+        staged: BTreeMap<String, Entry>,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +58,8 @@ impl Plan {
     }
     fn validate(&self, intent: &Intent, manifest: Option<&Manifest>) -> Result<()> {
         ensure!(
-            self.version == 1 && self.intent_sha256 == hex::encode(intent.digest()?),
+            (self.version == 1 || self.version == 2)
+                && self.intent_sha256 == hex::encode(intent.digest()?),
             "deletion scope mismatch"
         );
         match (&self.metadata, manifest) {
@@ -62,6 +69,7 @@ impl Plan {
                     directory,
                     receipt,
                     files,
+                    staged,
                 },
                 Some(manifest),
             ) => {
@@ -73,6 +81,16 @@ impl Plan {
                 ensure!(
                     files.len() == NAMES.len() && NAMES.iter().all(|n| files.contains_key(*n)),
                     "invalid deletion inventory"
+                );
+                let staged_bytes = staged
+                    .values()
+                    .try_fold(0u64, |total, entry| total.checked_add(entry.len));
+                ensure!(
+                    (self.version == 2 || staged.is_empty())
+                        && staged.len() <= MAX_STAGED_FILES
+                        && staged_bytes.is_some_and(|n| n <= MAX_STAGED_BYTES)
+                        && staged.keys().all(|name| is_staging_name(name)),
+                    "invalid staged metadata inventory"
                 );
                 ensure!(directory.inode > 0, "invalid deletion directory identity");
                 let receipt_bytes = serde_json::to_vec(receipt)?;
@@ -102,6 +120,18 @@ impl Plan {
                     ensure!(
                         name != "lifecycle.lock" || file.len == 0,
                         "invalid lifecycle lock contents"
+                    );
+                }
+                for file in staged.values() {
+                    ensure!(
+                        file.identity.inode > 0
+                            && file.len <= 65536
+                            && file.sha256.len() == 64
+                            && file
+                                .sha256
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                        "invalid staged metadata digest"
                     );
                 }
             }
@@ -185,6 +215,11 @@ fn same_entry(path: &Path, expected: &Entry) -> Result<()> {
     );
     Ok(())
 }
+fn is_staging_name(name: &str) -> bool {
+    name.strip_suffix(".tmp")
+        .and_then(|stem| stem.parse::<OperationId>().ok())
+        .is_some_and(|id| format!("{id}.tmp") == name)
+}
 /// Holds the persistent exclusive authority lock and the original lifecycle lock.
 /// Neither lock can be replaced or recreated to authorize this deletion.
 pub(crate) struct Session {
@@ -262,6 +297,7 @@ impl Session {
         };
         let mut lifecycle = None;
         let mut actual = BTreeMap::new();
+        let mut staged = BTreeMap::new();
         if directory.is_some() {
             ensure!(manifest.is_some(), "unknown allocation directory");
             let lock_path = path.join("lifecycle.lock");
@@ -280,7 +316,16 @@ impl Session {
                         identity.len == 0 && Identity::of(&file.metadata()?) == identity.identity,
                         "invalid lifecycle identity"
                     );
-                    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
+                    match rustix::fs::flock(
+                        &file,
+                        rustix::fs::FlockOperation::NonBlockingLockExclusive,
+                    ) {
+                        Ok(()) => {}
+                        Err(rustix::io::Errno::WOULDBLOCK) => {
+                            return Err(crate::launch_authority::LockContended.into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                     lifecycle = Some(file);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound && saved.is_some() => {}
@@ -292,11 +337,27 @@ impl Session {
                     .file_name()
                     .into_string()
                     .map_err(|_| anyhow::anyhow!("invalid metadata name"))?;
-                ensure!(
-                    NAMES.contains(&name.as_str()),
-                    "unknown allocation metadata prevents deletion"
-                );
-                actual.insert(name, entry(&item.path())?);
+                if NAMES.contains(&name.as_str()) {
+                    actual.insert(name, entry(&item.path())?);
+                } else if is_staging_name(&name) {
+                    ensure!(
+                        staged.len() < MAX_STAGED_FILES,
+                        "too many staged allocation metadata files"
+                    );
+                    let staged_entry = entry(&item.path())?;
+                    let staged_bytes = staged
+                        .values()
+                        .try_fold(staged_entry.len, |total, e: &Entry| {
+                            total.checked_add(e.len)
+                        });
+                    ensure!(
+                        staged_bytes.is_some_and(|n| n <= MAX_STAGED_BYTES),
+                        "staged allocation metadata exceeds retirement bound"
+                    );
+                    staged.insert(name, staged_entry);
+                } else {
+                    anyhow::bail!("unknown allocation metadata prevents deletion");
+                }
             }
             ensure!(
                 lifecycle.is_some() || actual.is_empty(),
@@ -305,7 +366,25 @@ impl Session {
             if let Some(plan) = saved {
                 if let Metadata::Stopped { files, .. } = &plan.metadata {
                     for name in actual.keys() {
-                        same_entry(&path.join(name), &files[name])?;
+                        same_entry(
+                            &path.join(name),
+                            files
+                                .get(name)
+                                .ok_or_else(|| anyhow::anyhow!("unplanned allocation metadata"))?,
+                        )?;
+                    }
+                    if let Metadata::Stopped {
+                        staged: expected, ..
+                    } = &plan.metadata
+                    {
+                        for name in staged.keys() {
+                            same_entry(
+                                &path.join(name),
+                                expected.get(name).ok_or_else(|| {
+                                    anyhow::anyhow!("unplanned staged allocation metadata")
+                                })?,
+                            )?;
+                        }
                     }
                 }
             } else {
@@ -338,12 +417,13 @@ impl Session {
                     ),
                     receipt: Box::new(receipt),
                     files: actual,
+                    staged,
                 }
             } else {
                 Metadata::Absent {}
             };
             Plan {
-                version: 1,
+                version: 2,
                 intent_sha256: hex::encode(intent.digest()?),
                 metadata,
             }
@@ -369,6 +449,20 @@ impl Session {
                     match fs::symlink_metadata(self.path.join(name)) {
                         Ok(_) => {
                             same_entry(&self.path.join(name), &files[name])?;
+                            fs::remove_file(self.path.join(name))?;
+                            dir.sync_all()?;
+                            return Ok(false);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+            if let Metadata::Stopped { staged, .. } = &self.plan.metadata {
+                for (name, expected) in staged {
+                    match fs::symlink_metadata(self.path.join(name)) {
+                        Ok(_) => {
+                            same_entry(&self.path.join(name), expected)?;
                             fs::remove_file(self.path.join(name))?;
                             dir.sync_all()?;
                             return Ok(false);

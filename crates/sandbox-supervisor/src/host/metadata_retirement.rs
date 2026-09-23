@@ -145,16 +145,36 @@ impl Host {
             ));
         }
         deadline(request.expires_unix_ms)?;
-        let mut session = Session::open(
-            &self.inner.config.state_root.join("a"),
+        // Release is durable before allocation retirement is eligible, but a
+        // guardian can still hold its lifecycle lock while its watchdog exits.
+        // Reissue the exact stop before taking that lock; this is idempotent and
+        // cannot affect another allocation because the retained manifest has
+        // already been bound to the frozen retirement intent above.
+        if let Some(manifest) = &record.manifest {
+            let _ = guardian::control(manifest, Action::Stop);
+        }
+        let root = self.inner.config.state_root.join("a");
+        let mut session = match Session::open(
+            &root,
             &self.inner.config.cgroup_parent,
             self.inner.config.epoch,
             checkpoint.registered_through,
             &request.intent,
             record.manifest.as_ref(),
             record.metadata_retirement.as_ref().map(|s| &s.plan),
-        )
-        .map_err(uncertain)?;
+        ) {
+            Ok(session) => session,
+            Err(error) if crate::launch_authority::is_lock_contended(&error) => {
+                // Release the allocation gate so the controller can retry
+                // this persisted, idempotent request after the guardian exits.
+                return Err(Status::unavailable("allocation metadata retirement busy"));
+            }
+            Err(error) => {
+                return Err(uncertain(format!(
+                    "metadata retirement session open: {error}"
+                )));
+            }
+        };
         // The latest independent frontier stays locked until the exclusive
         // root gate is held, so concurrent registration cannot stale this check.
         drop(journal);

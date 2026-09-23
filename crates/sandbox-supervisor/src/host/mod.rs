@@ -103,7 +103,8 @@ struct Inner {
 pub struct Host {
     inner: Arc<Inner>,
 }
-fn uncertain(_: impl std::fmt::Display) -> Status {
+fn uncertain(error: impl std::fmt::Display) -> Status {
+    eprintln!("sandbox host uncertain operation: {error}");
     Status::unavailable("host operation uncertain; inspect retained allocation before retry")
 }
 fn lock<T>(value: &Mutex<T>) -> Result<MutexGuard<'_, T>, Status> {
@@ -470,7 +471,16 @@ impl Host {
         // A timeout is uncertain. The lifecycle lock prevents racing a live owner;
         // fence_unstarted also fences a delayed wrapper that has not taken the lock.
         let _ = guardian::control(m, Action::Stop);
-        let r = m.fence_unstarted().map_err(uncertain)?;
+        let r = match m.fence_unstarted() {
+            Ok(receipt) => receipt,
+            Err(error)
+                if crate::launch_authority::is_lock_contended(&error)
+                    || guardian::is_ownership_busy(&error) =>
+            {
+                return Err(Status::unavailable("allocation cleanup busy"));
+            }
+            Err(error) => return Err(uncertain(error)),
+        };
         if r.state != GuardianState::Stopped || !r.cleanup_confirmed {
             return Err(uncertain("cleanup pending"));
         }
@@ -507,7 +517,15 @@ impl Host {
             return Ok((AllocationState::Ready, Some(r)));
         }
         // No live readiness evidence. A free ownership lock permits fencing, never relaunch.
-        let r = m.fence_unstarted().map_err(uncertain)?;
+        let r = m.fence_unstarted().map_err(|error| {
+            if crate::launch_authority::is_lock_contended(&error)
+                || guardian::is_ownership_busy(&error)
+            {
+                Status::unavailable("allocation guardian is still active")
+            } else {
+                uncertain(error)
+            }
+        })?;
         self.released(&record.owner.allocation_id)?;
         Ok((AllocationState::Released, Some(r)))
     }
@@ -747,7 +765,27 @@ impl Host {
                 let records: Vec<_> = j
                     .records
                     .values()
-                    .filter(|r| r.manifest.is_some() && !r.released)
+                    .filter(|r| {
+                        if r.released || r.manifest.is_none() {
+                            return false;
+                        }
+                        // A running, unexpired receipt is not a recovery target.
+                        // Rebinding its guest on every 100 ms maintenance tick
+                        // continually takes the shared launch-authority lock and
+                        // can starve an exclusive retirement fence. Explicit host
+                        // inspections still authenticate the live guardian.
+                        if !r.stopped
+                            && r.manifest.as_ref().is_some_and(|manifest| {
+                                manifest.receipt().is_ok_and(|receipt| {
+                                    receipt.state == GuardianState::Running
+                                        && receipt.expires_unix_ms > guardian::wall_ms()
+                                })
+                            })
+                        {
+                            return false;
+                        }
+                        true
+                    })
                     .collect();
                 if records.is_empty() {
                     None

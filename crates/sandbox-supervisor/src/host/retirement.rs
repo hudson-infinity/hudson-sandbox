@@ -141,7 +141,13 @@ impl Host {
             checkpoint.registered_through,
             &request.intent,
         )
-        .map_err(|_| Status::failed_precondition("retirement authority rejected"))?;
+        .map_err(|error| {
+            if crate::launch_authority::is_lock_contended(&error) {
+                Status::unavailable("retirement authority busy")
+            } else {
+                Status::failed_precondition("retirement authority rejected")
+            }
+        })?;
         let id = request.intent.permit.allocation.to_string();
         let mut record = match journal.records.get(&id) {
             Some(record) => record.clone(),
@@ -192,7 +198,13 @@ impl Host {
                 &request.intent.permit,
                 request.intent.retirement,
             )
-            .map_err(uncertain)?;
+            .map_err(|error| {
+                if crate::launch_authority::is_lock_contended(&error) {
+                    Status::unavailable("retirement authority fence busy")
+                } else {
+                    uncertain(format!("retirement authority fence: {error}"))
+                }
+            })?;
         // The persisted stop closes admission. Never wait while holding the journal.
         let _readers = readers
             .try_write_owned()
