@@ -153,16 +153,28 @@ impl Host {
         if let Some(manifest) = &record.manifest {
             let _ = guardian::control(manifest, Action::Stop);
         }
-        let mut session = Session::open(
-            &self.inner.config.state_root.join("a"),
-            &self.inner.config.cgroup_parent,
-            self.inner.config.epoch,
-            checkpoint.registered_through,
-            &request.intent,
-            record.manifest.as_ref(),
-            record.metadata_retirement.as_ref().map(|s| &s.plan),
-        )
-        .map_err(uncertain)?;
+        let root = self.inner.config.state_root.join("a");
+        let mut session = loop {
+            match Session::open(
+                &root,
+                &self.inner.config.cgroup_parent,
+                self.inner.config.epoch,
+                checkpoint.registered_through,
+                &request.intent,
+                record.manifest.as_ref(),
+                record.metadata_retirement.as_ref().map(|s| &s.plan),
+            ) {
+                Ok(session) => break session,
+                Err(error) if crate::guardian::retirement::is_lock_contended(&error) => {
+                    // The stop RPC can return before the detached guardian wrapper
+                    // releases its shared launch lock and lifecycle lock. Retry
+                    // only nonblocking flock contention, within the signed claim.
+                    deadline(request.expires_unix_ms)?;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(uncertain(error)),
+            }
+        };
         // The latest independent frontier stays locked until the exclusive
         // root gate is held, so concurrent registration cannot stale this check.
         drop(journal);

@@ -4,6 +4,16 @@ use super::*;
 use sandbox_protocol::allocation_retirement::Intent;
 use std::collections::BTreeMap;
 
+/// Nonblocking flock contention is a transient lifecycle state, not evidence
+/// that the retirement request is invalid. Callers may retry only this error.
+pub(crate) fn is_lock_contended(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rustix::io::Errno>()
+            .is_some_and(|errno| *errno == rustix::io::Errno::WOULDBLOCK)
+    })
+}
+
 const NAMES: [&str; 3] = ["receipt.json", "manifest.json", "lifecycle.lock"];
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
