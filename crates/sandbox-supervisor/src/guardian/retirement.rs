@@ -356,7 +356,7 @@ impl Session {
                     );
                     staged.insert(name, staged_entry);
                 } else {
-                    anyhow::bail!("unknown allocation metadata prevents deletion");
+                    anyhow::bail!("unknown allocation metadata prevents deletion: {name:?}");
                 }
             }
             ensure!(

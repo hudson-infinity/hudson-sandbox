@@ -259,7 +259,7 @@ impl Store {
         }
         let allocation_id: uuid::Uuid = ctx.allocation.try_get("id")?;
         let lease: (OffsetDateTime,) = sqlx::query_as(
-            "UPDATE allocations SET lease_expires_at=least(clock_timestamp()+interval '30 seconds',
+            "UPDATE allocations SET lease_expires_at=least(clock_timestamp()+interval '60 seconds',
             (SELECT expires_at FROM sandboxes WHERE id=allocations.sandbox_id)),
             updated_at=clock_timestamp() WHERE id=$1 RETURNING lease_expires_at",
         )

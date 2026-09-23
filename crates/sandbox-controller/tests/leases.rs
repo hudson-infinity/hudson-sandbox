@@ -57,8 +57,21 @@ async fn running_allocation_renews_without_reopening_create(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(f.controller().await.tick().await.unwrap(), Tick::Maintained);
-    let (after,pending,source):(i64,bool,Value)=sqlx::query_as("SELECT floor(extract(epoch FROM lease_expires_at)*1000)::bigint,renewal_pending,lease_observation FROM allocations").fetch_one(&pool).await.unwrap();
-    assert!(after > before);
+    let (after, now, pending, source): (i64, i64, bool, Value) = sqlx::query_as(
+        "SELECT floor(extract(epoch FROM lease_expires_at)*1000)::bigint,
+        floor(extract(epoch FROM clock_timestamp())*1000)::bigint,renewal_pending,lease_observation FROM allocations",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        after > now,
+        "renewed execution lease must remain in the future"
+    );
+    assert!(
+        after >= before,
+        "renewal must not shorten the confirmed lease"
+    );
     assert!(!pending);
     assert_eq!(source["simulated"], true);
     let (status, count): (String, i64) =
