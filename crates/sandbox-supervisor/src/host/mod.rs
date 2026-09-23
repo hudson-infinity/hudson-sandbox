@@ -611,11 +611,26 @@ impl Host {
             .spawn();
         match child {
             Ok(mut child) => {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
+                let allocation = o.allocation_id;
+                std::thread::spawn(move || match child.wait() {
+                    Ok(status) if !status.success() => {
+                        eprintln!(
+                            "sandbox guardian exited unexpectedly for allocation {allocation}: {status:?}"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "could not wait for sandbox guardian for allocation {allocation}: {error}"
+                        );
+                    }
                 });
             }
-            Err(_) => {
+            Err(error) => {
+                eprintln!(
+                    "could not launch sandbox guardian for allocation {}: {error}",
+                    o.allocation_id
+                );
                 self.stopped(&o.allocation_id)?;
                 record.stopped = true;
                 let (s, r) = self.observe_record(&record)?;
