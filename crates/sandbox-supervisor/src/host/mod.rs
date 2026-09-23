@@ -765,7 +765,27 @@ impl Host {
                 let records: Vec<_> = j
                     .records
                     .values()
-                    .filter(|r| r.manifest.is_some() && !r.released)
+                    .filter(|r| {
+                        if r.released || r.manifest.is_none() {
+                            return false;
+                        }
+                        // A running, unexpired receipt is not a recovery target.
+                        // Rebinding its guest on every 100 ms maintenance tick
+                        // continually takes the shared launch-authority lock and
+                        // can starve an exclusive retirement fence. Explicit host
+                        // inspections still authenticate the live guardian.
+                        if !r.stopped
+                            && r.manifest.as_ref().is_some_and(|manifest| {
+                                manifest.receipt().is_ok_and(|receipt| {
+                                    receipt.state == GuardianState::Running
+                                        && receipt.expires_unix_ms > guardian::wall_ms()
+                                })
+                            })
+                        {
+                            return false;
+                        }
+                        true
+                    })
                     .collect();
                 if records.is_empty() {
                     None

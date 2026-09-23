@@ -154,27 +154,25 @@ impl Host {
             let _ = guardian::control(manifest, Action::Stop);
         }
         let root = self.inner.config.state_root.join("a");
-        let mut session = loop {
-            match Session::open(
-                &root,
-                &self.inner.config.cgroup_parent,
-                self.inner.config.epoch,
-                checkpoint.registered_through,
-                &request.intent,
-                record.manifest.as_ref(),
-                record.metadata_retirement.as_ref().map(|s| &s.plan),
-            ) {
-                Ok(session) => break session,
-                Err(error) if crate::launch_authority::is_lock_contended(&error) => {
-                    // Release the allocation gate so the controller can retry
-                    // this persisted, idempotent request after the guardian exits.
-                    return Err(Status::unavailable("allocation metadata retirement busy"));
-                }
-                Err(error) => {
-                    return Err(uncertain(format!(
-                        "metadata retirement session open: {error}"
-                    )));
-                }
+        let mut session = match Session::open(
+            &root,
+            &self.inner.config.cgroup_parent,
+            self.inner.config.epoch,
+            checkpoint.registered_through,
+            &request.intent,
+            record.manifest.as_ref(),
+            record.metadata_retirement.as_ref().map(|s| &s.plan),
+        ) {
+            Ok(session) => session,
+            Err(error) if crate::launch_authority::is_lock_contended(&error) => {
+                // Release the allocation gate so the controller can retry
+                // this persisted, idempotent request after the guardian exits.
+                return Err(Status::unavailable("allocation metadata retirement busy"));
+            }
+            Err(error) => {
+                return Err(uncertain(format!(
+                    "metadata retirement session open: {error}"
+                )));
             }
         };
         // The latest independent frontier stays locked until the exclusive
