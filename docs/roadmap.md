@@ -23,6 +23,19 @@ The first usable milestone requires phases 1 and 2 below, consistent with the [p
 
 The [OpenAPI contract](openapi.md), [Rust client/CLI](client-cli.md), and [Python/TypeScript clients](language-clients.md) now cover implemented Project endpoints with conformance and package smoke checks. Package publication, an installer and independent operator acceptance remain distribution work. Existing UI designs remain available for later implementation, which shares the same admission and lifecycle services instead of creating a second control path. Define generic authenticated service connectivity before exposing guest services. Exact work breakdown can be split into issues once each phase has concrete interfaces.
 
+## Productization direction
+
+Keep the runtime generic: callers bring arbitrary workloads within the published compatibility envelope. Product-specific templates and integrations can follow later without making them part of the isolation boundary. Borrow useful patterns from other sandbox systems incrementally; the [alternatives](alternatives.md) and [architecture](architecture.md) remain authoritative for Hudson's deployment and component choices.
+
+| Capability | Direction and gate |
+| --- | --- |
+| SDK, CLI and readiness | Continue the shared API/client contract. Report VM/runtime readiness separately from any future workload or service readiness; readiness means an observed, authenticated condition, never merely a successful start request. Package publication and another-operator installation remain Phase 2 work. |
+| Generic networked workloads | Define named, authenticated service endpoints only after a concrete use case. Keep ingress absent until then; any future route must be authorized per sandbox and tied to observed service health. Do not make an agent-specific guest protocol mandatory. |
+| Host capacity and cleanup | Finish and measure single-host reuse and orphan reclamation before adding warm VM pools. Track host capabilities needed for image and snapshot compatibility before multi-host placement. Optimize from recorded latency, density, and cleanup data. |
+| Control/data path | Preserve PostgreSQL operations, idempotency, generations, leases, and receipts as the lifecycle source of truth. Keep command output, files, and future application traffic separable from lifecycle control. Defer a general plug-in/action framework until a proven integration requires it. |
+
+These directions let the same core serve a small team or a larger self-hosted deployment. Enterprise identity, tenant administration, policy controls, and hosted operations are separate product and operational gates; they must not be implied by the current project-token API or by passing sandbox isolation tests.
+
 ## Feasibility spikes (Phase 0)
 
 Two assumptions still require supported-host findings. The [Linux development experiment](linux-development.md#verified-boot-and-its-limits) and component tests provide partial evidence, not completion of these questions. The first is that a jailed Firecracker VM on our supported host enforces the resource and connectivity limits the contracts assume. The second is that a guest agent can survive a snapshot outside the frozen customer process groups, reconnect afterwards, and gate the release of those processes; everything in [lifecycle](lifecycle.md#resume) depends on it.
