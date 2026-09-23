@@ -611,7 +611,7 @@ impl Host {
             .spawn();
         match child {
             Ok(mut child) => {
-                let allocation = o.allocation_id;
+                let allocation = o.allocation_id.clone();
                 std::thread::spawn(move || match child.wait() {
                     Ok(status) if !status.success() => {
                         eprintln!(
