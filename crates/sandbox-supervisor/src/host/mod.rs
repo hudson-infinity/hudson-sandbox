@@ -484,7 +484,11 @@ impl Host {
                     // detached wrapper a bounded window to release their locks.
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(error) => return Err(uncertain(error)),
+                Err(error) => {
+                    return Err(uncertain(format!(
+                        "allocation cleanup lock remained busy: {error}"
+                    )));
+                }
             }
         };
         if r.state != GuardianState::Stopped || !r.cleanup_confirmed {

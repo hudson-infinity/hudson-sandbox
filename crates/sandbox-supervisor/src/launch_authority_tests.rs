@@ -1,5 +1,13 @@
 #![allow(clippy::unwrap_used)]
 use super::*;
+
+#[test]
+fn lock_contention_classification_survives_anyhow_context() {
+    let direct = anyhow::Error::new(LockContended);
+    assert!(is_lock_contended(&direct));
+    let contextual = direct.context("opening retirement session");
+    assert!(is_lock_contended(&contextual));
+}
 use sandbox_protocol::{AllocationId, Id, ProjectId, SandboxId};
 use std::os::unix::fs::{PermissionsExt, symlink};
 fn intent(p: &Permit, retirement: OperationId) -> sandbox_protocol::allocation_retirement::Intent {

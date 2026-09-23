@@ -172,7 +172,11 @@ impl Host {
                     deadline(request.expires_unix_ms)?;
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(error) => return Err(uncertain(error)),
+                Err(error) => {
+                    return Err(uncertain(format!(
+                        "metadata retirement session open: {error}"
+                    )));
+                }
             }
         };
         // The latest independent frontier stays locked until the exclusive
