@@ -705,7 +705,7 @@ async fn authenticated_controller_automatically_retires_real_allocation(pool: sq
 async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPool) {
     use sandbox_protocol::{ProjectId, ProjectToken};
     use serde_json::json;
-    let f = Fixture::configured_permits(true, false, true).await;
+    let mut f = Fixture::configured_permits(true, false, true).await;
     let project = ProjectId::generate();
     let token = ProjectToken::generate().unwrap();
     sqlx::query("INSERT INTO projects(id,name,status,limits,api_tokens) VALUES($1,'sustained-reuse','active','{}',$2)")
@@ -749,12 +749,13 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
     .await;
     let keeper_sandbox = keeper["sandbox_id"].as_str().unwrap().to_string();
     let keeper_operation = keeper["operation_id"].as_str().unwrap().to_string();
-    wait_operation(
+    wait_operation_preserving(
         &app,
         &token,
         &mut controller,
         &keeper_operation,
         "succeeded",
+        &mut f,
     )
     .await;
     let live: bool = sqlx::query_scalar(
@@ -788,16 +789,25 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
         .await;
         let sandbox = admitted["sandbox_id"].as_str().unwrap().to_string();
         let create_op = admitted["operation_id"].as_str().unwrap().to_string();
-        wait_operation(&app, &token, &mut controller, &create_op, "succeeded").await;
+        wait_operation_preserving(
+            &app,
+            &token,
+            &mut controller,
+            &create_op,
+            "succeeded",
+            &mut f,
+        )
+        .await;
         let execute_key = OperationId::generate().to_string();
         let (_, execute) = http(&app, &token, "POST", &format!("/v1/sandboxes/{sandbox}/execute"), &execute_key,
             json!({"argv":["/bin/busybox","true"],"deadline_unix_ms":guardian::wall_ms()+10000,"output_limit":1024})).await;
-        wait_operation(
+        wait_operation_preserving(
             &app,
             &token,
             &mut controller,
             execute["operation_id"].as_str().unwrap(),
             "succeeded",
+            &mut f,
         )
         .await;
         let destroy_key = OperationId::generate().to_string();
@@ -810,12 +820,13 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
             json!({}),
         )
         .await;
-        wait_operation(
+        wait_operation_preserving(
             &app,
             &token,
             &mut controller,
             destroy["operation_id"].as_str().unwrap(),
             "succeeded",
+            &mut f,
         )
         .await;
         let allocation: sqlx::types::Uuid = sqlx::query_scalar(
@@ -871,11 +882,17 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
                 }
                 Err(error) => panic!("cycle {cycle} allocation retirement failed: {error}"),
             }
-            assert!(
-                Instant::now() < until,
-                "cycle {cycle} retirement did not converge; last RPC error: {last_retirement_rpc:?}; host stderr: {}",
-                fs::read_to_string(f.vm.temp.path().join("host.stderr")).unwrap_or_default(),
-            );
+            if Instant::now() >= until {
+                // Preserve the exact guardian directory and journal on a long
+                // real-VM failure so a retirement refusal can be diagnosed
+                // from the entry name and metadata, rather than only its log.
+                f.vm.temp.disable_cleanup(true);
+                panic!(
+                    "cycle {cycle} retirement did not converge; last RPC error: {last_retirement_rpc:?}; retained artifacts: {}; host stderr: {}",
+                    f.vm.temp.path().display(),
+                    fs::read_to_string(f.vm.temp.path().join("host.stderr")).unwrap_or_default(),
+                );
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let running: i64 =
@@ -912,14 +929,15 @@ async fn sustained_real_allocation_reuse_keeps_an_older_vm_live(pool: sqlx::PgPo
     );
 }
 
-async fn wait_operation(
+async fn wait_operation_preserving(
     app: &axum::Router,
     token: &str,
     controller: &mut sandbox_controller::Controller,
     operation: &str,
     expected: &str,
+    fixture: &mut Fixture,
 ) {
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + Duration::from_secs(65);
     loop {
         controller.tick().await.unwrap();
         let (_, result) = http(
@@ -934,10 +952,13 @@ async fn wait_operation(
         if result["status"] == expected {
             return;
         }
-        assert!(
-            Instant::now() < until,
-            "operation {operation} did not reach {expected}: {result}"
-        );
+        if Instant::now() >= until {
+            fixture.vm.temp.disable_cleanup(true);
+            panic!(
+                "operation {operation} did not reach {expected}: {result}; retained test artifacts: {}",
+                fixture.vm.temp.path().display()
+            );
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

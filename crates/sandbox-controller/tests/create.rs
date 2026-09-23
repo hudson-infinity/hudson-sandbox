@@ -77,6 +77,44 @@ async fn lost_rpc_reply_is_reconciled_from_the_same_single_start(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
+async fn initial_create_lease_allows_sixty_seconds_for_guest_boot(pool: PgPool) {
+    let f = Fixture::new(&pool).await;
+    f.admit().await;
+    f.store
+        .observe_configured_host(f.config.host, 1)
+        .await
+        .unwrap();
+    let claim = f
+        .store
+        .claim_next(OperationKind::Create, 30)
+        .await
+        .unwrap()
+        .unwrap();
+    f.store
+        .reserve_create(&claim, f.config.host, 1)
+        .await
+        .unwrap();
+    let CreateAction::Start(request) = f
+        .store
+        .prepare_create_dispatch(&claim, &f.config.allowed_images)
+        .await
+        .unwrap()
+    else {
+        panic!("start")
+    };
+    let now_ms: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let remaining_ms = request.allocation_expires_unix_ms - now_ms;
+    assert!(
+        (55_000..=60_000).contains(&remaining_ms),
+        "initial allocation lease should be close to 60 seconds, got {remaining_ms}ms"
+    );
+}
+
+#[sqlx::test(migrator = "sandbox_store::MIGRATOR")]
 async fn crash_after_intent_before_send_remains_unknown_without_replay(pool: PgPool) {
     let f = Fixture::new(&pool).await;
     f.admit().await;

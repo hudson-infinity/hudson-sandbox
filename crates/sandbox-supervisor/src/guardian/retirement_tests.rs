@@ -197,6 +197,19 @@ fn retirement_reconciles_bounded_owned_atomic_write_stages() {
     authority
         .fence(1, &intent.permit, intent.retirement)
         .unwrap();
+    // Exercise the production atomic writer so the classifier stays aligned
+    // with the exact staging-name format used by guardian metadata updates.
+    let receipt_path = m.directory().join("receipt.json");
+    let receipt: Receipt = read_json(&receipt_path).unwrap();
+    write_json(&receipt_path, &receipt).unwrap();
+    let leftover_stage = fs::read_dir(m.directory())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .any(|name| is_staging_name(&name));
+    assert!(
+        !leftover_stage,
+        "guardian atomic writer must retire its stage after successful rename"
+    );
     let staged_names: Vec<_> = [b"partial receipt".as_slice(), b"partial manifest"]
         .into_iter()
         .map(|bytes| {
@@ -281,7 +294,8 @@ fn retirement_bounds_owned_atomic_write_stages_and_keeps_unknown_metadata() {
     let unexpected = m.directory().join("notes.tmp");
     fs::write(&unexpected, b"preserve").unwrap();
     fs::set_permissions(&unexpected, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(open(&m, &intent, None).is_err());
+    let error = open(&m, &intent, None).err().unwrap();
+    assert!(error.to_string().contains("notes.tmp"));
     assert_eq!(fs::read(&unexpected).unwrap(), b"preserve");
 }
 #[test]
