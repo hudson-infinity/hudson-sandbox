@@ -119,6 +119,10 @@ pub struct Response {
 #[error("allocation guardian is still active")]
 struct OwnershipBusy;
 
+pub(crate) fn is_ownership_busy(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<OwnershipBusy>())
+}
+
 pub fn wall_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

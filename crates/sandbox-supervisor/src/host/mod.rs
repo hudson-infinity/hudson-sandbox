@@ -471,7 +471,22 @@ impl Host {
         // A timeout is uncertain. The lifecycle lock prevents racing a live owner;
         // fence_unstarted also fences a delayed wrapper that has not taken the lock.
         let _ = guardian::control(m, Action::Stop);
-        let r = m.fence_unstarted().map_err(uncertain)?;
+        let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+        let r = loop {
+            match m.fence_unstarted() {
+                Ok(receipt) => break receipt,
+                Err(error)
+                    if (crate::launch_authority::is_lock_contended(&error)
+                        || guardian::is_ownership_busy(&error))
+                        && Instant::now() < cleanup_deadline =>
+                {
+                    // The Stop request is idempotent. Give the namespace init and
+                    // detached wrapper a bounded window to release their locks.
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(uncertain(error)),
+            }
+        };
         if r.state != GuardianState::Stopped || !r.cleanup_confirmed {
             return Err(uncertain("cleanup pending"));
         }
