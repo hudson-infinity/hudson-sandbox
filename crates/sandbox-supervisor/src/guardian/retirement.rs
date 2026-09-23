@@ -11,6 +11,9 @@ pub(crate) fn is_lock_contended(error: &anyhow::Error) -> bool {
         cause
             .downcast_ref::<rustix::io::Errno>()
             .is_some_and(|errno| *errno == rustix::io::Errno::WOULDBLOCK)
+            || cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
     })
 }
 
