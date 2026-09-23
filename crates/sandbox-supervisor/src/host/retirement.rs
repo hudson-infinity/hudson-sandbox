@@ -134,14 +134,24 @@ impl Host {
             .clone()
             .ok_or_else(|| uncertain("missing authority checkpoint"))?;
         let root = config.state_root.join("a");
-        let authority_guard = crate::launch_authority::authorize_retirement(
-            &root,
-            config.host,
-            config.epoch,
-            checkpoint.registered_through,
-            &request.intent,
-        )
-        .map_err(|_| Status::failed_precondition("retirement authority rejected"))?;
+        let authority_guard = loop {
+            match crate::launch_authority::authorize_retirement(
+                &root,
+                config.host,
+                config.epoch,
+                checkpoint.registered_through,
+                &request.intent,
+            ) {
+                Ok(guard) => break guard,
+                Err(error) if crate::launch_authority::is_lock_contended(&error) => {
+                    deadline(request.expires_unix_ms)?;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => {
+                    return Err(Status::failed_precondition("retirement authority rejected"));
+                }
+            }
+        };
         let id = request.intent.permit.allocation.to_string();
         let mut record = match journal.records.get(&id) {
             Some(record) => record.clone(),
@@ -186,13 +196,25 @@ impl Host {
             checkpoint.registered_through,
         )
         .map_err(uncertain)?;
-        authority
-            .fence(
+        loop {
+            match authority.fence(
                 config.epoch,
                 &request.intent.permit,
                 request.intent.retirement,
-            )
-            .map_err(uncertain)?;
+            ) {
+                Ok(()) => break,
+                Err(error) if crate::launch_authority::is_lock_contended(&error) => {
+                    // Fencing this exact permit/retirement pair is idempotent.
+                    // Retry only failure to acquire the nonblocking authority
+                    // lock, and only while the persisted claim is still valid.
+                    deadline(request.expires_unix_ms)?;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(uncertain(format!("retirement authority fence: {error}")));
+                }
+            }
+        }
         // The persisted stop closes admission. Never wait while holding the journal.
         let _readers = readers
             .try_write_owned()
