@@ -166,11 +166,9 @@ impl Host {
             ) {
                 Ok(session) => break session,
                 Err(error) if crate::launch_authority::is_lock_contended(&error) => {
-                    // The stop RPC can return before the detached guardian wrapper
-                    // releases its shared launch lock and lifecycle lock. Retry
-                    // only nonblocking flock contention, within the signed claim.
-                    deadline(request.expires_unix_ms)?;
-                    std::thread::sleep(Duration::from_millis(10));
+                    // Release the allocation gate so the controller can retry
+                    // this persisted, idempotent request after the guardian exits.
+                    return Err(Status::unavailable("allocation metadata retirement busy"));
                 }
                 Err(error) => {
                     return Err(uncertain(format!(

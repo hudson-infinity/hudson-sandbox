@@ -471,25 +471,15 @@ impl Host {
         // A timeout is uncertain. The lifecycle lock prevents racing a live owner;
         // fence_unstarted also fences a delayed wrapper that has not taken the lock.
         let _ = guardian::control(m, Action::Stop);
-        let cleanup_deadline = Instant::now() + Duration::from_secs(2);
-        let r = loop {
-            match m.fence_unstarted() {
-                Ok(receipt) => break receipt,
-                Err(error)
-                    if (crate::launch_authority::is_lock_contended(&error)
-                        || guardian::is_ownership_busy(&error))
-                        && Instant::now() < cleanup_deadline =>
-                {
-                    // The Stop request is idempotent. Give the namespace init and
-                    // detached wrapper a bounded window to release their locks.
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => {
-                    return Err(uncertain(format!(
-                        "allocation cleanup lock remained busy: {error}"
-                    )));
-                }
+        let r = match m.fence_unstarted() {
+            Ok(receipt) => receipt,
+            Err(error)
+                if crate::launch_authority::is_lock_contended(&error)
+                    || guardian::is_ownership_busy(&error) =>
+            {
+                return Err(Status::unavailable("allocation cleanup busy"));
             }
+            Err(error) => return Err(uncertain(error)),
         };
         if r.state != GuardianState::Stopped || !r.cleanup_confirmed {
             return Err(uncertain("cleanup pending"));
@@ -527,7 +517,15 @@ impl Host {
             return Ok((AllocationState::Ready, Some(r)));
         }
         // No live readiness evidence. A free ownership lock permits fencing, never relaunch.
-        let r = m.fence_unstarted().map_err(uncertain)?;
+        let r = m.fence_unstarted().map_err(|error| {
+            if crate::launch_authority::is_lock_contended(&error)
+                || guardian::is_ownership_busy(&error)
+            {
+                Status::unavailable("allocation guardian is still active")
+            } else {
+                uncertain(error)
+            }
+        })?;
         self.released(&record.owner.allocation_id)?;
         Ok((AllocationState::Released, Some(r)))
     }
